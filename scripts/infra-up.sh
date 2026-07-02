@@ -162,9 +162,23 @@ recover_state_if_drifted
 delete_unmanaged_rds_instance
 delete_unmanaged_db_subnet_group
 
-step "5/7 Applying AWS infra: VPC, subnets, route table, security group, and RDS Postgres." "5-10 min for a new RDS instance; usually < 2 min when already created"
+step "5/7 Applying AWS infra: VPC, subnets, route table, security groups, RDS Postgres, and EC2 app server." "5-10 min for a new RDS instance; usually < 2 min when already created"
 echo "    Terraform is idempotent: it creates missing pieces and leaves healthy existing pieces alone."
-terraform apply -auto-approve -input=false -var "allowed_cidr=$ALLOWED_CIDR"
+
+SSH_PUB_KEY=""
+for candidate in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+  [[ -f "$candidate" ]] && { SSH_PUB_KEY="$candidate"; break; }
+done
+if [[ -z "$SSH_PUB_KEY" ]]; then
+  echo "No SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub." >&2
+  echo "Generate one with: ssh-keygen -t ed25519" >&2
+  exit 1
+fi
+echo "    Using SSH public key: $SSH_PUB_KEY"
+
+terraform apply -auto-approve -input=false \
+  -var "allowed_cidr=$ALLOWED_CIDR" \
+  -var "ssh_public_key_path=$SSH_PUB_KEY"
 
 step "6/7 Reading Terraform outputs and writing .env.rds." "< 10 sec"
 DATABASE_URL="$(terraform output -raw database_url)"

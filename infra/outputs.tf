@@ -24,6 +24,16 @@ output "db_password" {
   sensitive   = true
 }
 
+output "ec2_public_ip" {
+  description = "Public IP of the EC2 app server"
+  value       = aws_instance.app.public_ip
+}
+
+output "ec2_ssh_key_name" {
+  description = "EC2 key pair name"
+  value       = aws_key_pair.app.key_name
+}
+
 output "database_url" {
   description = "Ready-to-use connection string for Prisma + raw pg"
   value       = "postgresql://${var.db_username}:${random_password.db_password.result}@${aws_db_instance.pg.address}:${aws_db_instance.pg.port}/${var.db_name}?sslmode=require"

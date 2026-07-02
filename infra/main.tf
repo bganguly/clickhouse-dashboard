@@ -90,6 +90,83 @@ resource "aws_security_group" "pg" {
   tags = { Name = "${var.name_prefix}-sg" }
 }
 
+# --- EC2 App Server ---
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter { name = "name";                values = ["al2023-ami-*-x86_64"] }
+  filter { name = "virtualization-type"; values = ["hvm"] }
+}
+
+resource "aws_key_pair" "app" {
+  key_name   = "${var.name_prefix}-key"
+  public_key = file(pathexpand(var.ssh_public_key_path))
+}
+
+resource "aws_security_group" "app" {
+  name        = "${var.name_prefix}-app-sg"
+  description = "Dashboard app server — SSH + port 3004"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.allowed_cidr]
+  }
+
+  ingress {
+    description = "Dashboard"
+    from_port   = 3004
+    to_port     = 3004
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${var.name_prefix}-app-sg" }
+}
+
+# Allow EC2 to reach RDS (in addition to the caller-IP ingress rule).
+resource "aws_security_group_rule" "pg_from_app" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.app.id
+  security_group_id        = aws_security_group.pg.id
+  description              = "EC2 app server → Postgres"
+}
+
+resource "aws_instance" "app" {
+  ami                         = data.aws_ami.amazon_linux.id
+  instance_type               = var.ec2_instance_type
+  subnet_id                   = aws_subnet.public_a.id
+  vpc_security_group_ids      = [aws_security_group.app.id]
+  key_name                    = aws_key_pair.app.key_name
+  associate_public_ip_address = true
+
+  user_data = <<-EOF
+    #!/bin/bash
+    set -e
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+    dnf install -y nodejs postgresql15
+    npm install -g pm2
+    mkdir -p /app
+    chown ec2-user:ec2-user /app
+  EOF
+
+  tags = { Name = "${var.name_prefix}-app" }
+}
+
+# --- Database ---
 resource "aws_db_instance" "pg" {
   identifier                 = "${var.name_prefix}-db"
   engine                     = "postgres"

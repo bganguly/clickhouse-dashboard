@@ -51,3 +51,15 @@ variable "allowed_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
+
+variable "ec2_instance_type" {
+  description = "EC2 instance type for the app server"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "ssh_public_key_path" {
+  description = "Path to local SSH public key used for EC2 access"
+  type        = string
+  default     = "~/.ssh/id_rsa.pub"
+}
