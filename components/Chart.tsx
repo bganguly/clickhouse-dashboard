@@ -67,7 +67,7 @@ function computeCategoryTotals(data: RawAggregate[]): CategoryTotal[] {
     for (const [category, c] of Object.entries(entry.categories ?? {})) {
       const prev = map.get(category) ?? { revenue: 0, orders: 0 };
       prev.revenue += c.totalRevenue ?? 0;
-      prev.orders += c.totalOrders ?? 0;
+      prev.orders += c.totalRevenue ?? 0;
       map.set(category, prev);
     }
   }
@@ -90,7 +90,7 @@ function buildBucket(
   for (const cat of topCategories) bucket[cat] = 0;
   if (withOther) bucket[OTHER_KEY] = 0;
   for (const [category, c] of Object.entries(entry.categories ?? {})) {
-    const value = c.totalOrders ?? 0;
+    const value = c.totalRevenue ?? 0;
     // Non-top categories (including any backend-provided "Other"/"Others") merge
     // into the single rolled-up "Others" series.
     const key = top.has(category) ? category : withOther ? OTHER_KEY : null;
@@ -298,8 +298,8 @@ export default function Chart({
       const entry = prev[idx];
       const cat = entry.categories?.[categorySlug];
       const nextCat: RawCategory = cat
-        ? { ...cat, totalOrders: (cat.totalOrders ?? 0) + 1 }
-        : { totalOrders: 1, totalRevenue: 0 };
+        ? { ...cat, totalOrders: (cat.totalOrders ?? 0) + 1, totalItems: (cat.totalItems ?? 0) + 1 }
+        : { totalOrders: 1, totalItems: 1, totalRevenue: 0 };
       const next = prev.slice();
       next[idx] = {
         ...entry,

@@ -55,11 +55,11 @@ const ORDER_STATUSES: readonly OrderStatus[] = [
 ];
 
 /** Prisma orderBy clauses for the unfiltered path. */
-const ORDER_BY: Record<OrderSortField, (dir: SortDir) => Prisma.OrderOrderByWithRelationInput> = {
-  placedAt: (dir) => ({ placedAt: dir }),
-  total: (dir) => ({ total: dir }),
-  status: (dir) => ({ status: dir }),
-  customer: (dir) => ({ customer: { lastName: dir } }),
+const ORDER_BY: Record<OrderSortField, (dir: SortDir) => Prisma.OrderOrderByWithRelationInput[]> = {
+  placedAt: (dir) => [{ placedAt: dir }, { id: dir }],
+  total: (dir) => [{ total: dir }, { placedAt: "desc" }, { id: "desc" }],
+  status: (dir) => [{ status: dir }, { placedAt: "desc" }, { id: "desc" }],
+  customer: (dir) => [{ customer: { lastName: dir } }, { placedAt: "desc" }, { id: "desc" }],
 };
 
 // Raw-SQL sort expressions for the search/filter path. Keyed by the validated
@@ -474,7 +474,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     // --- Unfiltered path: every sort field is B-tree indexed, so Prisma's
     // index-backed findMany + exact count is fast even at deep offsets.
     if (!q && !filters.hasAny) {
-      const orderBy: Prisma.OrderOrderByWithRelationInput[] = [ORDER_BY[sort](dir), { id: dir }];
+      const orderBy = ORDER_BY[sort](dir);
       const [idRows, total] = await Promise.all([
         prisma.order.findMany({ skip: offset, take: pageSize, orderBy, select: { id: true } }),
         prisma.order.count(),
@@ -527,6 +527,14 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
 
     const sortSql = Prisma.raw(SORT_SQL[sort]);
     const dirSql = Prisma.raw(dir === "asc" ? "ASC" : "DESC");
+    const tiebreakerColSql =
+      sort === "placedAt"
+        ? Prisma.raw(`o.id ${dir === "asc" ? "ASC" : "DESC"}`)
+        : Prisma.raw('o."placedAt" DESC, o.id DESC');
+    const tiebreakerAliasSql =
+      sort === "placedAt"
+        ? Prisma.raw(`id ${dir === "asc" ? "ASC" : "DESC"}`)
+        : Prisma.raw("placed_at DESC, id DESC");
 
     // The sort-index walk only short-circuits when the matching set is large,
     // dense, and aligned to the sort. Otherwise filter-first (materialize the
@@ -545,12 +553,12 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       q && q.length >= 3 && textSearch?.needsCustomerJoin
         ? Prisma.sql`
             UNION
-            SELECT id, sortkey FROM (
-              SELECT o.id AS id, ${sortSql} AS sortkey
+            SELECT id, sortkey, placed_at FROM (
+              SELECT o.id AS id, ${sortSql} AS sortkey, o."placedAt" AS placed_at
               FROM orders o
               WHERE o.notes ILIKE ${textSearch.pattern}
               ${andFilterSql}
-              ORDER BY ${sortSql} ${dirSql}, o.id ${dirSql}
+              ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
               LIMIT ${candidateLimit}
             ) note_candidates`
         : Prisma.empty;
@@ -561,47 +569,48 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
           FROM orders o
           JOIN customers c ON c.id = o."customerId"
           ${whereSql}
-          ORDER BY ${sortSql} ${dirSql}, o.id ${dirSql}
+          ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
           LIMIT ${pageSize} OFFSET ${offset}`
       : textSearch?.needsCustomerJoin && sort !== "customer"
       ? Prisma.sql`
           WITH candidates AS (
-            SELECT id, sortkey FROM (
-              SELECT o.id AS id, ${sortSql} AS sortkey
+            SELECT id, sortkey, placed_at FROM (
+              SELECT o.id AS id, ${sortSql} AS sortkey, o."placedAt" AS placed_at
               FROM orders o
               JOIN customers c ON c.id = o."customerId"
               WHERE (c."firstName" || ' ' || c."lastName") ILIKE ${textSearch.pattern}
               ${andFilterSql}
-              ORDER BY ${sortSql} ${dirSql}, o.id ${dirSql}
+              ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
               LIMIT ${candidateLimit}
             ) customer_candidates
             ${noteCandidates}
           )
           SELECT id FROM candidates
-          ORDER BY sortkey ${dirSql}, id ${dirSql}
+          ORDER BY sortkey ${dirSql}, ${tiebreakerAliasSql}
           LIMIT ${pageSize} OFFSET ${offset}`
       : useWalk
       ? Prisma.sql`
           SELECT o.id
           FROM orders o ${baseJoin}
           ${whereSql}
-          ORDER BY ${sortSql} ${dirSql}, o.id ${dirSql}
+          ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
           LIMIT ${pageSize} OFFSET ${offset}`
       : Prisma.sql`
           WITH m AS MATERIALIZED (
-            SELECT o.id AS id, ${sortSql} AS sortkey
+            SELECT o.id AS id, ${sortSql} AS sortkey, o."placedAt" AS placed_at
             FROM orders o ${baseJoin}
             ${whereSql}
           )
-          SELECT id FROM m ORDER BY sortkey ${dirSql}, id ${dirSql}
+          SELECT id FROM m ORDER BY sortkey ${dirSql}, ${tiebreakerAliasSql}
           LIMIT ${pageSize} OFFSET ${offset}`;
 
+    const cacheKey = buildCountCacheKey(q, filters);
     const countPromise =
       q && textSearch?.needsCustomerJoin
         ? tokenOrderSummaryCount(q, filters).then((count) =>
-            count ?? exactBroadTextCount(q, filterConds),
+            count !== null ? count : cachedCount(cacheKey, () => exactBroadTextCount(q, filterConds)),
           )
-        : exactCount(filterWhereJoin, whereSql);
+        : cachedCount(cacheKey, () => exactCount(filterWhereJoin, whereSql));
 
     const [idRows, counted] = await Promise.all([
       prisma.$queryRaw<{ id: number }[]>(pageQuery),
@@ -619,6 +628,36 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   } catch (err) {
     mapDbError(err, "listOrders");
   }
+}
+
+function buildCountCacheKey(q: string | undefined, filters: ResolvedFilters): string {
+  return [
+    `q=${(q ?? "").toLowerCase()}`,
+    `status=${filters.statuses.join(",")}`,
+    `regionIds=${(filters.regionIds ?? []).sort((a, b) => a - b).join(",")}`,
+    `from=${filters.from?.toISOString() ?? ""}`,
+    `to=${filters.to?.toISOString() ?? ""}`,
+    `minTotal=${filters.minTotal ?? ""}`,
+    `maxTotal=${filters.maxTotal ?? ""}`,
+  ].join("&");
+}
+
+async function cachedCount(cacheKey: string, compute: () => Promise<number>): Promise<number> {
+  try {
+    const hit = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
+      SELECT total FROM count_cache
+      WHERE cache_key = ${cacheKey}
+        AND cached_at > NOW() - INTERVAL '10 minutes'
+      LIMIT 1`);
+    if (hit.length > 0) return Number(hit[0].total);
+  } catch {}
+  const total = await compute();
+  prisma.$queryRaw(Prisma.sql`
+    INSERT INTO count_cache (cache_key, total, cached_at)
+    VALUES (${cacheKey}, ${BigInt(total)}, NOW())
+    ON CONFLICT (cache_key) DO UPDATE SET total = ${BigInt(total)}, cached_at = NOW()`
+  ).catch(() => {});
+  return total;
 }
 
 /** exact count for pagination bounds; page fetching stays separately optimized. */
@@ -836,6 +875,44 @@ async function hydrateOrders(ids: number[]): Promise<OrderDTO[]> {
     items: r.items,
   }));
 }
+
+// Pre-warm count cache for first-page customer tokens on module load.
+void (async () => {
+  try {
+    const rows = await prisma.$queryRaw<{ firstName: string; lastName: string }[]>(Prisma.sql`
+      SELECT DISTINCT c."firstName", c."lastName"
+      FROM (SELECT "customerId" FROM orders ORDER BY "placedAt" DESC LIMIT 20) recent
+      JOIN customers c ON c.id = recent."customerId"`);
+    const tokens = new Set<string>();
+    for (const r of rows) {
+      if (r.firstName?.trim()) tokens.add(r.firstName.trim().toLowerCase());
+      if (r.lastName?.trim()) tokens.add(r.lastName.trim().toLowerCase());
+    }
+    for (const token of tokens) {
+      const key = `q=${token}&status=&regionIds=&from=&to=&minTotal=&maxTotal=`;
+      const hit = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
+        SELECT total FROM count_cache
+        WHERE cache_key = ${key} AND cached_at > NOW() - INTERVAL '10 minutes'
+        LIMIT 1`).catch(() => [] as { total: bigint }[]);
+      if (hit.length > 0) continue;
+      const pattern = `%${token}%`;
+      const custRows = await prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
+        SELECT id FROM customers
+        WHERE ("firstName" || ' ' || "lastName") ILIKE ${pattern}`).catch(() => [] as { id: number }[]);
+      if (!custRows.length) continue;
+      const ids = custRows.map((r) => r.id);
+      const result = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
+        SELECT count(*)::bigint AS count FROM orders WHERE "customerId" = ANY(${ids}::int[])`
+      ).catch(() => null);
+      if (!result) continue;
+      const total = Number(result[0]?.count ?? 0);
+      await prisma.$queryRaw(Prisma.sql`
+        INSERT INTO count_cache (cache_key, total, cached_at) VALUES (${key}, ${BigInt(total)}, NOW())
+        ON CONFLICT (cache_key) DO UPDATE SET total = ${BigInt(total)}, cached_at = NOW()`
+      ).catch(() => {});
+    }
+  } catch {}
+})();
 
 export async function createOrder(input: CreateOrderInput): Promise<CreateOrderResult> {
   if (!input.customerId || !input.regionId || !Array.isArray(input.items) || input.items.length === 0) {

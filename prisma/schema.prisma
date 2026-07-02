@@ -332,6 +332,14 @@ model AuditLog {
   @@map("audit_log")
 }
 
+model CountCache {
+  cacheKey String   @id @map("cache_key")
+  total    BigInt
+  cachedAt DateTime @default(now()) @map("cached_at")
+
+  @@map("count_cache")
+}
+
 enum OrderStatus {
   PENDING
   CONFIRMED
