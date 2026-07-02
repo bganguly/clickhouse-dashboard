@@ -8,13 +8,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# ── flags ─────────────────────────────────────────────────────────────────────
-QUICKORDER=false
-for arg in "$@"; do
-  case "$arg" in --quickorder|-q) QUICKORDER=true ;; esac
-done
-[[ "$QUICKORDER" == "true" ]] && export NEXT_PUBLIC_ENABLE_QUICKORDER=1
-
 "$ROOT_DIR/scripts/bootstrap-deps.sh" psql
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -130,13 +123,9 @@ rsync -az --delete \
   "$ROOT_DIR/" "ec2-user@${EC2_IP}:/app/"
 
 echo "  Starting dashboard on EC2..."
-QUICKORDER_ENV=""
-[[ "$QUICKORDER" == "true" ]] && QUICKORDER_ENV="export NEXT_PUBLIC_ENABLE_QUICKORDER=1"
-
 ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
   set -e
   export DATABASE_URL='${DATABASE_URL}'
-  ${QUICKORDER_ENV}
   cd /app
   npm ci --prefer-offline
   npm run build

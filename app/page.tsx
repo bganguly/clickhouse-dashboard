@@ -49,7 +49,6 @@ function eventDay(raw: unknown): string | undefined {
   return new Date(tzMs).toISOString().slice(0, 10);
 }
 
-const showQuickOrder = process.env.NEXT_PUBLIC_ENABLE_QUICKORDER === "1";
 const QUICK_ORDER_URL = process.env.NEXT_PUBLIC_QUICK_ORDER_URL ?? "http://localhost:3005";
 
 export default function Dashboard() {
@@ -151,8 +150,7 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {showQuickOrder && (
-              <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
+            <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
                 <input
                   type="checkbox"
                   checked={liveEnabled}
@@ -165,7 +163,6 @@ export default function Dashboard() {
                 />
                 Live
               </label>
-            )}
             <ThemeToggle />
           </div>
         </header>
@@ -178,8 +175,8 @@ export default function Dashboard() {
           />
 
           <div className="min-w-0 flex-1">
-            <div className={`grid grid-cols-1 gap-6${showQuickOrder && liveEnabled ? " lg:grid-cols-3" : ""}`}>
-              <div className={`space-y-6${showQuickOrder && liveEnabled ? " lg:col-span-2" : ""}`}>
+            <div className={`grid grid-cols-1 gap-6${liveEnabled ? " lg:grid-cols-3" : ""}`}>
+              <div className={`space-y-6${liveEnabled ? " lg:col-span-2" : ""}`}>
                 <Chart
                   refreshSignal={refreshSignal}
                   filters={filters}
@@ -198,7 +195,7 @@ export default function Dashboard() {
                   highlightKey={lastOrder?.seq}
                 />
               </div>
-              {showQuickOrder && liveEnabled && (
+              {liveEnabled && (
                 <div className="lg:col-span-1">
                   <LiveFeed onEvent={handleEvent} />
                 </div>

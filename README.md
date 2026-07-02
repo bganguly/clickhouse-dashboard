@@ -13,7 +13,7 @@ Sister repo: [websockets-quickorder](https://github.com/bganguly/websockets-quic
 | **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS, Recharts |
 | **PostgreSQL — SQL, performance tuning** | AWS RDS PG 16; Prisma migrations; GIN trigram index; pre-aggregated summary tables; persistent `count_cache` (10-min TTL) for sub-second pagination counts on 4 M rows |
 | **IaC** | Terraform (`infra/main.tf`) — VPC, subnets, security groups, RDS PostgreSQL |
-| **CI/CD** | `deploy.sh` — single entry point: provisions AWS infra if needed, applies Prisma schema + SQL migrations, starts the app |
+| **CI/CD** | `deploy.sh` — single entry point: provisions AWS infra if needed, applies Prisma schema + SQL migrations, builds and starts the app |
 | **Real-time updates** | Server-Sent Events (`/api/stream`) — new orders pushed live to all connected dashboard tabs without polling |
 | **Networking** | AWS VPC + public subnets; RDS locked to caller IP via security group |
 | **Performance optimization** | Sub-second ILIKE via customer-id enumeration + GIN trigram index on customers; persistent `count_cache` eliminates repeat COUNT(*) scans; pre-agg tables for chart; startup warmup pre-seeds cache for first-page tokens |
@@ -54,11 +54,6 @@ Override the local DB name:
 LOCAL_DB=my_db ./scripts/local-dev.sh
 ```
 
-Enable the Live Feed panel + SSE stream (requires [websockets-quickorder](https://github.com/bganguly/websockets-quickorder) on :3005):
-```bash
-./scripts/local-dev.sh --quickorder
-```
-
 ## Deploy (AWS RDS)
 
 ```bash
@@ -67,8 +62,6 @@ Enable the Live Feed panel + SSE stream (requires [websockets-quickorder](https:
 
 For cloud — provisions AWS RDS if not up, applies schema + SQL migrations, builds and starts the
 production server (`npm run build && npm start`) on http://localhost:3004 pointed at remote RDS.
-
-Add `--quickorder` to enable the Live Feed panel and SSE stream.
 
 Prerequisites: `aws` CLI configured, `psql`, `node` 18+, `npx`.
 

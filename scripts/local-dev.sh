@@ -4,15 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# ── flags ─────────────────────────────────────────────────────────────────────
-QUICKORDER=false
-for arg in "$@"; do
-  case "$arg" in
-    --quickorder|-q) QUICKORDER=true ;;
-  esac
-done
-[[ "$QUICKORDER" == "true" ]] && export NEXT_PUBLIC_ENABLE_QUICKORDER=1
-
 # Prefer the Java backend's shared local DB if it already exists.
 # Override with LOCAL_DB to force a specific database.
 if [[ -z "${LOCAL_DB:-}" ]]; then
