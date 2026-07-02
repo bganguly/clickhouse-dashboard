@@ -37,27 +37,33 @@ Browser ──HTTP──► Next.js API routes ──Prisma──► AWS RDS PG 
 ## Local Dev
 
 ```bash
-./scripts/deploy.sh
+./scripts/local-dev.sh
 ```
 
-**This is the only supported way to start the app.** Do not run `npm run build` or `npm start`
-directly — `DATABASE_URL` must be resolved first or Prisma will error on every request.
+Fully local — no AWS required. Uses a local Postgres database (`dashboard_local` by default).
 
-`deploy.sh` does everything in one shot:
-1. Provisions AWS RDS if not already up (5-10 min for a new instance, < 2 min if existing)
-2. Applies Prisma schema (`prisma db push`)
-3. Applies all SQL migration files
-4. Builds and starts the dashboard on http://localhost:3004
+On first run: creates the database, applies schema + SQL migrations, optionally seeds 4 M demo orders,
+then starts on http://localhost:3004 with hot reload (`npm run dev`).
 
-Prerequisites: `aws` CLI configured, `psql`, `node` 18+, `npx`.
+On subsequent runs: applies any pending migrations and starts immediately.
 
-## Deploy
+Prerequisites: `node` 18+, `psql`, local Postgres running (`brew install postgresql@16`).
+
+Override the local DB name:
+```bash
+LOCAL_DB=my_db ./scripts/local-dev.sh
+```
+
+## Deploy (AWS RDS)
 
 ```bash
 ./scripts/deploy.sh
 ```
 
-Same script — deploy and local dev are identical. No separate deploy step.
+For cloud — provisions AWS RDS if not up, applies schema + SQL migrations, builds and starts the
+production server (`npm run build && npm start`) on http://localhost:3004 pointed at remote RDS.
+
+Prerequisites: `aws` CLI configured, `psql`, `node` 18+, `npx`.
 
 ---
 
