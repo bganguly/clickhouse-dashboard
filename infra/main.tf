@@ -154,7 +154,7 @@ resource "aws_security_group_rule" "pg_from_app" {
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.ec2_instance_type
-  subnet_id                   = aws_subnet.public_a.id
+  subnet_id                   = aws_subnet.public_b.id
   vpc_security_group_ids      = [aws_security_group.app.id]
   key_name                    = aws_key_pair.app.key_name
   associate_public_ip_address = true
