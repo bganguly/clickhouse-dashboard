@@ -50,9 +50,11 @@ function eventDay(raw: unknown): string | undefined {
 }
 
 const showQuickOrder = process.env.NEXT_PUBLIC_ENABLE_QUICKORDER === "1";
+const QUICK_ORDER_URL = process.env.NEXT_PUBLIC_QUICK_ORDER_URL ?? "http://localhost:3005";
 
 export default function Dashboard() {
   const [refreshSignal, setRefreshSignal] = useState(0);
+  const [liveEnabled, setLiveEnabled] = useState(false);
   const [filters, setFilters] = useState<OrderFilters>(EMPTY_FILTERS);
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
   // Active search query, lifted from SearchTable so the chart can match it.
@@ -148,7 +150,24 @@ export default function Dashboard() {
               Live aggregates, search, and event stream.
             </p>
           </div>
-          <ThemeToggle />
+          <div className="flex items-center gap-3">
+            {showQuickOrder && (
+              <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
+                <input
+                  type="checkbox"
+                  checked={liveEnabled}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setLiveEnabled(on);
+                    if (on) window.open(QUICK_ORDER_URL, "_blank");
+                  }}
+                  className="h-4 w-4 rounded border-gray-300 accent-indigo-600"
+                />
+                Live
+              </label>
+            )}
+            <ThemeToggle />
+          </div>
         </header>
 
         <div className="flex flex-col gap-6 lg:flex-row">
@@ -159,8 +178,8 @@ export default function Dashboard() {
           />
 
           <div className="min-w-0 flex-1">
-            <div className={`grid grid-cols-1 gap-6${showQuickOrder ? " lg:grid-cols-3" : ""}`}>
-              <div className={`space-y-6${showQuickOrder ? " lg:col-span-2" : ""}`}>
+            <div className={`grid grid-cols-1 gap-6${showQuickOrder && liveEnabled ? " lg:grid-cols-3" : ""}`}>
+              <div className={`space-y-6${showQuickOrder && liveEnabled ? " lg:col-span-2" : ""}`}>
                 <Chart
                   refreshSignal={refreshSignal}
                   filters={filters}
@@ -179,7 +198,7 @@ export default function Dashboard() {
                   highlightKey={lastOrder?.seq}
                 />
               </div>
-              {showQuickOrder && (
+              {showQuickOrder && liveEnabled && (
                 <div className="lg:col-span-1">
                   <LiveFeed onEvent={handleEvent} />
                 </div>
