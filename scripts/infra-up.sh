@@ -198,11 +198,15 @@ PGUSER=$DB_USER
 EOF
 
 printf '\nWrote %s (DATABASE_URL + PG* vars).\n' "$ROOT_DIR/.env.rds"
-step "7/7 Checking whether Quick Order is already running on :3005." "< 10 sec"
-if curl -fsS --max-time 2 http://localhost:3005 >/dev/null 2>&1; then
-  echo "Quick Order is already active at http://localhost:3005."
-else
-  cat <<'QUICKORDER'
+
+# When called from deploy.sh (remote flow), these local-dev hints don't apply —
+# deploy.sh drives migrations/build/start on EC2 itself and prints its own summary.
+if [[ "${INFRA_UP_CALLER:-}" != "deploy" ]]; then
+  step "7/7 Checking whether Quick Order is already running on :3005." "< 10 sec"
+  if curl -fsS --max-time 2 http://localhost:3005 >/dev/null 2>&1; then
+    echo "Quick Order is already active at http://localhost:3005."
+  else
+    cat <<'QUICKORDER'
 Quick Order is not responding on :3005.
 Start it in a separate terminal:
   cd ../websockets-quickorder
@@ -211,9 +215,9 @@ Start it in a separate terminal:
 
 Then open http://localhost:3005.
 QUICKORDER
-fi
+  fi
 
-cat <<'NEXT'
+  cat <<'NEXT'
 
 Infra is ready. Next, run these two commands:
   npm install
@@ -224,3 +228,4 @@ Then start the dashboard:
 
 Tear down (stops billing):  ./scripts/infra-down.sh
 NEXT
+fi

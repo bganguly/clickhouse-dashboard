@@ -63,7 +63,7 @@ echo "  Credentials valid."
 # ── 2. Provision EC2 + RDS ───────────────────────────────────────────────────
 echo ""
 echo "[2/3] Provisioning infra (EC2 + RDS)..."
-if ! "$ROOT_DIR/scripts/infra-up.sh"; then
+if ! INFRA_UP_CALLER=deploy "$ROOT_DIR/scripts/infra-up.sh"; then
   prompt_local_fallback "Infra provisioning failed."
   DATABASE_URL="$("$ROOT_DIR/scripts/database-url.sh")"
   export DATABASE_URL
