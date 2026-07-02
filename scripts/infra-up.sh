@@ -28,7 +28,7 @@ step() {
 }
 
 state_has() {
-  terraform state list 2>/dev/null | grep -qx "$1"
+  terraform state show "$1" >/dev/null 2>&1
 }
 
 rds_instance_status() {
@@ -76,11 +76,12 @@ recover_state_if_drifted() {
   # No backup to adopt from — import the live instance directly into state.
   if [[ "$status" == "available" || "$status" == "backing-up" || "$status" == "modifying" ]]; then
     echo "    No backup state found. Importing $DB_INSTANCE_ID into Terraform state..."
-    terraform import aws_db_instance.pg "$DB_INSTANCE_ID"
-    if state_has aws_db_instance.pg; then
-      echo "    Imported existing RDS instance — no recreation needed."
+    import_out=$(terraform import aws_db_instance.pg "$DB_INSTANCE_ID" 2>&1) && true
+    if echo "$import_out" | grep -q "already managed\|Import successful\|Import prepared"; then
+      echo "    RDS instance adopted into Terraform state."
       return
     fi
+    echo "$import_out" >&2
     echo "    Import failed. Cannot safely proceed without risking data loss." >&2
     exit 1
   fi
