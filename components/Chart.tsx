@@ -67,7 +67,7 @@ function computeCategoryTotals(data: RawAggregate[]): CategoryTotal[] {
     for (const [category, c] of Object.entries(entry.categories ?? {})) {
       const prev = map.get(category) ?? { revenue: 0, orders: 0 };
       prev.revenue += c.totalRevenue ?? 0;
-      prev.orders += c.totalRevenue ?? 0;
+      prev.orders += c.totalOrders ?? 0;
       map.set(category, prev);
     }
   }
@@ -90,9 +90,7 @@ function buildBucket(
   for (const cat of topCategories) bucket[cat] = 0;
   if (withOther) bucket[OTHER_KEY] = 0;
   for (const [category, c] of Object.entries(entry.categories ?? {})) {
-    const value = c.totalRevenue ?? 0;
-    // Non-top categories (including any backend-provided "Other"/"Others") merge
-    // into the single rolled-up "Others" series.
+    const value = c.totalOrders ?? 0;
     const key = top.has(category) ? category : withOther ? OTHER_KEY : null;
     if (key === null) continue;
     bucket[key] = (bucket[key] as number) + value;
@@ -164,10 +162,7 @@ function isoDay(d: Date): string {
 }
 
 function defaultRange(): { from: string; to: string } {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - 30);
-  return { from: isoDay(from), to: isoDay(to) };
+  return { from: "2020-01-01", to: isoDay(new Date()) };
 }
 
 export default function Chart({
