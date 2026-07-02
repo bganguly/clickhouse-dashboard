@@ -1,32 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Apply pending Prisma schema changes and SQL migrations to the existing
-# database. Does NOT reseed data. Safe to re-run (all migrations are idempotent).
+# Single entry point: provision infra if needed, apply schema + migrations,
+# then start the dashboard. Safe to re-run (all steps are idempotent).
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 "$ROOT_DIR/scripts/bootstrap-deps.sh" psql
 
-if ! DATABASE_URL="$("$ROOT_DIR/scripts/database-url.sh")"; then
-  echo "No database configured — run ./scripts/infra-up.sh first." >&2
-  exit 1
+# ── 1. Infra ──────────────────────────────────────────────────────────────────
+if ! DATABASE_URL="$("$ROOT_DIR/scripts/database-url.sh" 2>/dev/null)"; then
+  echo ""
+  echo "No database found — provisioning AWS RDS (5-10 min for a new instance)."
+  printf "Proceed? [Y/n] "
+  read -r yn
+  [[ -z "$yn" || "$yn" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+  "$ROOT_DIR/scripts/infra-up.sh"
+  DATABASE_URL="$("$ROOT_DIR/scripts/database-url.sh")"
 fi
 export DATABASE_URL
-
 echo ""
-echo "[1/2] Applying Prisma schema (prisma db push)..."
+echo "[1/3] Infra ready. DATABASE_URL resolved."
+
+# ── 2. Schema + migrations ────────────────────────────────────────────────────
+echo ""
+echo "[2/3] Applying Prisma schema..."
 npx prisma db push
 echo "      Schema up to date."
 
 echo ""
-echo "[2/2] Applying SQL migration files..."
+echo "      Applying SQL migration files..."
 while IFS= read -r migration; do
-  printf '      applying %s\n' "${migration#"$ROOT_DIR"/}"
+  printf '      %s\n' "${migration#"$ROOT_DIR"/}"
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
 done < <(find "$ROOT_DIR/prisma/migrations" -maxdepth 2 -name migration.sql -print | sort)
 echo "      Migrations applied."
 
+# ── 3. Dashboard ──────────────────────────────────────────────────────────────
 echo ""
-echo "Done. Start the dashboard with: ./scripts/start-dashboard.sh"
+echo "[3/3] Starting dashboard on http://localhost:3004 ..."
+npm run dev
