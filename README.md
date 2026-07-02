@@ -74,12 +74,27 @@ Prerequisites: `aws` CLI configured, `psql`, `node` 18+, `npx`.
 
 ---
 
-## Quick Test — local
+## Live Service
+
+| | URL |
+|---|---|
+| **Dashboard** | http://localhost:3004 (local) / `http://<ec2-ip>:3004` (deployed) |
+
+### Quick test — local
 
 ```bash
 curl "http://localhost:3004/api/orders?page=1&pageSize=3" | jq .total
 curl "http://localhost:3004/api/orders?q=sara+frank&page=1&pageSize=3" | jq '.data[].customer'
 curl "http://localhost:3004/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
+```
+
+### Quick test — deployed
+
+```bash
+BASE=http://<ec2-ip>:3004   # address printed by deploy.sh after infra is up
+curl "$BASE/api/orders?page=1&pageSize=3" | jq .total
+curl "$BASE/api/orders?q=sara+frank&page=1&pageSize=3" | jq '.data[].customer'
+curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
 ```
 
 ---
@@ -136,7 +151,8 @@ local machine
        ├─ database-url.sh → resolve DATABASE_URL (or run infra-up.sh)
        ├─ prisma db push   → sync schema to RDS
        ├─ psql migration.sql × N  → apply SQL migration files
-       └─ npm run dev      → start Next.js on :3004
+       ├─ npm run build
+       └─ npm start        → start Next.js on :3004
 
 Real-time flow (SSE)
 ────────────────────
