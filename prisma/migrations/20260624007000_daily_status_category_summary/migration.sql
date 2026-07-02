@@ -18,6 +18,11 @@ CREATE INDEX IF NOT EXISTS "daily_status_category_summary_status_date_category_c
   ON "daily_status_category_summary" (status, date, "categoryName")
   INCLUDE ("totalOrders", "totalItems", "totalRevenue");
 
+ALTER TABLE "daily_status_category_summary"
+  ADD COLUMN IF NOT EXISTS "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP;
+UPDATE "daily_status_category_summary"
+  SET "updatedAt" = CURRENT_TIMESTAMP WHERE "updatedAt" IS NULL;
+
 INSERT INTO "daily_status_category_summary" (
   "date",
   "status",
@@ -25,7 +30,9 @@ INSERT INTO "daily_status_category_summary" (
   "categoryName",
   "totalOrders",
   "totalRevenue",
-  "totalItems"
+  "totalItems",
+  "createdAt",
+  "updatedAt"
 )
 SELECT
   "date",
@@ -34,7 +41,9 @@ SELECT
   "categoryName",
   SUM("totalOrders")::integer,
   SUM("totalRevenue"),
-  SUM("totalItems")::integer
+  SUM("totalItems")::integer,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
 FROM "daily_filter_category_summary"
 GROUP BY
   "date",
