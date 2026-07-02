@@ -39,5 +39,6 @@ echo "      Migrations applied."
 
 # ── 3. Dashboard ──────────────────────────────────────────────────────────────
 echo ""
-echo "[3/3] Starting dashboard on http://localhost:3004 ..."
-npm run dev
+echo "[3/3] Building and starting dashboard on http://localhost:3004 ..."
+npm run build
+npm start
