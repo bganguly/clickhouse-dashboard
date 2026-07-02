@@ -95,6 +95,11 @@ fi
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i $SSH_KEY"
 
+# Load the key into ssh-agent once so passphrase is only entered once (if at all).
+if ! ssh-add -l 2>/dev/null | grep -qF "$SSH_KEY"; then
+  ssh-add "$SSH_KEY" || { echo "  ssh-add failed. Ensure ssh-agent is running or the key is unencrypted."; exit 1; }
+fi
+
 # ── 3. Apply migrations (local → RDS), then deploy to EC2 ────────────────────
 echo ""
 echo "[3/3] Deploying to EC2 at ${EC2_IP}..."
