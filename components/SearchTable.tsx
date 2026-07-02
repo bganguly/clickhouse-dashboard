@@ -103,7 +103,7 @@ interface ColumnDef {
 }
 
 const COLUMNS: ColumnDef[] = [
-  { key: "id", label: "ID", render: (r) => formatCell(r.id) },
+  { key: "id", label: "ID", sortKey: "id", render: (r) => formatCell(r.id) },
   { key: "customer", label: "Customer", sortKey: "customer", render: renderCustomer },
   { key: "items", label: "Items", numeric: true, render: renderItems },
   { key: "total", label: "Total", numeric: true, sortKey: "total", render: renderTotal },
@@ -152,8 +152,8 @@ export default function SearchTable({
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
   const [approximate, setApproximate] = useState(false);
-  const [sort, setSort] = useState<string>("");
-  const [dir, setDir] = useState<SortDir>("asc");
+  const [sort, setSort] = useState<string>("placedAt");
+  const [dir, setDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

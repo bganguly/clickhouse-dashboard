@@ -60,6 +60,7 @@ const ORDER_BY: Record<OrderSortField, (dir: SortDir) => Prisma.OrderOrderByWith
   total: (dir) => [{ total: dir }, { placedAt: "desc" }, { id: "desc" }],
   status: (dir) => [{ status: dir }, { placedAt: "desc" }, { id: "desc" }],
   customer: (dir) => [{ customer: { lastName: dir } }, { placedAt: "desc" }, { id: "desc" }],
+  id: (dir) => [{ id: dir }],
 };
 
 // Raw-SQL sort expressions for the search/filter path. Keyed by the validated
@@ -70,6 +71,7 @@ const SORT_SQL: Record<OrderSortField, string> = {
   total: "o.total",
   status: "o.status",
   customer: 'c."lastName"',
+  id: "o.id",
 };
 
 function normalizeSort(sort: string | null | undefined): OrderSortField {

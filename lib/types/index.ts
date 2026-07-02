@@ -66,7 +66,7 @@ export interface OrderDTO {
 export type SortDir = "asc" | "desc";
 
 /** Fields the orders list may be sorted by (server-side only). */
-export type OrderSortField = "placedAt" | "total" | "status" | "customer";
+export type OrderSortField = "placedAt" | "total" | "status" | "customer" | "id";
 
 /** Filters that narrow the orders list. All combine (AND) with `q`, sort, paging. */
 export interface OrderFilterInput {
