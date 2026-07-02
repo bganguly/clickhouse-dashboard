@@ -148,7 +148,7 @@ resource "aws_security_group_rule" "pg_from_app" {
   protocol                 = "tcp"
   source_security_group_id = aws_security_group.app.id
   security_group_id        = aws_security_group.pg.id
-  description              = "EC2 app server → Postgres"
+  description              = "EC2 app server -> Postgres"
 }
 
 resource "aws_instance" "app" {
