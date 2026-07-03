@@ -80,6 +80,7 @@ model Order {
   total      Decimal     @db.Decimal(12, 2)
   currency   String      @default("USD") @db.VarChar(3)
   notes      String?
+  searchText String?     @map("search_text")
   placedAt   DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
   items      OrderItem[]
@@ -136,6 +137,18 @@ model OrderCategoryFact {
   @@index([regionCode, date, status, orderTotal])
   @@index([regionCode, status, date, orderTotal, categoryName])
   @@map("order_category_facts")
+}
+
+model OrderEvent {
+  id          Int       @id @default(autoincrement())
+  orderId     Int
+  processedAt DateTime?
+  attempts    Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([orderId])
+  @@map("order_events")
 }
 
 model DailySummary {

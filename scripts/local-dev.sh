@@ -132,4 +132,5 @@ fi
 # ── start ─────────────────────────────────────────────────────────────────────
 printf '\n=== starting dashboard :3004 (local Postgres: %s) ===\n' "$DATABASE_URL"
 export DATABASE_URL
+"$ROOT_DIR/scripts/start-aggregates-worker.sh"
 npm run dev

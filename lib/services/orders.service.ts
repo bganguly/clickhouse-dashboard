@@ -16,33 +16,11 @@ import type {
   SortDir,
 } from "@/lib/types";
 import { publishOrderEvent } from "./stream.service";
-import {
-  updateDailyCustomerCategorySummary,
-  updateDailyCustomerTokenCategoryRollup,
-  updateDailyCustomerTokenCategorySummary,
-  updateDailyCustomerTokenOrderSummary,
-  updateDailyFilterCategorySummary,
-  updateDailySummary,
-  updateDailyStatusCategorySummary,
-  updateOrderCategoryFacts,
-} from "./aggregates.service";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_SORT: OrderSortField = "placedAt";
 const DEFAULT_DIR: SortDir = "desc";
-
-// Stop counting matches at this bound; a broad result reports an approximate
-// total/totalPages instead of paying for an exact count over millions of rows.
-const COUNT_CAP = 10_000;
-// Max customers we enumerate for the `customerId = ANY(ids)` text plan. Above
-// this a query is dense enough (for example "frank") that materializing and
-// sorting all matching order ids is slower than walking the sort index and
-// testing the text predicate as rows are encountered.
-const TEXT_MATCH_CAP = 5_000;
-// Upper bound on rows scanned for facet counts.
-const FACET_CAP = 50_000;
-const TEXT_PROBE_TTL_MS = 60_000;
 
 const ORDER_STATUSES: readonly OrderStatus[] = [
   "PENDING",
@@ -54,18 +32,8 @@ const ORDER_STATUSES: readonly OrderStatus[] = [
   "REFUNDED",
 ];
 
-/** Prisma orderBy clauses for the unfiltered path. */
-const ORDER_BY: Record<OrderSortField, (dir: SortDir) => Prisma.OrderOrderByWithRelationInput[]> = {
-  placedAt: (dir) => [{ placedAt: dir }, { id: dir }],
-  total: (dir) => [{ total: dir }, { placedAt: "desc" }, { id: "desc" }],
-  status: (dir) => [{ status: dir }, { placedAt: "desc" }, { id: "desc" }],
-  customer: (dir) => [{ customer: { lastName: dir } }, { placedAt: "desc" }, { id: "desc" }],
-  id: (dir) => [{ id: dir }],
-};
-
-// Raw-SQL sort expressions for the search/filter path. Keyed by the validated
-// whitelist, so these fragments are never attacker-controlled. `customer`
-// requires the customers join (see pageNeedsJoin).
+// Raw-SQL sort expressions, also the sort-field whitelist. `customer` requires
+// the customers join (see listOrders).
 const SORT_SQL: Record<OrderSortField, string> = {
   placedAt: 'o."placedAt"',
   total: "o.total",
@@ -75,16 +43,11 @@ const SORT_SQL: Record<OrderSortField, string> = {
 };
 
 function normalizeSort(sort: string | null | undefined): OrderSortField {
-  return sort != null && sort in ORDER_BY ? (sort as OrderSortField) : DEFAULT_SORT;
+  return sort != null && sort in SORT_SQL ? (sort as OrderSortField) : DEFAULT_SORT;
 }
 
 function normalizeDir(dir: string | null | undefined): SortDir {
   return dir === "asc" || dir === "desc" ? dir : DEFAULT_DIR;
-}
-
-function searchToken(q: string | null | undefined): string | null {
-  const token = q?.trim().toLowerCase();
-  return token && /^[a-z0-9._@-]+$/.test(token) ? token : null;
 }
 
 /** Strip LIKE/ILIKE wildcards so user input is matched literally. */
@@ -92,123 +55,16 @@ export function escapeLike(input: string): string {
   return input.replace(/[%_]/g, "");
 }
 
-export interface TextProbe {
-  pattern: string;
-  token: string | null;
-  tokenOrderReady: boolean;
-  customerRows: { id: number }[];
-  notesHaveMatches: boolean;
-}
-
-export interface TokenProbe {
-  token: string | null;
-  tokenOrderReady: boolean;
-  notesHaveMatches: boolean;
-}
-
-const textProbeCache = new Map<string, { expiresAt: number; promise: Promise<TextProbe> }>();
-const noteProbeCache = new Map<string, { expiresAt: number; promise: Promise<boolean> }>();
-const tokenProbeCache = new Map<string, { expiresAt: number; promise: Promise<TokenProbe> }>();
-
-function clearTextProbeCaches(): void {
-  textProbeCache.clear();
-  noteProbeCache.clear();
-  tokenProbeCache.clear();
-}
-
-export function getNotesHaveMatches(q: string): Promise<boolean> {
-  const text = q.trim();
-  const key = text.toLowerCase();
-  const now = Date.now();
-  const cached = noteProbeCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.promise;
-
-  const pattern = `%${escapeLike(text)}%`;
-  const promise = prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-    SELECT id FROM orders WHERE notes ILIKE ${pattern} LIMIT 1`).then((rows) => rows.length > 0);
-
-  noteProbeCache.set(key, { expiresAt: now + TEXT_PROBE_TTL_MS, promise });
-  promise.catch(() => noteProbeCache.delete(key));
-  return promise;
-}
-
-export function getTextProbe(q: string): Promise<TextProbe> {
-  const text = q.trim();
-  const key = text.toLowerCase();
-  const now = Date.now();
-  const cached = textProbeCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.promise;
-
-  const pattern = `%${escapeLike(text)}%`;
-  const token = searchToken(text);
-  const promise = Promise.all([
-    token
-      ? prisma.$queryRaw<{ ready: boolean }[]>(Prisma.sql`
-          SELECT EXISTS (
-            SELECT 1
-            FROM daily_customer_token_order_summary
-            WHERE token = ${token}
-            LIMIT 1
-          ) AND EXISTS (
-            SELECT 1
-            FROM customers
-            WHERE lower("firstName") = ${token}
-               OR lower("lastName") = ${token}
-            LIMIT 1
-          ) AS ready`)
-      : Promise.resolve([{ ready: false }]),
-    prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-      SELECT id FROM customers
-      WHERE ("firstName" || ' ' || "lastName") ILIKE ${pattern}
-      LIMIT ${TEXT_MATCH_CAP + 1}`),
-    getNotesHaveMatches(text),
-  ]).then(([tokenReady, customerRows, notesHaveMatches]) => ({
-    pattern,
-    token,
-    tokenOrderReady: Boolean(tokenReady[0]?.ready),
-    customerRows,
-    notesHaveMatches,
-  }));
-
-  textProbeCache.set(key, { expiresAt: now + TEXT_PROBE_TTL_MS, promise });
-  promise.catch(() => textProbeCache.delete(key));
-  return promise;
-}
-
-export function getTokenProbe(q: string): Promise<TokenProbe> {
-  const text = q.trim();
-  const key = text.toLowerCase();
-  const now = Date.now();
-  const cached = tokenProbeCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.promise;
-
-  const token = searchToken(text);
-  const promise = Promise.all([
-    token
-      ? prisma.$queryRaw<{ ready: boolean }[]>(Prisma.sql`
-          SELECT EXISTS (
-            SELECT 1
-            FROM daily_customer_token_order_summary
-            WHERE token = ${token}
-            LIMIT 1
-          ) AND EXISTS (
-            SELECT 1
-            FROM customers
-            WHERE lower("firstName") = ${token}
-               OR lower("lastName") = ${token}
-            LIMIT 1
-          ) AS ready`)
-      : Promise.resolve([{ ready: false }]),
-    getNotesHaveMatches(text),
-  ]).then(([tokenReady, notesHaveMatches]) => ({
-    token,
-    tokenOrderReady: Boolean(tokenReady[0]?.ready),
-    notesHaveMatches,
-  }));
-
-  tokenProbeCache.set(key, { expiresAt: now + TEXT_PROBE_TTL_MS, promise });
-  promise.catch(() => tokenProbeCache.delete(key));
-  return promise;
+/** Per-token ILIKE conditions against the denormalized search_text column.
+ *  Mirrors GCP OrderService.buildWhere's tokenization: split q on
+ *  whitespace, AND one `o.search_text ILIKE` clause per token. */
+export function buildSearchTextConditions(q: string | null | undefined): Prisma.Sql[] {
+  const text = q?.trim();
+  if (!text) return [];
+  return text
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => Prisma.sql`o.search_text ILIKE ${`%${escapeLike(token)}%`}`);
 }
 
 // ---------- Filters ----------
@@ -318,145 +174,6 @@ function whereClause(conds: Prisma.Sql[]): Prisma.Sql {
   return conds.length ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}` : Prisma.empty;
 }
 
-export interface TextSearchSql {
-  /** Escaped ILIKE pattern for the text query. */
-  pattern: string;
-  /** Join that restricts `orders o` to matching text rows. Empty for broad text. */
-  matchJoin: Prisma.Sql;
-  /** Extra WHERE condition for broad text searches. Null for indexed id joins. */
-  condition: Prisma.Sql | null;
-  /** Whether the caller must join `customers c` because `condition` references it. */
-  needsCustomerJoin: boolean;
-  /** True when the customer side can use exact token equality instead of substring matching. */
-  exactCustomerToken: boolean;
-  /** True when both customer text and order notes have no matches. */
-  noMatches: boolean;
-}
-
-/**
- * Build an index-friendly text search plan shared by the list and aggregate
- * endpoints. For selective customer matches, avoid `customerId = ANY(...) OR
- * notes ILIKE ...` on the orders table; that OR can collapse into a slow scan.
- * Instead, union indexed customer-id matches with indexed notes matches, then
- * join orders by id.
- */
-export async function buildTextSearchSql(q: string | null | undefined): Promise<TextSearchSql | null> {
-  const text = q?.trim();
-  if (!text) return null;
-
-  const tokenProbe = await getTokenProbe(text);
-  if (tokenProbe.token && tokenProbe.tokenOrderReady) {
-    const pattern = `%${escapeLike(text)}%`;
-    const noteCondition = tokenProbe.notesHaveMatches
-      ? Prisma.sql`OR o.notes ILIKE ${pattern}`
-      : Prisma.empty;
-    return {
-      pattern,
-      matchJoin: Prisma.empty,
-      condition: Prisma.sql`(
-        lower(c."firstName") = ${tokenProbe.token}
-        OR lower(c."lastName") = ${tokenProbe.token}
-        ${noteCondition}
-      )`,
-      needsCustomerJoin: true,
-      exactCustomerToken: true,
-      noMatches: false,
-    };
-  }
-  if (/^\d+$/.test(text) && tokenProbe.notesHaveMatches) {
-    const pattern = `%${escapeLike(text)}%`;
-    return {
-      pattern,
-      matchJoin: Prisma.empty,
-      condition: Prisma.sql`o.notes ILIKE ${pattern}`,
-      needsCustomerJoin: false,
-      exactCustomerToken: false,
-      noMatches: false,
-    };
-  }
-
-  const {
-    pattern,
-    token,
-    tokenOrderReady,
-    customerRows: custRows,
-    notesHaveMatches,
-  } = await getTextProbe(text);
-
-  if (token && tokenOrderReady) {
-      const noteCondition = notesHaveMatches
-        ? Prisma.sql`OR o.notes ILIKE ${pattern}`
-        : Prisma.empty;
-      return {
-        pattern,
-        matchJoin: Prisma.empty,
-        condition: Prisma.sql`(
-          lower(c."firstName") = ${token}
-          OR lower(c."lastName") = ${token}
-          ${noteCondition}
-        )`,
-        needsCustomerJoin: true,
-        exactCustomerToken: true,
-        noMatches: false,
-      };
-  }
-
-  if (custRows.length > TEXT_MATCH_CAP) {
-    const noteCondition = notesHaveMatches ? Prisma.sql`OR o.notes ILIKE ${pattern}` : Prisma.empty;
-    return {
-      pattern,
-      matchJoin: Prisma.empty,
-      condition: Prisma.sql`((c."firstName" || ' ' || c."lastName") ILIKE ${pattern} ${noteCondition})`,
-      needsCustomerJoin: true,
-      exactCustomerToken: false,
-      noMatches: false,
-    };
-  }
-
-  const customerIds = custRows.map((r) => r.id);
-  if (customerIds.length === 0 && notesHaveMatches) {
-    return {
-      pattern,
-      matchJoin: Prisma.empty,
-      condition: Prisma.sql`o.notes ILIKE ${pattern}`,
-      needsCustomerJoin: false,
-      exactCustomerToken: false,
-      noMatches: false,
-    };
-  }
-
-  if (customerIds.length === 0 && !notesHaveMatches) {
-    return {
-      pattern,
-      matchJoin: Prisma.empty,
-      condition: null,
-      needsCustomerJoin: false,
-      exactCustomerToken: false,
-      noMatches: true,
-    };
-  }
-
-  const customerMatches = customerIds.length
-    ? Prisma.sql`SELECT id FROM orders WHERE "customerId" = ANY(${customerIds})`
-    : Prisma.sql`SELECT id FROM orders WHERE false`;
-  const noteMatches = notesHaveMatches
-    ? Prisma.sql`UNION SELECT id FROM orders WHERE notes ILIKE ${pattern}`
-    : Prisma.empty;
-
-  return {
-    pattern,
-    matchJoin: Prisma.sql`
-      JOIN (
-        ${customerMatches}
-        ${noteMatches}
-      ) text_match ON text_match.id = o.id`,
-    condition: null,
-    needsCustomerJoin: false,
-    exactCustomerToken: false,
-    noMatches: false,
-  };
-}
-
 // ---------- List ----------
 
 export async function listOrders(input: OrderListInput): Promise<OrderListResult> {
@@ -472,60 +189,14 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
 
   try {
     const filters = await resolveFilters(input);
-
-    // --- Unfiltered path: every sort field is B-tree indexed, so Prisma's
-    // index-backed findMany + exact count is fast even at deep offsets.
-    if (!q && !filters.hasAny) {
-      const orderBy = ORDER_BY[sort](dir);
-      const [idRows, total] = await Promise.all([
-        prisma.order.findMany({ skip: offset, take: pageSize, orderBy, select: { id: true } }),
-        prisma.order.count(),
-      ]);
-      const data = await hydrateOrders(idRows.map((r) => r.id));
-      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
-      const result: OrderListResult = {
-        data,
-        page,
-        pageSize,
-        total,
-        totalPages,
-        approximate: false,
-      };
-      if (input.facets) result.facets = await computeFacets(Prisma.empty, Prisma.empty);
-      return result;
-    }
-
-    // --- Search / filter path (raw SQL so the trgm + B-tree indexes apply and
-    // the count stays capped).
-    const filterConds = buildFilterConditions(filters);
-    const customerJoin = Prisma.sql`JOIN customers c ON c.id = o."customerId"`;
-
-    const textSearch = await buildTextSearchSql(q);
-    if (textSearch?.noMatches) {
-      const result: OrderListResult = {
-        data: [],
-        page,
-        pageSize,
-        total: 0,
-        totalPages: 0,
-        approximate: false,
-      };
-      if (input.facets) result.facets = { status: [], region: [], approximate: false };
-      return result;
-    }
-
-    const conds = [...(textSearch?.condition ? [textSearch.condition] : []), ...filterConds];
+    const conds = [...buildSearchTextConditions(q), ...buildFilterConditions(filters)];
     const whereSql = whereClause(conds);
-    const searchJoin = textSearch?.matchJoin ?? Prisma.empty;
-    // The customers join is needed wherever the predicate/sort references `c`.
-    const filterWhereJoin = textSearch?.needsCustomerJoin ? customerJoin : searchJoin;
 
-    // Is the result bounded by selective filters alone (regardless of q breadth)?
-    const filterBounded =
-      filters.hasAny &&
-      filterConds.length > 0 &&
-      (await cappedCount(Prisma.empty, whereClause(filterConds))) <=
-        COUNT_CAP;
+    // Customer join is needed ONLY for sort=customer — search_text already
+    // carries the customer's name, so text search never needs to touch
+    // `customers` at all.
+    const customerJoin =
+      sort === "customer" ? Prisma.sql`JOIN customers c ON c.id = o."customerId"` : Prisma.empty;
 
     const sortSql = Prisma.raw(SORT_SQL[sort]);
     const dirSql = Prisma.raw(dir === "asc" ? "ASC" : "DESC");
@@ -533,99 +204,24 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       sort === "placedAt"
         ? Prisma.raw(`o.id ${dir === "asc" ? "ASC" : "DESC"}`)
         : Prisma.raw('o."placedAt" DESC, o.id DESC');
-    const tiebreakerAliasSql =
-      sort === "placedAt"
-        ? Prisma.raw(`id ${dir === "asc" ? "ASC" : "DESC"}`)
-        : Prisma.raw("placed_at DESC, id DESC");
 
-    // The sort-index walk only short-circuits when the matching set is large,
-    // dense, and aligned to the sort. Otherwise filter-first (materialize the
-    // matches, then sort) so a sparse/customer-sorted result stays fast.
-    const selectiveText = Boolean(q) && !textSearch?.needsCustomerJoin;
-    const useWalk = sort !== "customer" && !selectiveText && !filterBounded;
-
-    const pageJoin =
-      textSearch?.needsCustomerJoin || sort === "customer" ? customerJoin : Prisma.empty;
-    const baseJoin = Prisma.sql`${searchJoin} ${pageJoin}`;
-    const andFilterSql = filterConds.length
-      ? Prisma.sql`AND ${Prisma.join(filterConds, " AND ")}`
-      : Prisma.empty;
-    const candidateLimit = offset + pageSize;
-    const noteCandidates =
-      q && q.length >= 3 && textSearch?.needsCustomerJoin
-        ? Prisma.sql`
-            UNION
-            SELECT id, sortkey, placed_at FROM (
-              SELECT o.id AS id, ${sortSql} AS sortkey, o."placedAt" AS placed_at
-              FROM orders o
-              WHERE o.notes ILIKE ${textSearch.pattern}
-              ${andFilterSql}
-              ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
-              LIMIT ${candidateLimit}
-            ) note_candidates`
-        : Prisma.empty;
-
-    const pageQuery = textSearch?.exactCustomerToken && sort !== "customer"
-      ? Prisma.sql`
-          SELECT o.id
-          FROM orders o
-          JOIN customers c ON c.id = o."customerId"
-          ${whereSql}
-          ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
-          LIMIT ${pageSize} OFFSET ${offset}`
-      : textSearch?.needsCustomerJoin && sort !== "customer"
-      ? Prisma.sql`
-          WITH candidates AS (
-            SELECT id, sortkey, placed_at FROM (
-              SELECT o.id AS id, ${sortSql} AS sortkey, o."placedAt" AS placed_at
-              FROM orders o
-              JOIN customers c ON c.id = o."customerId"
-              WHERE (c."firstName" || ' ' || c."lastName") ILIKE ${textSearch.pattern}
-              ${andFilterSql}
-              ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
-              LIMIT ${candidateLimit}
-            ) customer_candidates
-            ${noteCandidates}
-          )
-          SELECT id FROM candidates
-          ORDER BY sortkey ${dirSql}, ${tiebreakerAliasSql}
-          LIMIT ${pageSize} OFFSET ${offset}`
-      : useWalk
-      ? Prisma.sql`
-          SELECT o.id
-          FROM orders o ${baseJoin}
-          ${whereSql}
-          ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
-          LIMIT ${pageSize} OFFSET ${offset}`
-      : Prisma.sql`
-          WITH m AS MATERIALIZED (
-            SELECT o.id AS id, ${sortSql} AS sortkey, o."placedAt" AS placed_at
-            FROM orders o ${baseJoin}
-            ${whereSql}
-          )
-          SELECT id FROM m ORDER BY sortkey ${dirSql}, ${tiebreakerAliasSql}
-          LIMIT ${pageSize} OFFSET ${offset}`;
+    const pageQuery = Prisma.sql`
+      SELECT o.id
+      FROM orders o ${customerJoin}
+      ${whereSql}
+      ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
+      LIMIT ${pageSize} OFFSET ${offset}`;
 
     const cacheKey = buildCountCacheKey(q, filters);
-    const countPromise =
-      q && textSearch?.needsCustomerJoin
-        ? tokenOrderSummaryCount(q, filters).then((count) =>
-            count !== null ? count : cachedCount(cacheKey, () => exactBroadTextCount(q, filterConds)),
-          )
-        : cachedCount(cacheKey, () => exactCount(filterWhereJoin, whereSql));
-
-    const [idRows, counted] = await Promise.all([
+    const [idRows, total] = await Promise.all([
       prisma.$queryRaw<{ id: number }[]>(pageQuery),
-      countPromise,
+      cachedCount(cacheKey, () => exactCount(whereSql)),
     ]);
 
-    const approximate = false;
-    const total = counted;
-    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
     const data = await hydrateOrders(idRows.map((r) => r.id));
-
-    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate };
-    if (input.facets) result.facets = await computeFacets(filterWhereJoin, whereSql);
+    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate: false };
+    if (input.facets) result.facets = await computeFacets(whereSql);
     return result;
   } catch (err) {
     mapDbError(err, "listOrders");
@@ -644,12 +240,14 @@ function buildCountCacheKey(q: string | undefined, filters: ResolvedFilters): st
   ].join("&");
 }
 
+/** Exact-count cache, keyed by the full filter signature. 30-day TTL, fail-open
+ *  (a cache read/write failure never breaks a search — it just recomputes). */
 async function cachedCount(cacheKey: string, compute: () => Promise<number>): Promise<number> {
   try {
     const hit = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
       SELECT total FROM count_cache
       WHERE cache_key = ${cacheKey}
-        AND cached_at > NOW() - INTERVAL '10 minutes'
+        AND cached_at > NOW() - INTERVAL '30 days'
       LIMIT 1`);
     if (hit.length > 0) return Number(hit[0].total);
   } catch {}
@@ -662,112 +260,22 @@ async function cachedCount(cacheKey: string, compute: () => Promise<number>): Pr
   return total;
 }
 
-/** exact count for pagination bounds; page fetching stays separately optimized. */
-async function exactCount(join: Prisma.Sql, whereSql: Prisma.Sql): Promise<number> {
+/** Exact count for pagination bounds — every case goes through the same query. */
+async function exactCount(whereSql: Prisma.Sql): Promise<number> {
   const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
     SELECT count(*)::bigint AS count
-    FROM orders o ${join} ${whereSql}`);
-  return Number(rows[0]?.count ?? 0);
-}
-
-async function tokenOrderSummaryCount(
-  q: string,
-  filters: ResolvedFilters,
-): Promise<number | null> {
-  if (filters.minTotal !== null || filters.maxTotal !== null) return null;
-
-  const token = searchToken(q);
-  if (!token) return null;
-
-  const probe = await getTextProbe(q);
-  if (!probe.tokenOrderReady) return null;
-
-  const conds: Prisma.Sql[] = [Prisma.sql`token = ${token}`];
-  if (filters.from) conds.push(Prisma.sql`date >= ${filters.from}::date`);
-  if (filters.to) conds.push(Prisma.sql`date <= ${filters.to}::date`);
-  if (filters.statuses.length) {
-    conds.push(Prisma.sql`status = ANY(${filters.statuses}::text[]::"OrderStatus"[])`);
-  }
-  if (filters.regionIds !== null) {
-    conds.push(Prisma.sql`"regionId" = ANY(${filters.regionIds})`);
-  }
-
-  const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
-    SELECT coalesce(sum("totalOrders"), 0)::bigint AS count
-    FROM daily_customer_token_order_summary
-    WHERE ${Prisma.join(conds, " AND ")}`);
-  const tokenCount = Number(rows[0]?.count ?? 0);
-  if (!probe.notesHaveMatches) return tokenCount;
-
-  const filterConds = buildFilterConditions(filters);
-  const andFilters = filterConds.length
-    ? Prisma.sql`AND ${Prisma.join(filterConds, " AND ")}`
-    : Prisma.empty;
-  const noteRows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
-    SELECT count(*)::bigint AS count
-    FROM orders o
-    JOIN customers c ON c.id = o."customerId"
-    WHERE o.notes ILIKE ${probe.pattern}
-      AND NOT (
-        lower(c."firstName") = ${token}
-        OR lower(c."lastName") = ${token}
-      )
-      ${andFilters}`);
-  return tokenCount + Number(noteRows[0]?.count ?? 0);
-}
-
-async function exactBroadTextCount(q: string, filterConds: Prisma.Sql[]): Promise<number> {
-  const pattern = `%${escapeLike(q)}%`;
-  const custRows = await prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-    SELECT id FROM customers
-    WHERE ("firstName" || ' ' || "lastName") ILIKE ${pattern}`);
-  const customerIds = custRows.map((r) => r.id);
-  const andFilters = filterConds.length
-    ? Prisma.sql`AND ${Prisma.join(filterConds, " AND ")}`
-    : Prisma.empty;
-  const customerMatches = customerIds.length
-    ? Prisma.sql`
-        SELECT o.id
-        FROM unnest(${customerIds}::int[]) AS matched_customer(id)
-        JOIN orders o ON o."customerId" = matched_customer.id
-        ${andFilters}`
-    : Prisma.sql`SELECT id FROM orders WHERE false`;
-  const noteMatches =
-    q.length >= 3
-      ? Prisma.sql`
-          UNION
-          SELECT o.id
-          FROM orders o
-          WHERE o.notes ILIKE ${pattern}
-          ${andFilters}`
-      : Prisma.empty;
-
-  const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
-    SELECT count(*)::bigint AS count
-    FROM (
-      ${customerMatches}
-      ${noteMatches}
-    ) matches`);
-  return Number(rows[0]?.count ?? 0);
-}
-
-/** count(*) over the filter, bounded by COUNT_CAP + 1 so it never scans millions. */
-async function cappedCount(join: Prisma.Sql, whereSql: Prisma.Sql): Promise<number> {
-  const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
-    SELECT count(*)::bigint AS count FROM (
-      SELECT 1 FROM orders o ${join} ${whereSql} LIMIT ${COUNT_CAP + 1}
-    ) capped`);
+    FROM orders o ${whereSql}`);
   return Number(rows[0]?.count ?? 0);
 }
 
 /**
  * Sidebar facet counts (per status, per region) for the current filter set.
- * Bounded by FACET_CAP rows; `approximate` is set when the set is larger.
+ * Always exact — no cap.
  */
-async function computeFacets(join: Prisma.Sql, whereSql: Prisma.Sql): Promise<OrderFacets> {
+async function computeFacets(whereSql: Prisma.Sql): Promise<OrderFacets> {
   const rows = await prisma.$queryRaw<{ dim: string; key: string | null; n: bigint }[]>(Prisma.sql`
     WITH base AS (
-      SELECT o.status, o."regionId" FROM orders o ${join} ${whereSql} LIMIT ${FACET_CAP + 1}
+      SELECT o.status, o."regionId" FROM orders o ${whereSql}
     )
     SELECT 'status' AS dim, status::text AS key, count(*)::bigint AS n FROM base GROUP BY status
     UNION ALL
@@ -775,12 +283,10 @@ async function computeFacets(join: Prisma.Sql, whereSql: Prisma.Sql): Promise<Or
 
   const status: FacetCount[] = [];
   const regionCount = new Map<number, number>();
-  let baseSize = 0;
   for (const r of rows) {
     const n = Number(r.n);
     if (r.dim === "status") {
       status.push({ value: r.key ?? "UNKNOWN", count: n });
-      baseSize += n; // every order has a status, so this sums to |base|
     } else if (r.key != null) {
       regionCount.set(Number(r.key), n);
     }
@@ -798,7 +304,7 @@ async function computeFacets(join: Prisma.Sql, whereSql: Prisma.Sql): Promise<Or
 
   status.sort((a, b) => b.count - a.count);
   region.sort((a, b) => b.count - a.count);
-  return { status, region, approximate: baseSize > FACET_CAP };
+  return { status, region, approximate: false };
 }
 
 /** Load full order DTOs for the given ids, preserving the id ordering. */
@@ -895,17 +401,13 @@ void (process.env.DATABASE_URL && (async () => {
       const key = `q=${token}&status=&regionIds=&from=&to=&minTotal=&maxTotal=`;
       const hit = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
         SELECT total FROM count_cache
-        WHERE cache_key = ${key} AND cached_at > NOW() - INTERVAL '10 minutes'
+        WHERE cache_key = ${key} AND cached_at > NOW() - INTERVAL '30 days'
         LIMIT 1`).catch(() => [] as { total: bigint }[]);
       if (hit.length > 0) continue;
+
       const pattern = `%${token}%`;
-      const custRows = await prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-        SELECT id FROM customers
-        WHERE ("firstName" || ' ' || "lastName") ILIKE ${pattern}`).catch(() => [] as { id: number }[]);
-      if (!custRows.length) continue;
-      const ids = custRows.map((r) => r.id);
       const result = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
-        SELECT count(*)::bigint AS count FROM orders WHERE "customerId" = ANY(${ids}::int[])`
+        SELECT count(*)::bigint AS count FROM orders o WHERE o.search_text ILIKE ${pattern}`
       ).catch(() => null);
       if (!result) continue;
       const total = Number(result[0]?.count ?? 0);
@@ -936,22 +438,31 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
   );
 
   try {
-    const created = await prisma.order.create({
-      data: {
-        customerId: input.customerId,
-        regionId: input.regionId,
-        currency: input.currency ?? "USD",
-        notes: input.notes ?? null,
-        total,
-        items: {
-          create: input.items.map((it) => ({
-            productId: it.productId,
-            quantity: it.quantity,
-            unitPrice: it.unitPrice,
-            discount: it.discount ?? 0,
-          })),
+    // The outbox row (order_events) is inserted in the SAME transaction as
+    // the order + its items, so there's no dual-write gap: if this commits,
+    // scripts/aggregates-worker.ts is guaranteed to eventually see it and
+    // apply the 7 aggregate-table writes that used to happen synchronously/
+    // fire-and-forget right here.
+    const created = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
+        data: {
+          customerId: input.customerId,
+          regionId: input.regionId,
+          currency: input.currency ?? "USD",
+          notes: input.notes ?? null,
+          total,
+          items: {
+            create: input.items.map((it) => ({
+              productId: it.productId,
+              quantity: it.quantity,
+              unitPrice: it.unitPrice,
+              discount: it.discount ?? 0,
+            })),
+          },
         },
-      },
+      });
+      await tx.orderEvent.create({ data: { orderId: order.id } });
+      return order;
     });
     let categorySlug: string | undefined;
     if (input.items.length > 0) {
@@ -965,8 +476,6 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
         // non-fatal — SSE event fires without the slug
       }
     }
-    clearTextProbeCaches();
-    await updateOrderCategoryFacts(created.id);
 
     publishOrderEvent({
       id: created.id,
@@ -975,13 +484,6 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       placedAt: created.placedAt.toISOString(),
       categorySlug,
     }).catch(() => {});
-    updateDailySummary(created.id).catch(() => {});
-    updateDailyCustomerCategorySummary(created.id).catch(() => {});
-    updateDailyFilterCategorySummary(created.id).catch(() => {});
-    updateDailyStatusCategorySummary(created.id).catch(() => {});
-    updateDailyCustomerTokenCategorySummary(created.id).catch(() => {});
-    updateDailyCustomerTokenCategoryRollup(created.id).catch(() => {});
-    updateDailyCustomerTokenOrderSummary(created.id).catch(() => {});
     return {
       id: created.id,
       status: created.status,

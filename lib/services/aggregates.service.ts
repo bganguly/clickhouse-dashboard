@@ -4,10 +4,8 @@ import { AppError, mapDbError } from "@/lib/errors";
 import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/lib/types";
 import {
   buildFilterConditions,
+  buildSearchTextConditions,
   escapeLike,
-  getNotesHaveMatches,
-  getTextProbe,
-  getTokenProbe,
   normalizeStatusList,
   resolveFilters,
   todayDateString,
@@ -15,7 +13,12 @@ import {
 
 const DEFAULT_TOP_CATEGORIES = 5;
 const OTHER_BUCKET = "Others";
-const AGG_TEXT_MATCH_CAP = 50_000;
+
+/** Lets the 7 updateXxx functions below run either against the module-level
+ *  singleton (unused today — they're only called from the outbox worker) or
+ *  inside a caller's interactive transaction, so a worker can run all 7 for
+ *  one order atomically with marking the outbox event processed. */
+type Db = typeof prisma | Prisma.TransactionClient;
 
 interface AggRow {
   day: string;
@@ -46,6 +49,11 @@ function searchToken(q: string | null | undefined): string | null {
   return token && /^[a-z0-9._@-]+$/.test(token) ? token : null;
 }
 
+function isMultiToken(q: string | null | undefined): boolean {
+  const text = q?.trim();
+  return Boolean(text && /\s/.test(text));
+}
+
 export async function getDailyAggregates(input: AggregateQueryInput): Promise<DailyAggregate[]> {
   const query = {
     ...input,
@@ -65,89 +73,27 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
     const rows = canUseDailySummary(query)
       ? await fastPath(query)
       : (await customerTokenSummaryPath(query)) ??
-        ((await noTextMatches(query)) ? [] : null) ??
-          (await noteOnlySummaryPath(query)) ??
-          (await customerSummaryPath(query)) ??
-          (await filterSummaryPath(query)) ??
-          (await factFilterPath(query)) ??
-          (await slowPath(query));
+        (await customerMultiTokenSummaryPath(query)) ??
+        (await filterSummaryPath(query)) ??
+        (await factFilterPath(query)) ??
+        (await slowPath(query));
     return rowsToDailyAggregates(rows, topN);
   } catch (err) {
     mapDbError(err, "getDailyAggregates");
   }
 }
 
-async function noTextMatches(input: AggregateQueryInput): Promise<boolean> {
-  const q = input.q?.trim();
-  if (!q) return false;
-
-  const probe = await getTextProbe(q);
-  return probe.customerRows.length === 0 && !probe.notesHaveMatches;
-}
-
-async function noteOnlySummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
-  const q = input.q?.trim();
-  if (!q || input.minTotal != null || input.maxTotal != null) return null;
-
-  const probe =
-    /^\d+$/.test(q)
-      ? {
-          pattern: `%${escapeLike(q)}%`,
-          customerRows: [],
-          notesHaveMatches: await getNotesHaveMatches(q),
-        }
-      : await getTextProbe(q);
-  if (probe.customerRows.length > 0 || !probe.notesHaveMatches) return null;
-
-  const filters = await resolveFilters(input);
-  const filterConds = buildFilterConditions(filters);
-  const andFilters = filterConds.length
-    ? Prisma.sql`AND ${Prisma.join(filterConds, " AND ")}`
-    : Prisma.empty;
-
-  return prisma.$queryRaw<AggRow[]>(Prisma.sql`
-    WITH matching_orders AS MATERIALIZED (
-      SELECT o.id
-      FROM orders o
-      WHERE o.notes ILIKE ${probe.pattern}
-      ${andFilters}
-    )
-    SELECT
-      to_char(f.date, 'YYYY-MM-DD')           AS day,
-      f."categoryName"                        AS category,
-      count(*)::bigint                        AS total_orders,
-      coalesce(sum(f."totalItems"), 0)::bigint AS total_items,
-      coalesce(sum(f."totalRevenue"), 0)       AS total_revenue
-    FROM matching_orders mo
-    JOIN order_category_facts f ON f."orderId" = mo.id
-    GROUP BY day, f."categoryName"
-    ORDER BY day ASC, f."categoryName" ASC`);
-}
-
+/** Single-token `q`: rollup/summary tables first, `slowPath` (search_text) if empty. */
 async function customerTokenSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
   if (input.minTotal != null || input.maxTotal != null) return null;
   const token = searchToken(input.q);
   if (!token) return null;
-  const tokenProbe = await getTokenProbe(token);
-  if (!tokenProbe.tokenOrderReady) return null;
 
   const status = normalizeStatusList(input.status);
   const regionCodes = parseCsv(input.regionCode);
 
   if (status.length === 0 && regionCodes.length === 0) {
-    const rollupRows = await customerTokenRollupPath(input, token);
-    if (rollupRows) return rollupRows;
-  }
-
-  const tokenReady = await prisma.$queryRaw<{ ready: boolean }[]>(Prisma.sql`
-    SELECT EXISTS (
-      SELECT 1
-      FROM daily_customer_token_category_summary
-      WHERE token = ${token}
-      LIMIT 1
-    ) AS ready`);
-  if (!tokenReady[0]?.ready) {
-    return exactVisibleTokenCustomerSummaryPath(input, token, status, regionCodes);
+    return customerTokenRollupPath(input, token);
   }
 
   const conds: Prisma.Sql[] = [
@@ -158,7 +104,6 @@ async function customerTokenSummaryPath(input: AggregateQueryInput): Promise<Agg
   if (status.length) conds.push(Prisma.sql`ds.status = ANY(${status}::text[]::"OrderStatus"[])`);
   if (regionCodes.length) conds.push(Prisma.sql`ds."regionCode" = ANY(${regionCodes})`);
 
-  const whereSql = Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`;
   const rows = await prisma.$queryRaw<AggRow[]>(Prisma.sql`
     SELECT
       to_char(ds.date, 'YYYY-MM-DD') AS day,
@@ -167,122 +112,11 @@ async function customerTokenSummaryPath(input: AggregateQueryInput): Promise<Agg
       SUM(ds."totalItems")::bigint   AS total_items,
       SUM(ds."totalRevenue")         AS total_revenue
     FROM daily_customer_token_category_summary ds
-    ${whereSql}
+    WHERE ${Prisma.join(conds, " AND ")}
     GROUP BY ds.date, ds."categoryName"
     ORDER BY ds.date ASC, ds."categoryName" ASC`);
-  if (rows.length > 0) return rows;
 
-  // If the order-level token summary says rows exist, an empty category summary
-  // means the chart summary is incomplete rather than the filtered result being
-  // empty. Fall back to the exact path so the UI never shows list rows with an
-  // empty chart just because a read model is missing data.
-  if (await tokenOrderSummaryHasMatches(input, token, status, regionCodes)) {
-    return exactVisibleTokenCustomerSummaryPath(input, token, status, regionCodes);
-  }
-  return [];
-}
-
-async function tokenOrderSummaryHasMatches(
-  input: AggregateQueryInput,
-  token: string,
-  status: string[],
-  regionCodes: string[],
-): Promise<boolean> {
-  const conds: Prisma.Sql[] = [
-    Prisma.sql`ds.token = ${token}`,
-    Prisma.sql`ds.date >= ${input.from}::date`,
-    Prisma.sql`ds.date <= ${input.to}::date`,
-  ];
-  if (status.length) conds.push(Prisma.sql`ds.status = ANY(${status}::text[]::"OrderStatus"[])`);
-  if (regionCodes.length) conds.push(Prisma.sql`ds."regionCode" = ANY(${regionCodes})`);
-
-  const rows = await prisma.$queryRaw<{ has_matches: boolean }[]>(Prisma.sql`
-    SELECT EXISTS (
-      SELECT 1
-      FROM daily_customer_token_order_summary ds
-      WHERE ${Prisma.join(conds, " AND ")}
-      LIMIT 1
-    ) AS has_matches`);
-  return Boolean(rows[0]?.has_matches);
-}
-
-async function exactVisibleTokenCustomerSummaryPath(
-  input: AggregateQueryInput,
-  token: string,
-  status: string[],
-  regionCodes: string[],
-): Promise<AggRow[] | null> {
-  const filteredConds: Prisma.Sql[] = [
-    Prisma.sql`date >= ${input.from}::date`,
-    Prisma.sql`date <= ${input.to}::date`,
-  ];
-  if (status.length) {
-    filteredConds.push(Prisma.sql`status = ANY(${status}::text[]::"OrderStatus"[])`);
-  }
-  if (regionCodes.length) {
-    filteredConds.push(Prisma.sql`"regionCode" = ANY(${regionCodes})`);
-  }
-
-  const filterWhere = Prisma.sql`WHERE ${Prisma.join(filteredConds, " AND ")}`;
-  const rows = await prisma.$queryRaw<AggRow[]>(Prisma.sql`
-    WITH filtered AS MATERIALIZED (
-      SELECT date, "customerId", "categoryName", "totalOrders", "totalItems", "totalRevenue"
-      FROM daily_customer_category_summary
-      ${filterWhere}
-    ),
-    grouped AS (
-      SELECT
-        f.date                         AS date,
-        f."categoryName"               AS category,
-        SUM(f."totalOrders")::bigint   AS total_orders,
-        SUM(f."totalItems")::bigint    AS total_items,
-        SUM(f."totalRevenue")          AS total_revenue
-      FROM filtered f
-      JOIN customers c ON c.id = f."customerId"
-      WHERE lower(c."firstName") = ${token}
-         OR lower(c."lastName") = ${token}
-      GROUP BY f.date, f."categoryName"
-    )
-    SELECT
-      to_char(date, 'YYYY-MM-DD') AS day,
-      category,
-      total_orders,
-      total_items,
-      total_revenue
-    FROM grouped
-    ORDER BY date ASC, category ASC`);
-
-  if (!(await getNotesHaveMatches(token))) return rows.length ? rows : null;
-
-  const filters = await resolveFilters(input);
-  const filterConds = buildFilterConditions(filters);
-  const andFilters = filterConds.length
-    ? Prisma.sql`AND ${Prisma.join(filterConds, " AND ")}`
-    : Prisma.empty;
-  const noteRows = await prisma.$queryRaw<AggRow[]>(Prisma.sql`
-    WITH matching_orders AS MATERIALIZED (
-      SELECT o.id
-      FROM orders o
-      JOIN customers c ON c.id = o."customerId"
-      WHERE o.notes ILIKE ${`%${escapeLike(token)}%`}
-        AND NOT (
-          lower(c."firstName") = ${token}
-          OR lower(c."lastName") = ${token}
-        )
-        ${andFilters}
-    )
-    SELECT
-      to_char(f.date, 'YYYY-MM-DD')           AS day,
-      f."categoryName"                        AS category,
-      count(*)::bigint                        AS total_orders,
-      coalesce(sum(f."totalItems"), 0)::bigint AS total_items,
-      coalesce(sum(f."totalRevenue"), 0)       AS total_revenue
-    FROM matching_orders mo
-    JOIN order_category_facts f ON f."orderId" = mo.id
-    GROUP BY day, f."categoryName"`);
-
-  const merged = [...rows, ...noteRows];
-  return merged.length ? merged : null;
+  return rows.length > 0 ? rows : null; // empty -> fall through to slowPath
 }
 
 async function customerTokenRollupPath(
@@ -294,9 +128,7 @@ async function customerTokenRollupPath(
       ? Math.trunc(input.topCategories)
       : DEFAULT_TOP_CATEGORIES;
 
-  const [notesHaveMatches, rows] = await Promise.all([
-    getNotesHaveMatches(token),
-    prisma.$queryRaw<AggRow[]>(Prisma.sql`
+  const rows = await prisma.$queryRaw<AggRow[]>(Prisma.sql`
     WITH grouped AS (
       SELECT
         ds.date                       AS date,
@@ -311,103 +143,69 @@ async function customerTokenRollupPath(
       GROUP BY ds.date, ds."categoryName"
     ),
     ranked AS (
-      SELECT
-        *,
-        row_number() OVER (
-          PARTITION BY date
-          ORDER BY total_revenue DESC, category ASC
-        ) AS rn
+      SELECT *, row_number() OVER (
+        PARTITION BY date ORDER BY total_revenue DESC, category ASC
+      ) AS rn
       FROM grouped
     ),
     bucketed AS (
       SELECT
         date,
         CASE WHEN rn <= ${topN} THEN category ELSE ${OTHER_BUCKET} END AS category,
-        total_orders,
-        total_items,
-        total_revenue
+        total_orders, total_items, total_revenue
       FROM ranked
     )
     SELECT
       to_char(date, 'YYYY-MM-DD') AS day,
       category,
-      SUM(total_orders)::bigint   AS total_orders,
-      SUM(total_items)::bigint    AS total_items,
-      SUM(total_revenue)          AS total_revenue
+      SUM(total_orders)::bigint AS total_orders,
+      SUM(total_items)::bigint  AS total_items,
+      SUM(total_revenue)        AS total_revenue
     FROM bucketed
     GROUP BY date, category
-    ORDER BY date ASC, category ASC`),
-  ]);
+    ORDER BY date ASC, category ASC`);
 
-  if (rows.length === 0) return null;
-  if (!notesHaveMatches) return rows;
-
-  const noteRows = await prisma.$queryRaw<AggRow[]>(Prisma.sql`
-    WITH matching_orders AS MATERIALIZED (
-      SELECT o.id
-      FROM orders o
-      JOIN customers c ON c.id = o."customerId"
-      WHERE o.notes ILIKE ${`%${escapeLike(token)}%`}
-        AND NOT (
-          lower(c."firstName") = ${token}
-          OR lower(c."lastName") = ${token}
-        )
-        AND o."placedAt" >= ${input.from}::date
-        AND o."placedAt" < (${input.to}::date + interval '1 day')
-    )
-    SELECT
-      to_char(f.date, 'YYYY-MM-DD')           AS day,
-      f."categoryName"                        AS category,
-      count(*)::bigint                        AS total_orders,
-      coalesce(sum(f."totalItems"), 0)::bigint AS total_items,
-      coalesce(sum(f."totalRevenue"), 0)       AS total_revenue
-    FROM matching_orders mo
-    JOIN order_category_facts f ON f."orderId" = mo.id
-    GROUP BY day, f."categoryName"`);
-
-  return [...rows, ...noteRows];
+  return rows.length > 0 ? rows : null; // empty -> fall through to slowPath
 }
 
-async function customerSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
+/** Multi-word `q` (no total filter): customers matched by name via a CTE,
+ *  joined against the daily customer-category summary. Ports GCP's
+ *  queryMultiTokenViaCte. Falls through to slowPath if empty. */
+async function customerMultiTokenSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
   const q = input.q?.trim();
-  if (!q || input.minTotal != null || input.maxTotal != null) return null;
+  if (!q || !isMultiToken(q) || input.minTotal != null || input.maxTotal != null) return null;
 
-  const probe = await getTextProbe(q);
-  if (probe.notesHaveMatches) return null;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const tokenConds = tokens.map(
+    (t) => Prisma.sql`("firstName" || ' ' || "lastName") ILIKE ${`%${escapeLike(t)}%`}`,
+  );
 
-  const custRows =
-    probe.customerRows.length > 5_000
-      ? await prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-          SELECT id FROM customers
-          WHERE ("firstName" || ' ' || "lastName") ILIKE ${probe.pattern}
-          LIMIT ${AGG_TEXT_MATCH_CAP + 1}`)
-      : probe.customerRows;
-  if (custRows.length === 0 || custRows.length > AGG_TEXT_MATCH_CAP) return null;
-
-  const customerIds = custRows.map((r) => r.id);
   const status = normalizeStatusList(input.status);
   const regionCodes = parseCsv(input.regionCode);
-
   const conds: Prisma.Sql[] = [
-    Prisma.sql`ds.date >= ${input.from}::date`,
-    Prisma.sql`ds.date <= ${input.to}::date`,
-    Prisma.sql`ds."customerId" = ANY(${customerIds})`,
+    Prisma.sql`dcs."customerId" IN (SELECT id FROM matching_customers)`,
+    Prisma.sql`dcs.date >= ${input.from}::date`,
+    Prisma.sql`dcs.date <= ${input.to}::date`,
   ];
-  if (status.length) conds.push(Prisma.sql`ds.status = ANY(${status}::text[]::"OrderStatus"[])`);
-  if (regionCodes.length) conds.push(Prisma.sql`ds."regionCode" = ANY(${regionCodes})`);
+  if (status.length) conds.push(Prisma.sql`dcs.status = ANY(${status}::text[]::"OrderStatus"[])`);
+  if (regionCodes.length) conds.push(Prisma.sql`dcs."regionCode" = ANY(${regionCodes})`);
 
-  const whereSql = Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`;
-  return prisma.$queryRaw<AggRow[]>(Prisma.sql`
+  const rows = await prisma.$queryRaw<AggRow[]>(Prisma.sql`
+    WITH matching_customers AS (
+      SELECT id FROM customers WHERE ${Prisma.join(tokenConds, " AND ")}
+    )
     SELECT
-      to_char(ds.date, 'YYYY-MM-DD') AS day,
-      ds."categoryName"              AS category,
-      SUM(ds."totalOrders")::bigint  AS total_orders,
-      SUM(ds."totalItems")::bigint   AS total_items,
-      SUM(ds."totalRevenue")         AS total_revenue
-    FROM daily_customer_category_summary ds
-    ${whereSql}
-    GROUP BY ds.date, ds."categoryName"
-    ORDER BY ds.date ASC, ds."categoryName" ASC`);
+      to_char(dcs.date, 'YYYY-MM-DD') AS day,
+      dcs."categoryName"              AS category,
+      SUM(dcs."totalOrders")::bigint  AS total_orders,
+      SUM(dcs."totalItems")::bigint   AS total_items,
+      SUM(dcs."totalRevenue")         AS total_revenue
+    FROM daily_customer_category_summary dcs
+    WHERE ${Prisma.join(conds, " AND ")}
+    GROUP BY dcs.date, dcs."categoryName"
+    ORDER BY dcs.date ASC, dcs."categoryName" ASC`);
+
+  return rows.length > 0 ? rows : null; // empty -> fall through to slowPath
 }
 
 async function filterSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
@@ -519,81 +317,25 @@ async function fastPath(input: AggregateQueryInput): Promise<AggRow[]> {
     ORDER BY ds.date ASC, ds."categoryName" ASC`);
 }
 
+/** Catch-all: filters orders directly by search_text, joined straight into the
+ *  category aggregation. Ports GCP's queryViaSearchText. */
 async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
   const filters = await resolveFilters(input);
-  const conds = buildFilterConditions(filters);
-
-  const whereSql = conds.length
-    ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
-    : Prisma.empty;
-  const andFilters = conds.length
-    ? Prisma.sql`AND ${Prisma.join(conds, " AND ")}`
-    : Prisma.empty;
-
-  const q = input.q?.trim();
-  let matchingOrders: Prisma.Sql;
-  if (q) {
-    const pattern = `%${escapeLike(q)}%`;
-    const custRows = await prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-      SELECT id FROM customers
-      WHERE ("firstName" || ' ' || "lastName") ILIKE ${pattern}
-      LIMIT ${AGG_TEXT_MATCH_CAP + 1}`);
-
-    if (custRows.length > AGG_TEXT_MATCH_CAP) {
-      matchingOrders = Prisma.sql`
-        SELECT o.id, o."placedAt"
-        FROM orders o
-        JOIN customers c ON c.id = o."customerId"
-        WHERE ((c."firstName" || ' ' || c."lastName") ILIKE ${pattern}
-          OR o.notes ILIKE ${pattern})
-        ${andFilters}`;
-    } else {
-      const customerIds = custRows.map((r) => r.id);
-      const customerMatches = customerIds.length
-        ? Prisma.sql`
-            SELECT o.id, o."placedAt"
-            FROM unnest(${customerIds}::int[]) AS matched_customer(id)
-            JOIN LATERAL (
-              SELECT o.id, o."placedAt"
-              FROM orders o
-              WHERE o."customerId" = matched_customer.id
-              ${andFilters}
-            ) o ON true`
-        : Prisma.sql`SELECT id, "placedAt" FROM orders WHERE false`;
-
-      const denseCustomerSearch = customerIds.length > 5_000;
-      matchingOrders =
-        q.length >= 3 && !denseCustomerSearch
-          ? Prisma.sql`
-              ${customerMatches}
-              UNION
-              SELECT o.id, o."placedAt"
-              FROM orders o
-              WHERE o.notes ILIKE ${pattern}
-              ${andFilters}`
-          : customerMatches;
-    }
-  } else {
-    matchingOrders = Prisma.sql`
-      SELECT o.id, o."placedAt"
-      FROM orders o
-      ${whereSql}`;
-  }
+  const conds = [...buildSearchTextConditions(input.q), ...buildFilterConditions(filters)];
+  const whereSql = conds.length ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}` : Prisma.empty;
 
   return prisma.$queryRaw<AggRow[]>(Prisma.sql`
-    WITH matching_orders AS MATERIALIZED (
-      ${matchingOrders}
-    )
     SELECT
-      to_char(mo."placedAt", 'YYYY-MM-DD')                               AS day,
-      cat.name                                                           AS category,
-      count(DISTINCT mo.id)::bigint                                      AS total_orders,
-      coalesce(sum(oi.quantity), 0)::bigint                              AS total_items,
-      coalesce(sum(oi.quantity * oi."unitPrice" * (1 - oi.discount)), 0) AS total_revenue
-    FROM matching_orders mo
-    JOIN order_items oi ON oi."orderId" = mo.id
+      to_char(o."placedAt"::date, 'YYYY-MM-DD')                          AS day,
+      cat.name                                                            AS category,
+      count(DISTINCT o.id)::bigint                                        AS total_orders,
+      coalesce(sum(oi.quantity), 0)::bigint                               AS total_items,
+      coalesce(sum(oi.quantity * oi."unitPrice" * (1 - oi.discount)), 0)  AS total_revenue
+    FROM orders o
+    JOIN order_items oi ON oi."orderId" = o.id
     JOIN products p     ON p.id = oi."productId"
     JOIN categories cat ON cat.id = p."categoryId"
+    ${whereSql}
     GROUP BY day, cat.name
     ORDER BY day ASC, cat.name ASC`);
 }
@@ -674,8 +416,8 @@ function capToTopCategories(day: DailyAggregate, topN: number): DailyAggregate {
  * Incrementally upsert daily_summary rows for a single order. Fire-and-forget
  * from createOrder so the summary stays in sync without a full backfill.
  */
-export async function updateDailySummary(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateDailySummary(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO daily_summary (date, "categoryId", "categoryName", "regionId", "regionCode",
                                "totalOrders", "totalRevenue", "totalItems", "avgOrderValue",
                                "createdAt", "updatedAt")
@@ -708,8 +450,8 @@ export async function updateDailySummary(orderId: number): Promise<void> {
       "updatedAt"    = now()`);
 }
 
-export async function updateOrderCategoryFacts(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateOrderCategoryFacts(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO order_category_facts (
       "orderId", "placedAt", date, "regionId", "regionCode", status, "orderTotal",
       "categoryId", "categoryName", "totalItems", "totalRevenue"
@@ -746,8 +488,8 @@ export async function updateOrderCategoryFacts(orderId: number): Promise<void> {
       "totalRevenue" = EXCLUDED."totalRevenue"`);
 }
 
-export async function updateDailyCustomerCategorySummary(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateDailyCustomerCategorySummary(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO daily_customer_category_summary (
       date, "customerId", "regionId", "regionCode", status, "categoryId", "categoryName",
       "totalOrders", "totalRevenue", "totalItems", "createdAt", "updatedAt"
@@ -780,8 +522,8 @@ export async function updateDailyCustomerCategorySummary(orderId: number): Promi
       "updatedAt"    = now()`);
 }
 
-export async function updateDailyFilterCategorySummary(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateDailyFilterCategorySummary(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO daily_filter_category_summary (
       date, "regionId", "regionCode", status, "categoryId", "categoryName",
       "totalOrders", "totalRevenue", "totalItems", "createdAt", "updatedAt"
@@ -813,8 +555,8 @@ export async function updateDailyFilterCategorySummary(orderId: number): Promise
       "updatedAt"    = now()`);
 }
 
-export async function updateDailyStatusCategorySummary(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateDailyStatusCategorySummary(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO daily_status_category_summary (
       date, status, "categoryId", "categoryName",
       "totalOrders", "totalRevenue", "totalItems", "createdAt", "updatedAt"
@@ -843,8 +585,8 @@ export async function updateDailyStatusCategorySummary(orderId: number): Promise
       "updatedAt"    = now()`);
 }
 
-export async function updateDailyCustomerTokenCategorySummary(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateDailyCustomerTokenCategorySummary(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO daily_customer_token_category_summary (
       date, token, "regionId", "regionCode", status, "categoryId", "categoryName",
       "totalOrders", "totalRevenue", "totalItems", "createdAt", "updatedAt"
@@ -888,8 +630,8 @@ export async function updateDailyCustomerTokenCategorySummary(orderId: number): 
       "updatedAt"    = now()`);
 }
 
-export async function updateDailyCustomerTokenCategoryRollup(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+export async function updateDailyCustomerTokenCategoryRollup(orderId: number, db: Db = prisma): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
     INSERT INTO daily_customer_token_category_rollup (
       date, token, "categoryId", "categoryName",
       "totalOrders", "totalRevenue", "totalItems", "createdAt", "updatedAt"
@@ -929,39 +671,3 @@ export async function updateDailyCustomerTokenCategoryRollup(orderId: number): P
       "updatedAt"    = now()`);
 }
 
-export async function updateDailyCustomerTokenOrderSummary(orderId: number): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
-    INSERT INTO daily_customer_token_order_summary (
-      date, token, "regionId", "regionCode", status,
-      "totalOrders", "totalRevenue", "createdAt", "updatedAt"
-    )
-    SELECT
-      o."placedAt"::date,
-      t.token,
-      o."regionId",
-      r.code,
-      o.status,
-      1,
-      o.total,
-      now(),
-      now()
-    FROM orders o
-    JOIN customers c ON c.id = o."customerId"
-    JOIN regions r   ON r.id = o."regionId"
-    CROSS JOIN LATERAL (
-      SELECT DISTINCT token
-      FROM unnest(ARRAY[
-        lower(c."firstName"),
-        lower(c."lastName"),
-        lower(c.email),
-        lower(split_part(c.email, '@', 1))
-      ]) AS token
-      WHERE token <> ''
-    ) t
-    WHERE o.id = ${orderId}
-    ON CONFLICT (date, token, "regionId", status)
-    DO UPDATE SET
-      "totalOrders"  = daily_customer_token_order_summary."totalOrders" + EXCLUDED."totalOrders",
-      "totalRevenue" = daily_customer_token_order_summary."totalRevenue" + EXCLUDED."totalRevenue",
-      "updatedAt"    = now()`);
-}

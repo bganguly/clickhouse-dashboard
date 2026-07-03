@@ -31,6 +31,9 @@ run_local() {
   echo "[3/3] Running locally (pointed at RDS)..."
   apply_migrations
   echo ""
+  echo "      Starting the aggregates worker..."
+  "$ROOT_DIR/scripts/start-aggregates-worker.sh"
+  echo ""
   echo "      Building and starting on http://localhost:3004 ..."
   npm run build
   npm start
@@ -139,6 +142,8 @@ ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
   npm run build
   pm2 stop dashboard 2>/dev/null || true
   pm2 start "npm start" --name dashboard
+  pm2 stop aggregates-worker 2>/dev/null || true
+  pm2 start "npx tsx scripts/aggregates-worker.ts" --name aggregates-worker
   pm2 save
 REMOTE
 

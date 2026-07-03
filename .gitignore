@@ -52,6 +52,10 @@ next-env.d.ts
 /scripts/.bot-state.json
 /scripts/.bot-inbox.log
 
+# aggregates-worker runtime artifacts
+/aggregates-worker.log
+/scripts/aggregates-worker.pid
+
 # terraform / rds infra
 /infra/.terraform/
 /infra/*.tfstate
