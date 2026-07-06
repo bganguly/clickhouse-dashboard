@@ -154,6 +154,7 @@ ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
   set -e
   export DATABASE_URL='${DATABASE_URL}'
   cd /app
+  command -v aws >/dev/null 2>&1 || sudo dnf install -y awscli
   npm ci --prefer-offline
   npm run build
   pm2 stop dashboard 2>/dev/null || true
@@ -167,3 +168,31 @@ echo ""
 echo "✓ Dashboard live at  http://${EC2_IP}:3004"
 echo "  SSH:               ssh -i ${SSH_KEY} ec2-user@${EC2_IP}"
 echo "  Tear down:         ./scripts/infra-down.sh"
+
+# ── 4. Demo-scale check — ask before a long reseed, never do it silently ─────
+DEMO_SCALE_THRESHOLD=1000000
+CURRENT_ORDERS="$(psql "$DATABASE_URL" -Atqc 'SELECT count(*) FROM orders' 2>/dev/null || echo 0)"
+if [[ "$CURRENT_ORDERS" =~ ^[0-9]+$ ]] && (( CURRENT_ORDERS < DEMO_SCALE_THRESHOLD )); then
+  echo ""
+  echo "  RDS has $CURRENT_ORDERS orders (below demo scale)."
+  printf "  Proceed to seed to 4M again — will take 45-90 minutes on AWS infra? [y/N] "
+  read -r yn
+  if [[ "$yn" =~ ^[Yy]$ ]]; then
+    echo "  Seeding to 4M orders + rebuilding read models + re-baking the S3 snapshot on EC2 (backgrounded)..."
+    ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
+      cd /app
+      export DATABASE_URL='${DATABASE_URL}'
+      nohup bash -c '
+        psql "\$DATABASE_URL" -v orders=4000000 -v batch_size=500000 -f scripts/seed-large.sql &&
+        DATABASE_URL="\$DATABASE_URL" ./scripts/rebuild-dashboard-read-models.sh &&
+        DEMO_SNAPSHOT_S3_URI="s3://bikram-nextjs-subsecond-fetch-with-websockets/nextjs-dash/demo.dump" ./scripts/bake-demo-snapshot.sh
+      ' > /app/seed-and-bake.log 2>&1 &
+      disown
+      echo "  Started in background (pid \$!)."
+REMOTE
+    echo "  Tail progress with:"
+    echo "    ssh $SSH_OPTS ec2-user@${EC2_IP} 'tail -f /app/seed-and-bake.log'"
+  else
+    echo "  Skipped."
+  fi
+fi

@@ -151,19 +151,55 @@ resource "aws_security_group_rule" "pg_from_app" {
   description              = "EC2 app server to Postgres"
 }
 
+# Lets the app EC2 instance run bake-demo-snapshot.sh directly (seed + rebuild
+# read-models + pg_dump + upload), without a long-lived local psql session or
+# passing AWS credentials over SSH. Scoped to just this one bucket/prefix.
+resource "aws_iam_role" "app" {
+  name = "${var.name_prefix}-app"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "app_s3_demo_snapshot" {
+  name = "${var.name_prefix}-app-s3-demo-snapshot"
+  role = aws_iam_role.app.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObject"]
+      Resource = "arn:aws:s3:::${var.demo_snapshot_bucket}/nextjs-dash/*"
+    }]
+  })
+}
+
+resource "aws_iam_instance_profile" "app" {
+  name = "${var.name_prefix}-app"
+  role = aws_iam_role.app.name
+}
+
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.ec2_instance_type
   subnet_id                   = aws_subnet.public_b.id
   vpc_security_group_ids      = [aws_security_group.app.id]
   key_name                    = aws_key_pair.app.key_name
+  iam_instance_profile        = aws_iam_instance_profile.app.name
   associate_public_ip_address = true
 
   user_data = <<-EOF
     #!/bin/bash
     set -e
     curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-    dnf install -y nodejs postgresql15
+    dnf install -y nodejs postgresql15 awscli
     npm install -g pm2
     mkdir -p /app
     chown ec2-user:ec2-user /app

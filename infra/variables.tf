@@ -63,3 +63,9 @@ variable "ssh_public_key_path" {
   type        = string
   default     = "~/.ssh/id_rsa.pub"
 }
+
+variable "demo_snapshot_bucket" {
+  description = "S3 bucket the app EC2 instance is allowed to write demo-data snapshots to (bake-demo-snapshot.sh)"
+  type        = string
+  default     = "bikram-nextjs-subsecond-fetch-with-websockets"
+}
