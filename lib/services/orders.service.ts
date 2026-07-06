@@ -183,7 +183,7 @@ export function buildFilterConditions(f: ResolvedFilters): Prisma.Sql[] {
   return c;
 }
 
-function whereClause(conds: Prisma.Sql[]): Prisma.Sql {
+export function whereClause(conds: Prisma.Sql[]): Prisma.Sql {
   return conds.length ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}` : Prisma.empty;
 }
 
@@ -241,7 +241,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   }
 }
 
-function buildCountCacheKey(q: string | undefined, filters: ResolvedFilters): string {
+export function buildCountCacheKey(q: string | undefined, filters: ResolvedFilters): string {
   return [
     `q=${(q ?? "").toLowerCase()}`,
     `status=${filters.statuses.join(",")}`,
@@ -255,7 +255,7 @@ function buildCountCacheKey(q: string | undefined, filters: ResolvedFilters): st
 
 /** Exact-count cache, keyed by the full filter signature. 30-day TTL, fail-open
  *  (a cache read/write failure never breaks a search — it just recomputes). */
-async function cachedCount(cacheKey: string, compute: () => Promise<number>): Promise<number> {
+export async function cachedCount(cacheKey: string, compute: () => Promise<number>): Promise<number> {
   try {
     const hit = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
       SELECT total FROM count_cache
@@ -274,7 +274,7 @@ async function cachedCount(cacheKey: string, compute: () => Promise<number>): Pr
 }
 
 /** Exact count for pagination bounds — every case goes through the same query. */
-async function exactCount(whereSql: Prisma.Sql): Promise<number> {
+export async function exactCount(whereSql: Prisma.Sql): Promise<number> {
   const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
     SELECT count(*)::bigint AS count
     FROM orders o ${whereSql}`);
@@ -497,6 +497,12 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       placedAt: created.placedAt.toISOString(),
       categorySlug,
     }).catch(() => {});
+    // count_cache has no active invalidation otherwise (just a 30-day passive
+    // TTL) — a new order makes every cached exact count a potential undercount
+    // until something forces a recompute. Wiping it is cheap (small table,
+    // lazily repopulated on next read) and guarantees no stale count survives
+    // a write.
+    prisma.$executeRaw`DELETE FROM count_cache`.catch(() => {});
     return {
       id: created.id,
       status: created.status,

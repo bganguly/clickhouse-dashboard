@@ -203,6 +203,11 @@ export default function SearchTable({
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: SearchResponse = await res.json();
+        // An aborted controller doesn't guarantee its fetch promise rejects
+        // before a newer, faster request's promise resolves — without this
+        // guard, a slower stale response can land after and silently
+        // overwrite the correct state from the request that superseded it.
+        if (abortRef.current !== controller) return;
         const data = Array.isArray(json.data) ? json.data : [];
         setRows(data);
         setTotalPages(Math.max(1, json.totalPages ?? 1));
@@ -211,6 +216,7 @@ export default function SearchTable({
         onRowsRef.current?.(data);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
+        if (abortRef.current !== controller) return;
         setError((err as Error).message);
         setRows([]);
         setTotalPages(1);
@@ -375,9 +381,9 @@ export default function SearchTable({
     <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
       <header className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">Search</h2>
-        {(isControlled ? controlledLoading : searchLoading) && (
+        {(isControlled ? controlledLoading : loading) && (
           <span className="text-xs text-indigo-500" aria-live="polite">
-            searching…
+            {searchLoading ? "searching…" : "updating…"}
           </span>
         )}
       </header>
@@ -528,9 +534,9 @@ export default function SearchTable({
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-gray-500 dark:text-gray-400">
           Page {page} of {totalPages} ·{" "}
-          {approximate
-            ? `${total.toLocaleString()}+`
-            : total.toLocaleString()}{" "}
+          <span data-testid="search-total" data-total={total}>
+            {approximate ? `${total.toLocaleString()}+` : total.toLocaleString()}
+          </span>{" "}
           results
         </span>
 

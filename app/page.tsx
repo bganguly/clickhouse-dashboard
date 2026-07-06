@@ -214,6 +214,9 @@ export default function Dashboard() {
                   highlightKey={lastOrder?.seq}
                   updatingSlug={updatingSlug}
                   lastSseOrder={lastSseOrder}
+                  onRangeChange={(range) =>
+                    setFilters((f) => ({ ...f, from: range.from, to: range.to }))
+                  }
                 />
                 <SearchTable
                   refreshSignal={refreshSignal}

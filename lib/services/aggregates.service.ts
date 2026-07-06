@@ -3,12 +3,16 @@ import { Prisma } from "@prisma/client";
 import { AppError, mapDbError } from "@/lib/errors";
 import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/lib/types";
 import {
+  buildCountCacheKey,
   buildFilterConditions,
   buildSearchTextConditions,
+  cachedCount,
   escapeLike,
+  exactCount,
   normalizeStatusList,
   resolveFilters,
   todayDateString,
+  whereClause,
 } from "./orders.service";
 
 const DEFAULT_TOP_CATEGORIES = 5;
@@ -80,6 +84,33 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
     return rowsToDailyAggregates(rows, topN);
   } catch (err) {
     mapDbError(err, "getDailyAggregates");
+  }
+}
+
+/**
+ * Exact distinct order count for the same date range/filters as
+ * getDailyAggregates — reuses /api/orders's identical cached exact-count path
+ * (same cache key), so the two numbers are byte-identical whenever they cover
+ * the same range/filters. They intentionally diverge when the chart is
+ * brushed to a narrower window than the list's active filter.
+ *
+ * This exists because the per-category rows above cannot be summed into a
+ * grand total: an order with items in two categories gets totalOrders=1 in
+ * EACH category's row (correct for the category breakdown), so summing across
+ * categories double-counts any order spanning more than one category.
+ */
+export async function getExactAggregateTotal(input: AggregateQueryInput): Promise<number> {
+  const query = {
+    ...input,
+    to: input.to || (input.from ? todayDateString() : input.to),
+  };
+  const filters = await resolveFilters(query);
+  const conds = [...buildSearchTextConditions(query.q), ...buildFilterConditions(filters)];
+  const cacheKey = buildCountCacheKey(query.q ?? undefined, filters);
+  try {
+    return await cachedCount(cacheKey, () => exactCount(whereClause(conds)));
+  } catch (err) {
+    mapDbError(err, "getExactAggregateTotal");
   }
 }
 

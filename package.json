@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "lsof -ti tcp:3004 | xargs kill 2>/dev/null || true",
     "dev": "next dev -p 3004",
     "build": "next build",
     "start": "next start",

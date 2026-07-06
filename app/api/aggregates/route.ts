@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDailyAggregates, isAppError } from "@/lib/services";
+import { getDailyAggregates, getExactAggregateTotal, isAppError } from "@/lib/services";
 
 // GET /api/aggregates?from=YYYY-MM-DD&to=YYYY-MM-DD&topCategories=<N>
 //   filters (same as /api/orders): &status=&regionCode=&minTotal=&maxTotal=
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   };
 
   try {
-    const data = await getDailyAggregates({
+    const query = {
       from: searchParams.get("from") ?? "",
       to: searchParams.get("to") ?? "",
       q: searchParams.get("q"),
@@ -22,8 +22,16 @@ export async function GET(req: NextRequest) {
       minTotal: num("minTotal"),
       maxTotal: num("maxTotal"),
       topCategories: topCategories ? Number(topCategories) : null,
-    });
-    return NextResponse.json({ data });
+    };
+    // totalOrders is the exact distinct order count for this same range/filters
+    // (same cached-count path /api/orders uses) — the per-category rows in
+    // `data` can't be summed for a grand total since an order spanning
+    // multiple categories gets counted once per category.
+    const [data, totalOrders] = await Promise.all([
+      getDailyAggregates(query),
+      getExactAggregateTotal(query),
+    ]);
+    return NextResponse.json({ data, totalOrders });
   } catch (err) {
     if (isAppError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });

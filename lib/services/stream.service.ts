@@ -11,6 +11,16 @@ import { prisma } from "@/lib/prisma";
  */
 const CHANNEL = "orders_channel";
 
+// How many browser tabs currently have an open /api/stream SSE connection —
+// i.e. how many have the "Live" checkbox on. Lets other apps (e.g. the
+// quick-order companion) tell whether anything will actually reload live
+// before a write, without reaching into another app's client-side state.
+let activeConnections = 0;
+
+export function getActiveStreamConnectionCount(): number {
+  return activeConnections;
+}
+
 export interface OrderStreamHandlers {
   onConnect?: () => void;
   onOrder: (notification: OrderNotification) => void;
@@ -48,12 +58,39 @@ export async function subscribeToOrders(
     ssl: useSsl ? { rejectUnauthorized: false } : false,
   });
 
+  let counted = false;
   const close = async () => {
+    if (counted) {
+      counted = false;
+      activeConnections--;
+    }
     try {
       await client.query("UNLISTEN *");
-      await client.end();
     } catch {
-      // best-effort cleanup
+      // connection may already be broken (e.g. client hard-reloaded) — fine,
+      // the socket-destroy fallback below guarantees teardown regardless.
+    }
+    try {
+      // client.end() can silently fail to fully tear down an already-broken
+      // socket (a hard browser reload sends an abrupt TCP RST mid-connection),
+      // leaking the Postgres backend indefinitely with no error surfaced —
+      // race it against a timeout and force-destroy the raw socket if it
+      // doesn't resolve, so no connection can outlive this close() call.
+      await Promise.race([
+        client.end(),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    } catch {
+      // fall through to the forced destroy below
+    } finally {
+      try {
+        const raw = client as unknown as { connection?: { stream?: { destroyed?: boolean; destroy?: () => void } } };
+        if (raw.connection?.stream && !raw.connection.stream.destroyed) {
+          raw.connection.stream.destroy?.();
+        }
+      } catch {
+        // already gone
+      }
     }
   };
 
@@ -66,6 +103,9 @@ export async function subscribeToOrders(
       cause: err instanceof Error ? err.message : String(err),
     });
   }
+
+  counted = true;
+  activeConnections++;
 
   client.on("notification", (msg) => {
     try {

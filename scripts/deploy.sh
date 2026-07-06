@@ -11,18 +11,34 @@ cd "$ROOT_DIR"
 "$ROOT_DIR/scripts/bootstrap-deps.sh" psql
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+# prisma migrate deploy tracks applied migrations in _prisma_migrations and
+# only runs pending ones — replaces the old db push + manual psql -f loop
+# (which re-ran all migration files, including a real backfill INSERT, on
+# every deploy, directly against RDS). RDS's first run under this scheme has
+# the schema already applied via the old db push + raw-SQL loop but no
+# migration history — self-heal by baselining: mark every existing migration
+# folder as already applied, then retry. A genuinely fresh database never
+# hits P3005 and just runs `migrate deploy` normally.
 apply_migrations() {
   echo ""
-  echo "  Applying Prisma schema..."
-  npx prisma db push
-  echo "  Applying SQL migration files..."
-  while IFS= read -r migration; do
-    printf '    %s\n' "${migration#"$ROOT_DIR"/}"
-    if ! psql_out=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration" 2>&1); then
-      echo "$psql_out"
-      exit 1
-    fi
-  done < <(find "$ROOT_DIR/prisma/migrations" -maxdepth 2 -name migration.sql -print | sort)
+  echo "  Applying migrations (prisma migrate deploy)..."
+  local log_file
+  log_file="$(mktemp)"
+  trap 'rm -f "$log_file"' RETURN
+
+  if DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy 2>&1 | tee "$log_file"; then
+    :
+  elif grep -q 'P3005' "$log_file"; then
+    echo "  Existing schema has no migration history — baselining (marking all migrations as already applied)..."
+    while IFS= read -r dir; do
+      DATABASE_URL="$DATABASE_URL" npx prisma migrate resolve --applied "$(basename "$dir")"
+    done < <(find "$ROOT_DIR/prisma/migrations" -mindepth 1 -maxdepth 1 -type d | sort)
+    echo "  Baseline complete — re-running migrate deploy..."
+    DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy
+  else
+    exit 1
+  fi
+  DATABASE_URL="$DATABASE_URL" npx prisma generate
   echo "  Migrations applied."
 }
 

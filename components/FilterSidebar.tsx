@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export const ORDER_STATUSES = [
   "PENDING",
@@ -252,6 +252,21 @@ export default function FilterSidebar({
 
   const patch = (p: Partial<OrderFilters>) => onChange({ ...value, ...p });
 
+  // Local state for total range inputs — debounced so per-keystroke typing
+  // doesn't fire a fetch on every character.
+  const [localMin, setLocalMin] = useState(value.totalMin);
+  const [localMax, setLocalMax] = useState(value.totalMax);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sync local inputs when filters are reset externally (e.g. Clear All).
+  useEffect(() => { setLocalMin(value.totalMin); }, [value.totalMin]);
+  useEffect(() => { setLocalMax(value.totalMax); }, [value.totalMax]);
+
+  const commitTotal = (min: string, max: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => patch({ totalMin: min, totalMax: max }), 400);
+  };
+
   const toggleIn = (list: string[], item: string): string[] =>
     list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
 
@@ -393,8 +408,11 @@ export default function FilterSidebar({
             inputMode="decimal"
             min={0}
             placeholder="Min"
-            value={value.totalMin}
-            onChange={(e) => patch({ totalMin: e.target.value })}
+            value={localMin}
+            onChange={(e) => {
+              setLocalMin(e.target.value);
+              commitTotal(e.target.value, localMax);
+            }}
             className={fieldCls}
             aria-label="Minimum total"
           />
@@ -404,8 +422,11 @@ export default function FilterSidebar({
             inputMode="decimal"
             min={0}
             placeholder="Max"
-            value={value.totalMax}
-            onChange={(e) => patch({ totalMax: e.target.value })}
+            value={localMax}
+            onChange={(e) => {
+              setLocalMax(e.target.value);
+              commitTotal(localMin, e.target.value);
+            }}
             className={fieldCls}
             aria-label="Maximum total"
           />

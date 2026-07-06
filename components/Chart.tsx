@@ -42,6 +42,10 @@ export interface RawAggregate {
 
 interface AggregatesResponse {
   data: RawAggregate[];
+  /** Exact distinct order count for this range/filters — see
+   *  getExactAggregateTotal. Preferred over summing category rows, which
+   *  double-counts any order whose items span more than one category. */
+  totalOrders?: number;
 }
 
 const DEFAULT_TOP_N = 4;
@@ -161,6 +165,16 @@ function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** "2026-06-05" -> "Jun 5" — the Brush centers each tick label on its data
+ *  point, so the first/last ticks always have half their text overflowing
+ *  the plot edge. A short label keeps that overflow small enough to stay
+ *  inside the chart's margin instead of being clipped by the container. */
+function compactBrushDate(value: string): string {
+  const d = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 function defaultRange(): { from: string; to: string } {
   return { from: "2020-01-01", to: isoDay(new Date()) };
 }
@@ -181,6 +195,10 @@ export default function Chart({
   onRangeChange,
 }: ChartProps) {
   const [rawData, setRawData] = useState<RawAggregate[]>([]);
+  // Exact distinct order count from the backend (getExactAggregateTotal) —
+  // null until the first response lands, then preferred over summing category
+  // rows (see the matchedOrders fallback below) for the header/Total tile.
+  const [exactTotal, setExactTotal] = useState<number | null>(null);
   const [range, setRange] = useState(defaultRange);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +212,10 @@ export default function Chart({
   // Abort in-flight requests so rapid drags don't race each other.
   const abortRef = useRef<AbortController | null>(null);
   const dragTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isControlled = controlledData !== undefined || onRangeChange != null;
+  // onRangeChange is an independent side-channel (e.g. syncing the brushed
+  // window into the shared filters so the list narrows too) — it does NOT
+  // imply controlled mode. Only supplying controlledData does.
+  const isControlled = controlledData !== undefined;
 
   const fetchAggregates = useCallback(
     async (from: string, to: string) => {
@@ -225,12 +246,19 @@ export default function Chart({
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: AggregatesResponse = await res.json();
+        // An aborted controller doesn't guarantee its fetch promise rejects
+        // before a newer, faster request's promise resolves — without this
+        // guard, a slower stale response can land after and silently
+        // overwrite the correct state from the request that superseded it.
+        if (abortRef.current !== controller) return;
         setRawData(Array.isArray(json.data) ? json.data : []);
+        setExactTotal(typeof json.totalOrders === "number" ? json.totalOrders : null);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
+        if (abortRef.current !== controller) return;
         setError((err as Error).message);
       } finally {
-        setLoading(false);
+        if (abortRef.current === controller) setLoading(false);
       }
     },
     [endpoint, topN, filters, searchQuery],
@@ -239,14 +267,24 @@ export default function Chart({
   // Initial load + refetch on user-driven changes and order events. The fetch
   // path intentionally does not clear rawData, so SSE refreshes update the chart
   // without the old blank/flicker behavior.
+  //
+  // from/to are recomputed from filters (not read from `range` state) so that
+  // clearing a sidebar date field takes effect immediately: `range` is only
+  // ever written by a brush drag, and once brush-drag also started syncing
+  // into `filters` (onRangeChange), a stale `range.to` left behind after the
+  // filter was cleared would otherwise keep silently narrowing every refetch
+  // via fetchAggregates' `filters?.to || to` fallback forever.
   useEffect(() => {
     if (isControlled) return;
+    const from = filters?.from || defaultRange().from;
+    const to = filters?.to || defaultRange().to;
+    // Keep the displayed range (header text, brush position) in sync too.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRange({ from, to });
     // Kicks off an async fetch (which toggles loading state); intentional.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchAggregates(range.from, range.to);
-    // range.from/range.to intentionally omitted: drag handles its own fetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchAggregates, isControlled, refreshSignal]);
+    fetchAggregates(from, to);
+  }, [fetchAggregates, isControlled, refreshSignal, filters?.from, filters?.to]);
 
   useEffect(() => {
     if (!isControlled) return;
@@ -301,6 +339,7 @@ export default function Chart({
     const { categorySlug, placedAt } = lastSseOrder;
     if (!categorySlug || !placedAt) return;
     const day = placedAt.slice(0, 10);
+    if (!rawData.some((entry) => entry.date === day)) return; // day not in window — don't disturb anything
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRawData((prev) => {
       const idx = prev.findIndex((entry) => entry.date === day);
@@ -317,6 +356,11 @@ export default function Chart({
       };
       return next;
     });
+    // Keep the exact total in step with the same optimistic bump — a real
+    // refetch (triggered by the same SSE event via refreshSignal) will correct
+    // it shortly after with the authoritative backend count regardless.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setExactTotal((prev) => (prev == null ? prev : prev + 1));
     // searchQuery/filters intentionally omitted: read via closure at the
     // render where lastSseOrder changed, which is what we want — re-running
     // this effect on a pure filter change (no new order) would be a no-op
@@ -352,10 +396,11 @@ export default function Chart({
     [rawData],
   );
 
-  // Total matched orders across the loaded range — each order falls in exactly
-  // one category, so summing per-category counts per day gives the day's order
-  // count. Shown in the header to confirm the chart IS filtering.
-  const matchedOrders = useMemo(
+  // Fallback total when the backend didn't send totalOrders (e.g. controlled
+  // mode) — summing per-category counts OVERCOUNTS any order whose items span
+  // more than one category, since each such category gets totalOrders=1 for
+  // that order. Only used when exactTotal is unavailable; prefer that instead.
+  const summedCategoryOrders = useMemo(
     () =>
       rawData.reduce((sum, day) => {
         const dayTotal = Object.values(day.categories ?? {}).reduce(
@@ -366,6 +411,7 @@ export default function Chart({
       }, 0),
     [rawData],
   );
+  const matchedOrders = exactTotal ?? summedCategoryOrders;
 
   // Whether any search/filter is narrowing the set (drives the matched count).
   const isFiltered = Boolean(
@@ -477,11 +523,11 @@ export default function Chart({
       setRange({ from, to });
       if (dragTimer.current) clearTimeout(dragTimer.current);
       dragTimer.current = setTimeout(() => {
-        if (isControlled) {
-          onRangeChange?.({ from, to });
-          return;
-        }
-        fetchAggregates(from, to);
+        if (!isControlled) fetchAggregates(from, to);
+        // Notify the parent regardless of controlled/uncontrolled mode, so it
+        // can sync the brushed window into shared filters (e.g. so the list
+        // narrows to the same range the chart is now showing).
+        onRangeChange?.({ from, to });
       }, DRAG_DEBOUNCE_MS);
     },
     [
@@ -539,7 +585,11 @@ export default function Chart({
         <ResponsiveContainer width="100%" height={320}>
           <BarChart
             data={buckets}
-            margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
+            // The Y-axis (width={56} below) sits inside the left margin, so a
+            // numerically equal left/right margin still leaves far less real
+            // buffer on the right — right is padded by the Y-axis width too
+            // so both sides give the Brush's edge labels the same clearance.
+            margin={{ top: 8, right: 8 + 56, left: 8, bottom: 0 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
             <XAxis
@@ -625,6 +675,17 @@ export default function Chart({
                         </label>
                       );
                     })()}
+                  <span
+                    data-testid="aggregate-tile-total"
+                    data-total={matchedOrders}
+                    className="inline-flex items-center gap-1.5 whitespace-nowrap border-l border-gray-200 pl-4 font-medium dark:border-gray-700"
+                    style={{ color: axisColor }}
+                  >
+                    Total
+                    <span className="font-medium tabular-nums text-gray-900 dark:text-gray-100">
+                      {matchedOrders.toLocaleString()}
+                    </span>
+                  </span>
                 </div>
               )}
             />
@@ -672,6 +733,7 @@ export default function Chart({
               stroke="#6366f1"
               fill={isDark ? "#111827" : "#ffffff"}
               travellerWidth={10}
+              tickFormatter={compactBrushDate}
               onChange={handleBrushChange}
             />
           </BarChart>
