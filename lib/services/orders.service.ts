@@ -21,6 +21,8 @@ const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_SORT: OrderSortField = "placedAt";
 const DEFAULT_DIR: SortDir = "desc";
+const COUNT_CAP = 10_000;
+const COUNT_SENTINEL = COUNT_CAP + 1; // returned when result exceeds cap
 
 const ORDER_STATUSES: readonly OrderStatus[] = [
   "PENDING",
@@ -65,6 +67,15 @@ export function buildSearchTextConditions(q: string | null | undefined): Prisma.
     .split(/\s+/)
     .filter(Boolean)
     .map((token) => Prisma.sql`o.search_text ILIKE ${`%${escapeLike(token)}%`}`);
+}
+
+/** True when any whitespace-split token of q is shorter than 3 characters —
+ *  such a token's ILIKE '%tok%' matches too broadly to trust the exact-count
+ *  cache blindly, so the count path goes through cappedCount instead. */
+function hasShortToken(q: string | undefined): boolean {
+  const text = q?.trim();
+  if (!text) return false;
+  return text.split(/\s+/).some((token) => token.length > 0 && token.length < 3);
 }
 
 // ---------- Filters ----------
@@ -232,9 +243,13 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     // this is the LAST page — and therefore whether to reverse-scan — can't
     // be known until total/totalPages is known. In practice this costs
     // nothing extra: count is a count_cache hit or a rollup sum, both cheap.
-    const total = await (isPureDateRangeQuery(q, filters)
+    const rawTotal = await (isPureDateRangeQuery(q, filters)
       ? sumDailyOrderCount(filters.from, filters.to)
-      : cachedCount(cacheKey, () => exactCount(whereSql)));
+      : hasShortToken(q)
+        ? cappedCount(cacheKey, whereSql)
+        : cachedCount(cacheKey, () => exactCount(whereSql)));
+    const approximate = rawTotal === COUNT_SENTINEL;
+    const total = approximate ? COUNT_CAP : rawTotal;
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
     // Last-page reverse-scan: OFFSET cost scales with how deep into the
@@ -266,7 +281,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     }
 
     const data = await hydrateOrders(idRows.map((r) => r.id));
-    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate: false };
+    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate };
     if (input.facets) result.facets = await computeFacets(whereSql);
     return result;
   } catch (err) {
@@ -317,16 +332,20 @@ export async function listOrdersByCursor(
       LIMIT ${pageSize}`;
 
     const cacheKey = buildCountCacheKey(q, filters);
-    const total = await (isPureDateRangeQuery(q, filters)
+    const rawTotal = await (isPureDateRangeQuery(q, filters)
       ? sumDailyOrderCount(filters.from, filters.to)
-      : cachedCount(cacheKey, () => exactCount(baseWhereSql)));
+      : hasShortToken(q)
+        ? cappedCount(cacheKey, baseWhereSql)
+        : cachedCount(cacheKey, () => exactCount(baseWhereSql)));
+    const approximate = rawTotal === COUNT_SENTINEL;
+    const total = approximate ? COUNT_CAP : rawTotal;
 
     const rows = await prisma.$queryRaw<{ id: number }[]>(pageQuery);
     const idRows = isNext ? rows : rows.reverse();
 
     const data = await hydrateOrders(idRows.map((r) => r.id));
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
-    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate: false };
+    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate };
     if (input.facets) result.facets = await computeFacets(baseWhereSql);
     return result;
   } catch (err) {
@@ -372,6 +391,37 @@ export async function exactCount(whereSql: Prisma.Sql): Promise<number> {
     SELECT count(*)::bigint AS count
     FROM orders o ${whereSql}`);
   return Number(rows[0]?.count ?? 0);
+}
+
+/** Capped exact count for broad short-token searches. LIMIT inside the
+ *  subquery lets Postgres stop as soon as it's found COUNT_SENTINEL matching
+ *  rows instead of scanning every match of a wide ILIKE pattern. A result
+ *  under the sentinel IS the exact count (safe to cache); a result AT the
+ *  sentinel means "more than COUNT_CAP" and is never cached, since it isn't
+ *  exact — the frontend follows up with an uncapped /count request to get
+ *  the real number in the background. */
+export async function cappedCount(cacheKey: string, whereSql: Prisma.Sql): Promise<number> {
+  try {
+    const hit = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
+      SELECT total FROM count_cache
+      WHERE cache_key = ${cacheKey}
+        AND cached_at > NOW() - INTERVAL '30 days'
+      LIMIT 1`);
+    if (hit.length > 0) return Number(hit[0].total);
+  } catch {}
+
+  const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
+    SELECT count(*)::bigint AS count
+    FROM (SELECT 1 FROM orders o ${whereSql} LIMIT ${COUNT_SENTINEL}) _cap`);
+  const total = Number(rows[0]?.count ?? 0);
+  if (total === COUNT_SENTINEL) return COUNT_SENTINEL;
+
+  prisma.$queryRaw(Prisma.sql`
+    INSERT INTO count_cache (cache_key, total, cached_at)
+    VALUES (${cacheKey}, ${BigInt(total)}, NOW())
+    ON CONFLICT (cache_key) DO UPDATE SET total = ${BigInt(total)}, cached_at = NOW()`
+  ).catch(() => {});
+  return total;
 }
 
 /** True when the only active filter is (optionally) a date range — no search

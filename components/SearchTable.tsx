@@ -152,6 +152,8 @@ export default function SearchTable({
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
   const [approximate, setApproximate] = useState(false);
+  const [refiningCount, setRefiningCount] = useState(false);
+  const countAbortRef = useRef<AbortController | null>(null);
   const [sort, setSort] = useState<string>("placedAt");
   const [dir, setDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(false);
@@ -218,6 +220,8 @@ export default function SearchTable({
       showSearchIndicator: boolean,
     ) => {
       abortRef.current?.abort();
+      countAbortRef.current?.abort();
+      setRefiningCount(false);
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -252,6 +256,24 @@ export default function SearchTable({
         setApproximate(Boolean(json.approximate));
         onRowsRef.current?.(data);
         updateCursorAnchor(sortCol, sortDir, data);
+        if (json.approximate) {
+          const countController = new AbortController();
+          countAbortRef.current = countController;
+          setRefiningCount(true);
+          const countParams = new URLSearchParams({ q });
+          appendFilterParams(countParams, f);
+          fetch(`${endpoint}/count?${countParams}`, { signal: countController.signal })
+            .then((r) => (r.ok ? r.json() : Promise.reject()))
+            .then((data) => {
+              if (countAbortRef.current !== countController) return;
+              setTotal(data.total);
+              setApproximate(false);
+              setRefiningCount(false);
+            })
+            .catch(() => {
+              if (countAbortRef.current === countController) setRefiningCount(false);
+            });
+        }
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         if (abortRef.current !== controller) return;
@@ -409,7 +431,10 @@ export default function SearchTable({
   ]);
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      countAbortRef.current?.abort();
+    };
   }, []);
 
   // When a new order event arrives (highlightKey bumps), flash its row once it
@@ -531,6 +556,12 @@ export default function SearchTable({
         className="mb-3 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
         aria-label="Search records"
       />
+
+      {debouncedQuery.trim().split(/\s+/).some((t) => t.length > 0 && t.length < 3) && (
+        <p className="mb-3 text-xs text-gray-400">
+          Short search terms may take a moment — adding more characters speeds things up.
+        </p>
+      )}
 
       <div
         className="overflow-x-auto"
@@ -655,7 +686,9 @@ export default function SearchTable({
         <span className="text-xs text-gray-500 dark:text-gray-400">
           Page {page} of {totalPages} ·{" "}
           <span data-testid="search-total" data-total={total}>
-            {approximate ? `${total.toLocaleString()}+` : total.toLocaleString()}
+            {approximate
+              ? `${total.toLocaleString()}+${refiningCount ? "…" : ""}`
+              : total.toLocaleString()}
           </span>{" "}
           results
         </span>
