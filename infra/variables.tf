@@ -58,6 +58,12 @@ variable "ec2_instance_type" {
   default     = "t3.small"
 }
 
+variable "ec2_root_volume_size" {
+  description = "Root EBS volume size (GB) for the app server. The AMI's own default (2GB) is too small once nodejs/postgresql-client/awscli/rsync/nginx are dnf-installed alongside the app's node_modules/build output — that combination fills a 2GB disk with zero headroom for a subsequent npm install or next build."
+  type        = number
+  default     = 20
+}
+
 variable "ssh_public_key_path" {
   description = "Path to local SSH public key used for EC2 access"
   type        = string

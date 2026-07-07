@@ -207,6 +207,11 @@ resource "aws_instance" "app" {
   iam_instance_profile        = aws_iam_instance_profile.app.name
   associate_public_ip_address = true
 
+  root_block_device {
+    volume_size = var.ec2_root_volume_size
+    volume_type = "gp3"
+  }
+
   # pg_dump/psql are pinned to the SAME major version as var.engine_version —
   # pg_dump refuses to dump from a server newer than itself (a mismatch here
   # broke bake-demo-snapshot.sh once already), so this must never hardcode a
