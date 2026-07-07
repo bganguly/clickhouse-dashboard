@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import Chart from "@/components/Chart";
 import SearchTable, { type SearchRow } from "@/components/SearchTable";
@@ -154,6 +155,12 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              href="/api-explorer"
+              className="text-sm text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
+            >
+              API Explorer
+            </Link>
             <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
                 <input
                   type="checkbox"
