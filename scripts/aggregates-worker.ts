@@ -11,7 +11,7 @@
  */
 import { Client } from "pg";
 import { prisma } from "@/lib/prisma";
-import { resolvePgUrl } from "@/lib/pg-url";
+import { resolvePgClientConfig } from "@/lib/pg-url";
 import {
   updateDailyCustomerCategorySummary,
   updateDailyCustomerTokenCategoryRollup,
@@ -87,7 +87,7 @@ async function drain(): Promise<void> {
 }
 
 async function main() {
-  const pg = new Client({ connectionString: resolvePgUrl() });
+  const pg = new Client(resolvePgClientConfig());
   await pg.connect();
   await pg.query(`LISTEN ${CHANNEL}`);
   pg.on("notification", () => void drain());

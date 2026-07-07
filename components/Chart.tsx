@@ -424,17 +424,6 @@ export default function Chart({
   );
   const matchedOrders = exactTotal ?? summedCategoryOrders;
 
-  // Whether any search/filter is narrowing the set (drives the matched count).
-  const isFiltered = Boolean(
-    searchQuery ||
-      filters?.status?.length ||
-      filters?.regionCodes?.length ||
-      filters?.from ||
-      filters?.to ||
-      filters?.totalMin ||
-      filters?.totalMax,
-  );
-
   // Stack only the top N *real* categories; everything else (including any
   // backend-provided "Other"/"Others" pseudo-category) rolls into a single
   // "Others" series.
@@ -568,11 +557,6 @@ export default function Chart({
             {range.from} → {range.to}
             <span className="ml-2 text-gray-400">drag the slider to rescan</span>
           </p>
-          {isFiltered && matchedOrders > 0 && (
-            <p className="text-xs text-indigo-500">
-              {matchedOrders.toLocaleString()} matched orders
-            </p>
-          )}
         </div>
         {(isControlled ? controlledLoading : loading) && (
           <span className="text-xs text-indigo-500" aria-live="polite">

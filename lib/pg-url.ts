@@ -41,3 +41,30 @@ export function resolvePgUrl(): string {
 export function isStandardPostgresUrl(url: string): boolean {
   return /^postgres(ql)?:\/\//i.test(url);
 }
+
+/**
+ * Connection options for the raw `pg` driver (LISTEN/NOTIFY), shared by every
+ * standalone pg.Client in this project (the SSE stream subscription and the
+ * aggregates-worker's wake-up-nudge connection). `pg` doesn't automatically
+ * trust RDS's CA chain, so a bare connectionString with `sslmode=require` in
+ * it fails with "self-signed certificate in certificate chain" against RDS —
+ * `rejectUnauthorized: false` sidesteps that (acceptable here: this is a
+ * same-VPC/localhost connection, not a public-internet hop where MITM is a
+ * real concern). Local Postgres (e.g. Homebrew) doesn't support SSL at all,
+ * so SSL is only requested when the URL asked for it or the host isn't local.
+ */
+export function resolvePgClientConfig(): { connectionString: string; ssl: false | { rejectUnauthorized: false } } {
+  const rawUrl = resolvePgUrl();
+  const parsed = new URL(rawUrl);
+  const sslmode = parsed.searchParams.get("sslmode");
+  const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
+  const useSsl =
+    sslmode === "require" || sslmode === "verify-ca" || sslmode === "verify-full" || !isLocalHost;
+  // Strip sslmode from the URL so it doesn't conflict with the ssl constructor
+  // option — pg v8 parses sslmode itself and can override the ssl object.
+  parsed.searchParams.delete("sslmode");
+  return {
+    connectionString: parsed.toString(),
+    ssl: useSsl ? { rejectUnauthorized: false } : false,
+  };
+}

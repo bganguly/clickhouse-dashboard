@@ -6,7 +6,7 @@
     "predev": "lsof -ti tcp:3004 | xargs kill 2>/dev/null || true",
     "dev": "next dev -p 3004",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3004",
     "lint": "eslint"
   },
   "dependencies": {

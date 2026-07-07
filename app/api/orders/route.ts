@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createOrder, isAppError, listOrders } from "@/lib/services";
+import { createOrder, isAppError, listOrders, listOrdersByCursor } from "@/lib/services";
 import type { CreateOrderInput } from "@/lib/types";
 
 // GET /api/orders?q=&page=&pageSize=&sort=&dir=
 //   filters: &status=&regionCode=&from=&to=&minTotal=&maxTotal=  (status/regionCode accept comma lists)
 //   &facets=1 to include sidebar facet counts
+//   &cursorId=&cursorPlacedAt=&cursorDir=next|prev — keyset Prev/Next, only
+//   honored when sort=placedAt&dir=desc (the default); any other combination
+//   is purely additive and falls back to the plain OFFSET path unchanged.
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const num = (name: string) => {
@@ -12,21 +15,44 @@ export async function GET(req: NextRequest) {
     return v != null && v !== "" ? Number(v) : undefined;
   };
 
+  const sort = searchParams.get("sort");
+  const dir = searchParams.get("dir");
+  const cursorId = num("cursorId");
+  const cursorPlacedAt = searchParams.get("cursorPlacedAt");
+  const cursorDirRaw = searchParams.get("cursorDir");
+  const cursorDir = cursorDirRaw === "next" || cursorDirRaw === "prev" ? cursorDirRaw : undefined;
+
+  const baseInput = {
+    page: num("page"),
+    pageSize: num("pageSize"),
+    q: searchParams.get("q"),
+    sort,
+    dir,
+    status: searchParams.get("status"),
+    regionCode: searchParams.get("regionCode"),
+    from: searchParams.get("from"),
+    to: searchParams.get("to"),
+    minTotal: num("minTotal") ?? null,
+    maxTotal: num("maxTotal") ?? null,
+    facets: searchParams.get("facets") === "1" || searchParams.get("facets") === "true",
+  };
+
+  const useCursor =
+    cursorId !== undefined &&
+    !!cursorPlacedAt &&
+    !!cursorDir &&
+    (sort == null || sort === "placedAt") &&
+    (dir == null || dir === "desc");
+
   try {
-    const result = await listOrders({
-      page: num("page"),
-      pageSize: num("pageSize"),
-      q: searchParams.get("q"),
-      sort: searchParams.get("sort"),
-      dir: searchParams.get("dir"),
-      status: searchParams.get("status"),
-      regionCode: searchParams.get("regionCode"),
-      from: searchParams.get("from"),
-      to: searchParams.get("to"),
-      minTotal: num("minTotal") ?? null,
-      maxTotal: num("maxTotal") ?? null,
-      facets: searchParams.get("facets") === "1" || searchParams.get("facets") === "true",
-    });
+    const result = useCursor
+      ? await listOrdersByCursor({
+          ...baseInput,
+          cursorId: cursorId!,
+          cursorPlacedAt: cursorPlacedAt!,
+          cursorDir: cursorDir!,
+        })
+      : await listOrders(baseInput);
     return NextResponse.json(result);
   } catch (err) {
     return toErrorResponse(err);

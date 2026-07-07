@@ -345,6 +345,19 @@ model AuditLog {
   @@map("audit_log")
 }
 
+// One row per calendar day, no category/status/region dimension — a pure
+// date-range total can be summed from this with zero risk of double-counting
+// a multi-category order (unlike DailySummary, which is per-category and
+// can't be summed for a grand total). Upserted synchronously in the same
+// transaction as the order insert in orders.service.ts's createOrder, so
+// there is zero replication lag by construction.
+model DailyOrderCount {
+  date        DateTime @id @db.Date
+  totalOrders Int      @default(0)
+
+  @@map("daily_order_count")
+}
+
 model CountCache {
   cacheKey String   @id @map("cache_key")
   total    BigInt

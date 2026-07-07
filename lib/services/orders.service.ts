@@ -212,32 +212,125 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       sort === "customer" ? Prisma.sql`JOIN customers c ON c.id = o."customerId"` : Prisma.empty;
 
     const sortSql = Prisma.raw(SORT_SQL[sort]);
-    const dirSql = Prisma.raw(dir === "asc" ? "ASC" : "DESC");
-    const tiebreakerColSql =
-      sort === "placedAt"
-        ? Prisma.raw(`o.id ${dir === "asc" ? "ASC" : "DESC"}`)
-        : Prisma.raw('o."placedAt" DESC, o.id DESC');
-
-    const pageQuery = Prisma.sql`
-      SELECT o.id
-      FROM orders o ${customerJoin}
-      ${whereSql}
-      ORDER BY ${sortSql} ${dirSql}, ${tiebreakerColSql}
-      LIMIT ${pageSize} OFFSET ${offset}`;
+    const orderBy = (flip: boolean) => {
+      const d = flip ? (dir === "asc" ? "desc" : "asc") : dir;
+      const dirSql = Prisma.raw(d === "asc" ? "ASC" : "DESC");
+      const tiebreakerColSql =
+        sort === "placedAt"
+          ? Prisma.raw(`o.id ${d === "asc" ? "ASC" : "DESC"}`)
+          : Prisma.raw(`o."placedAt" ${d === "asc" ? "DESC" : "ASC"}, o.id ${d === "asc" ? "DESC" : "ASC"}`);
+      return Prisma.sql`${sortSql} ${dirSql}, ${tiebreakerColSql}`;
+    };
 
     const cacheKey = buildCountCacheKey(q, filters);
-    const [idRows, total] = await Promise.all([
-      prisma.$queryRaw<{ id: number }[]>(pageQuery),
-      cachedCount(cacheKey, () => exactCount(whereSql)),
-    ]);
+    // Same rollup shortcut as getExactAggregateTotal (aggregates.service.ts):
+    // a pure date-range query — the default/unfiltered view's own first hit
+    // on a given day's range included — would otherwise pay a synchronous
+    // COUNT(*) on every cache miss. Without this, the chart's total gets fast
+    // via the rollup but the list's own pagination total would not.
+    // Awaited before the id fetch (rather than in parallel) because whether
+    // this is the LAST page — and therefore whether to reverse-scan — can't
+    // be known until total/totalPages is known. In practice this costs
+    // nothing extra: count is a count_cache hit or a rollup sum, both cheap.
+    const total = await (isPureDateRangeQuery(q, filters)
+      ? sumDailyOrderCount(filters.from, filters.to)
+      : cachedCount(cacheKey, () => exactCount(whereSql)));
+    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+    // Last-page reverse-scan: OFFSET cost scales with how deep into the
+    // result set it skips — cheap for page 1, but LIMIT 20 OFFSET ~4,000,000
+    // forces Postgres to walk/sort past nearly the whole table first. Scanning
+    // from the OPPOSITE end with the ORDER BY flipped is exactly as cheap as
+    // page 1 (same index, same direction of travel), then the rows are
+    // reversed back in memory to restore normal display order. Generalized to
+    // any sort/dir, not just the default placedAt/desc.
+    const isLastPage = totalPages > 1 && page === totalPages;
+    let idRows: { id: number }[];
+    if (isLastPage) {
+      const remainder = total - (totalPages - 1) * pageSize;
+      const reverseQuery = Prisma.sql`
+        SELECT o.id
+        FROM orders o ${customerJoin}
+        ${whereSql}
+        ORDER BY ${orderBy(true)}
+        LIMIT ${remainder} OFFSET 0`;
+      idRows = (await prisma.$queryRaw<{ id: number }[]>(reverseQuery)).reverse();
+    } else {
+      const pageQuery = Prisma.sql`
+        SELECT o.id
+        FROM orders o ${customerJoin}
+        ${whereSql}
+        ORDER BY ${orderBy(false)}
+        LIMIT ${pageSize} OFFSET ${offset}`;
+      idRows = await prisma.$queryRaw<{ id: number }[]>(pageQuery);
+    }
 
     const data = await hydrateOrders(idRows.map((r) => r.id));
-    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
     const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate: false };
     if (input.facets) result.facets = await computeFacets(whereSql);
     return result;
   } catch (err) {
     mapDbError(err, "listOrders");
+  }
+}
+
+/**
+ * Keyset (cursor) fetch for the default placedAt/desc sort only — Prev/Next
+ * on this sort should never pay OFFSET's page-depth-scaling cost even one
+ * page in. `dir: "next"` seeks strictly past the cursor in display order;
+ * `dir: "prev"` seeks backward (a flipped comparison + flipped ORDER BY),
+ * then the returned rows are reversed back to newest-first before returning
+ * — a backward seek reads oldest-first off the cursor. total/totalPages come
+ * from the same count path as listOrders (typically a cache hit for an
+ * unchanged filter signature, so effectively free).
+ */
+export async function listOrdersByCursor(
+  input: OrderListInput & { cursorId: number; cursorPlacedAt: string; cursorDir: "next" | "prev" },
+): Promise<OrderListResult> {
+  const pageSize = Math.min(
+    Math.max(Math.trunc(input.pageSize ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE, 1),
+    MAX_PAGE_SIZE,
+  );
+  const page = Math.max(Math.trunc(input.page ?? 1) || 1, 1);
+  const q = input.q?.trim();
+
+  try {
+    const filters = await resolveFilters(input);
+    const baseConds = [...buildSearchTextConditions(q), ...buildFilterConditions(filters)];
+    const baseWhereSql = whereClause(baseConds);
+    const cursorTimestamp = toNaiveUtcTimestamp(new Date(input.cursorPlacedAt));
+    const isNext = input.cursorDir === "next";
+    // Forward: strictly older than the cursor (newest-first display order).
+    // Backward: strictly newer than the cursor, scanned oldest-first off the
+    // cursor, then reversed back to newest-first below.
+    const cursorCond = isNext
+      ? Prisma.sql`(o."placedAt", o.id) < (${cursorTimestamp}::timestamp, ${input.cursorId})`
+      : Prisma.sql`(o."placedAt", o.id) > (${cursorTimestamp}::timestamp, ${input.cursorId})`;
+    const whereSql = whereClause([...baseConds, cursorCond]);
+    const dirSql = Prisma.raw(isNext ? "DESC" : "ASC");
+
+    const pageQuery = Prisma.sql`
+      SELECT o.id
+      FROM orders o
+      ${whereSql}
+      ORDER BY o."placedAt" ${dirSql}, o.id ${dirSql}
+      LIMIT ${pageSize}`;
+
+    const cacheKey = buildCountCacheKey(q, filters);
+    const total = await (isPureDateRangeQuery(q, filters)
+      ? sumDailyOrderCount(filters.from, filters.to)
+      : cachedCount(cacheKey, () => exactCount(baseWhereSql)));
+
+    const rows = await prisma.$queryRaw<{ id: number }[]>(pageQuery);
+    const idRows = isNext ? rows : rows.reverse();
+
+    const data = await hydrateOrders(idRows.map((r) => r.id));
+    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate: false };
+    if (input.facets) result.facets = await computeFacets(baseWhereSql);
+    return result;
+  } catch (err) {
+    mapDbError(err, "listOrdersByCursor");
   }
 }
 
@@ -279,6 +372,35 @@ export async function exactCount(whereSql: Prisma.Sql): Promise<number> {
     SELECT count(*)::bigint AS count
     FROM orders o ${whereSql}`);
   return Number(rows[0]?.count ?? 0);
+}
+
+/** True when the only active filter is (optionally) a date range — no search
+ *  text, status, region, or total-bounds filter. This is the exact shape the
+ *  DailyOrderCount rollup can answer by summing rather than a live COUNT(*). */
+export function isPureDateRangeQuery(q: string | undefined, filters: ResolvedFilters): boolean {
+  return (
+    !q?.trim() &&
+    filters.statuses.length === 0 &&
+    filters.regionIds === null &&
+    filters.minTotal === null &&
+    filters.maxTotal === null
+  );
+}
+
+/** Zero-lag exact total for a pure date-range query — sums the DailyOrderCount
+ *  rollup (kept in sync synchronously in createOrder's own transaction)
+ *  instead of running a live COUNT(*) over the matching orders. A brush drag
+ *  lands on a never-before-cached range essentially every time, so
+ *  count_cache can't help there; this rollup can, since it has no per-filter
+ *  combinatorial explosion (one row per day, period). */
+export async function sumDailyOrderCount(from: Date | null, to: Date | null): Promise<number> {
+  const conds: Prisma.Sql[] = [];
+  if (from) conds.push(Prisma.sql`date >= ${toNaiveUtcTimestamp(from)}::date`);
+  if (to) conds.push(Prisma.sql`date <= ${toNaiveUtcTimestamp(to)}::date`);
+  const rows = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
+    SELECT COALESCE(SUM("totalOrders"), 0)::bigint AS total
+    FROM daily_order_count ${whereClause(conds)}`);
+  return Number(rows[0]?.total ?? 0);
 }
 
 /**
@@ -475,6 +597,18 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
         },
       });
       await tx.orderEvent.create({ data: { orderId: order.id } });
+      // Synchronous, same-transaction rollup so a pure date-range total
+      // (the common brush-drag/default-view case) can be summed instantly
+      // with zero replication lag — see DailyOrderCount in schema.prisma.
+      // CURRENT_DATE (not a JS Date round-tripped through serialization,
+      // which shifts by the app server's local UTC offset — see
+      // toNaiveUtcTimestamp's comment above) is evaluated in this same
+      // transaction/session as placedAt's own `now()` default, so the two
+      // always bucket into the same calendar day.
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO daily_order_count (date, "totalOrders")
+        VALUES (CURRENT_DATE, 1)
+        ON CONFLICT (date) DO UPDATE SET "totalOrders" = daily_order_count."totalOrders" + 1`);
       return order;
     });
     let categorySlug: string | undefined;
@@ -498,11 +632,22 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       categorySlug,
     }).catch(() => {});
     // count_cache has no active invalidation otherwise (just a 30-day passive
-    // TTL) — a new order makes every cached exact count a potential undercount
-    // until something forces a recompute. Wiping it is cheap (small table,
-    // lazily repopulated on next read) and guarantees no stale count survives
-    // a write.
-    prisma.$executeRaw`DELETE FROM count_cache`.catch(() => {});
+    // TTL) — a new order makes some cached exact counts a potential
+    // undercount until something forces a recompute. Scoped rather than a
+    // blanket wipe: filter-less (q=) entries cover every order so they must
+    // always be cleared; a q=<token> entry only needs clearing if this
+    // order's own search_text actually matches that token — an unrelated
+    // search term shouldn't be evicted by an unrelated write (this also
+    // stops every write from defeating the pre-warm block above).
+    // created.searchText is already populated here: fn_order_search_text is a
+    // BEFORE INSERT trigger, so tx.order.create()'s RETURNING reflects it.
+    const searchText = created.searchText ?? "";
+    prisma
+      .$executeRaw(Prisma.sql`
+        DELETE FROM count_cache WHERE
+          substring(cache_key from 'q=([^&]*)') = ''
+          OR (${searchText} <> '' AND ${searchText} ILIKE '%' || substring(cache_key from 'q=([^&]*)') || '%')`)
+      .catch(() => {});
     return {
       id: created.id,
       status: created.status,

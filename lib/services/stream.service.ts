@@ -1,6 +1,6 @@
 import { Client } from "pg";
 import { AppError } from "@/lib/errors";
-import { resolvePgUrl } from "@/lib/pg-url";
+import { resolvePgClientConfig } from "@/lib/pg-url";
 import type { OrderNotification } from "@/lib/types";
 import { prisma } from "@/lib/prisma";
 
@@ -35,28 +35,14 @@ export async function subscribeToOrders(
   handlers: OrderStreamHandlers,
 ): Promise<StreamSubscription> {
   let connectionString: string;
-  let useSsl: boolean;
+  let ssl: false | { rejectUnauthorized: false };
   try {
-    const rawUrl = resolvePgUrl();
-    const parsed = new URL(rawUrl);
-    // Local Postgres (e.g. Homebrew) doesn't support SSL at all, so forcing it
-    // unconditionally makes LISTEN/NOTIFY fail to connect against local dev DBs.
-    // Only request SSL when the URL asked for it or the host isn't local.
-    const sslmode = parsed.searchParams.get("sslmode");
-    const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
-    useSsl = sslmode === "require" || sslmode === "verify-ca" || sslmode === "verify-full" || !isLocalHost;
-    // Strip sslmode from the URL so it doesn't conflict with the ssl constructor option.
-    // pg v8 parses sslmode and can override the ssl object we pass in.
-    parsed.searchParams.delete("sslmode");
-    connectionString = parsed.toString();
+    ({ connectionString, ssl } = resolvePgClientConfig());
   } catch (err) {
     throw new AppError("INTERNAL", err instanceof Error ? err.message : "invalid Postgres URL");
   }
 
-  const client = new Client({
-    connectionString,
-    ssl: useSsl ? { rejectUnauthorized: false } : false,
-  });
+  const client = new Client({ connectionString, ssl });
 
   let counted = false;
   const close = async () => {

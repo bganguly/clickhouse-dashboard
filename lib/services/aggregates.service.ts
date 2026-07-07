@@ -9,8 +9,10 @@ import {
   cachedCount,
   escapeLike,
   exactCount,
+  isPureDateRangeQuery,
   normalizeStatusList,
   resolveFilters,
+  sumDailyOrderCount,
   todayDateString,
   whereClause,
 } from "./orders.service";
@@ -105,9 +107,16 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
     to: input.to || (input.from ? todayDateString() : input.to),
   };
   const filters = await resolveFilters(query);
-  const conds = [...buildSearchTextConditions(query.q), ...buildFilterConditions(filters)];
-  const cacheKey = buildCountCacheKey(query.q ?? undefined, filters);
   try {
+    // A brush drag lands on a never-before-cached date range essentially
+    // every time, so count_cache can't help there — but a pure date-range
+    // query (no q/status/region/total filter) can be answered by summing
+    // the zero-lag DailyOrderCount rollup instead of a live COUNT(*).
+    if (isPureDateRangeQuery(query.q ?? undefined, filters)) {
+      return await sumDailyOrderCount(filters.from, filters.to);
+    }
+    const conds = [...buildSearchTextConditions(query.q), ...buildFilterConditions(filters)];
+    const cacheKey = buildCountCacheKey(query.q ?? undefined, filters);
     return await cachedCount(cacheKey, () => exactCount(whereClause(conds)));
   } catch (err) {
     mapDbError(err, "getExactAggregateTotal");

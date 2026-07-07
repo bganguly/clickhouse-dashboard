@@ -165,6 +165,43 @@ export default function SearchTable({
   const abortRef = useRef<AbortController | null>(null);
   const isControlled = onRequestStateChange != null;
 
+  // Keyset (cursor) pagination anchor — only ever populated for the default
+  // placedAt/desc sort (cleared otherwise), so any other sort transparently
+  // falls back to plain OFFSET paging. Holds the first/last row's id+placedAt
+  // of the currently-displayed page, which is exactly what Prev/Next need to
+  // seek from without paying OFFSET's page-depth-scaling cost.
+  interface CursorAnchor {
+    firstId: number;
+    firstPlacedAt: string;
+    lastId: number;
+    lastPlacedAt: string;
+  }
+  const cursorAnchorRef = useRef<CursorAnchor | null>(null);
+  // Set right before a cursor-driven setPage(), so the main page-change effect
+  // (which would otherwise re-fetch via plain OFFSET) treats that one page
+  // change as a no-op — the cursor fetch already populated the page.
+  const skipNextFetchRef = useRef(false);
+
+  const updateCursorAnchor = useCallback(
+    (sortCol: string, sortDir: SortDir, data: SearchRow[]) => {
+      if (sortCol !== "placedAt" || sortDir !== "desc" || data.length === 0) {
+        cursorAnchorRef.current = null;
+        return;
+      }
+      const first = data[0];
+      const last = data[data.length - 1];
+      const firstId = Number(first.id);
+      const lastId = Number(last.id);
+      const firstPlacedAt = typeof first.placedAt === "string" ? first.placedAt : undefined;
+      const lastPlacedAt = typeof last.placedAt === "string" ? last.placedAt : undefined;
+      cursorAnchorRef.current =
+        Number.isFinite(firstId) && Number.isFinite(lastId) && firstPlacedAt && lastPlacedAt
+          ? { firstId, firstPlacedAt, lastId, lastPlacedAt }
+          : null;
+    },
+    [],
+  );
+
   // Latest onRows without making it a fetch dependency.
   const onRowsRef = useRef(onRows);
   useEffect(() => {
@@ -214,6 +251,7 @@ export default function SearchTable({
         setTotal(json.total ?? 0);
         setApproximate(Boolean(json.approximate));
         onRowsRef.current?.(data);
+        updateCursorAnchor(sortCol, sortDir, data);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         if (abortRef.current !== controller) return;
@@ -229,7 +267,56 @@ export default function SearchTable({
         }
       }
     },
-    [endpoint, pageSize],
+    [endpoint, pageSize, updateCursorAnchor],
+  );
+
+  const fetchAdjacentByCursor = useCallback(
+    async (direction: "prev" | "next"): Promise<boolean> => {
+      const anchor = cursorAnchorRef.current;
+      if (!anchor) return false;
+      const cursorId = direction === "next" ? anchor.lastId : anchor.firstId;
+      const cursorPlacedAt = direction === "next" ? anchor.lastPlacedAt : anchor.firstPlacedAt;
+      const targetPage = direction === "next" ? page + 1 : page - 1;
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setLoading(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          q: debouncedQuery,
+          page: String(targetPage),
+          pageSize: String(pageSize),
+          sort: "placedAt",
+          dir: "desc",
+          cursorId: String(cursorId),
+          cursorPlacedAt,
+          cursorDir: direction,
+        });
+        appendFilterParams(params, filters);
+        const res = await fetch(`${endpoint}?${params}`, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json: SearchResponse = await res.json();
+        if (abortRef.current !== controller) return true;
+        const data = Array.isArray(json.data) ? json.data : [];
+        setRows(data);
+        setTotalPages(Math.max(1, json.totalPages ?? 1));
+        setTotal(json.total ?? 0);
+        setApproximate(Boolean(json.approximate));
+        onRowsRef.current?.(data);
+        updateCursorAnchor("placedAt", "desc", data);
+        return true;
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return true;
+        if (abortRef.current !== controller) return true;
+        setError((err as Error).message);
+        return false;
+      } finally {
+        if (abortRef.current === controller) setLoading(false);
+      }
+    },
+    [debouncedQuery, page, pageSize, filters, endpoint, updateCursorAnchor],
   );
 
   // Search commits on Enter only (Task 19) — typing updates the input value but
@@ -278,6 +365,13 @@ export default function SearchTable({
   const lastFiltersKey = useRef<string>(JSON.stringify(filters ?? {}));
   const lastFetchedQuery = useRef(debouncedQuery);
   useEffect(() => {
+    // A cursor-driven setPage() already populated rows/total for the new
+    // page — this effect still fires because `page` changed, but that would
+    // otherwise mean a second, redundant plain-OFFSET fetch right after.
+    if (skipNextFetchRef.current) {
+      skipNextFetchRef.current = false;
+      return;
+    }
     const key = JSON.stringify(filters ?? {});
     if (key !== lastFiltersKey.current) {
       lastFiltersKey.current = key;
@@ -370,6 +464,32 @@ export default function SearchTable({
       setPage(clamped);
     },
     [totalPages],
+  );
+
+  // Replaces plain goToPage for Prev/Next (and the sibling page number right
+  // next to the current one) on the default placedAt/desc sort — falls back
+  // to goToPage transparently whenever a cursor isn't usable (controlled
+  // mode, a non-default sort, no anchor yet, or the cursor fetch itself
+  // fails), so this is purely an optimization, never a behavior change.
+  const goToAdjacentPage = useCallback(
+    (direction: "prev" | "next") => {
+      const target = direction === "next" ? page + 1 : page - 1;
+      if (target < 1 || target > totalPages) return;
+      if (isControlled || sort !== "placedAt" || dir !== "desc" || !cursorAnchorRef.current) {
+        goToPage(target);
+        return;
+      }
+      skipNextFetchRef.current = true;
+      fetchAdjacentByCursor(direction).then((ok) => {
+        if (!ok) {
+          skipNextFetchRef.current = false;
+          goToPage(target);
+          return;
+        }
+        setPage(target);
+      });
+    },
+    [page, totalPages, isControlled, sort, dir, fetchAdjacentByCursor, goToPage],
   );
 
   const pageItems = useMemo(
@@ -547,7 +667,7 @@ export default function SearchTable({
                 <button
                   type="button"
                   data-testid="prev-page"
-                  onClick={() => goToPage(page - 1)}
+                  onClick={() => goToAdjacentPage("prev")}
                   disabled={page <= 1 || (isControlled ? controlledLoading : loading)}
                   className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
                 >
@@ -568,11 +688,23 @@ export default function SearchTable({
                   );
                 }
                 const isActive = item === page;
+                // The two number buttons immediately adjacent to the current
+                // page are the exact same destination as Prev/Next — route
+                // them through the same cursor path so clicking the sibling
+                // number doesn't pay full OFFSET cost that clicking Prev/Next
+                // right next to it wouldn't. "1" and the true last page (via
+                // any other click) don't need it: "1" is always cheap, and
+                // the true last page is already handled server-side by the
+                // reverse-scan regardless of how it's reached.
+                const adjacentDirection =
+                  item === page - 1 ? "prev" : item === page + 1 ? "next" : null;
                 return (
                   <li key={item} data-testid={`page-${item}`}>
                     <button
                       type="button"
-                      onClick={() => goToPage(item)}
+                      onClick={() =>
+                        adjacentDirection ? goToAdjacentPage(adjacentDirection) : goToPage(item)
+                      }
                       aria-current={isActive ? "page" : undefined}
                       data-testid={isActive ? "current-page" : undefined}
                       className={cn(
@@ -592,7 +724,7 @@ export default function SearchTable({
                 <button
                   type="button"
                   data-testid="next-page"
-                  onClick={() => goToPage(page + 1)}
+                  onClick={() => goToAdjacentPage("next")}
                   disabled={page >= totalPages || (isControlled ? controlledLoading : loading)}
                   className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
                 >
