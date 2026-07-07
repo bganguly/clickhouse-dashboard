@@ -25,8 +25,13 @@ output "db_password" {
 }
 
 output "ec2_public_ip" {
-  description = "Public IP of the EC2 app server"
-  value       = aws_instance.app.public_ip
+  description = "Stable (Elastic) public IP of the EC2 app server — does not change across instance stop/restart"
+  value       = aws_eip.app.public_ip
+}
+
+output "cdn_url" {
+  description = "HTTPS URL (CloudFront's own cert — no domain needed) for the dashboard"
+  value       = "https://${aws_cloudfront_distribution.app.domain_name}"
 }
 
 output "ec2_ssh_key_name" {
