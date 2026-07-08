@@ -512,6 +512,8 @@ export default function SearchTable({
     [page, displayTotalPages],
   );
 
+  const footerLoading = isControlled ? controlledLoading : searchLoading;
+
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
       <header className="mb-3 flex items-center justify-between gap-3">
@@ -672,143 +674,117 @@ export default function SearchTable({
         )}
       </div>
 
-      {/* footerLoading: true specifically on a new committed search (not every
-          page-turn). Combined with externalTotal===null (chart not yet settled)
-          to gate all footer skeletons. */}
-      {(() => {
-        const footerLoading = isControlled ? controlledLoading : searchLoading;
-        const showSkeleton = footerLoading || externalTotal === null;
-        const skeletonCls =
-          "inline-block h-3 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700";
-        return (
-          <footer className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              Page {page} of{" "}
-              {showSkeleton ? (
-                <span aria-hidden className={`${skeletonCls} w-8`} />
-              ) : (
-                displayTotalPages
-              )}{" "}
-              ·{" "}
-              <span data-testid="search-total" data-total={displayTotal}>
-                {showSkeleton ? (
-                  <span aria-hidden className={`${skeletonCls} w-12`} />
-                ) : (
-                  displayTotal.toLocaleString()
-                )}
-              </span>{" "}
-              {showSkeleton ? (
-                <span aria-hidden className={`${skeletonCls} w-10`} />
-              ) : (
-                "results"
-              )}
-            </span>
+      <footer className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <span className="text-xs text-gray-500 dark:text-gray-400">
+          Page {page} of{" "}
+          {footerLoading || externalTotal === null
+            ? <span className="inline-block h-3 w-8 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+            : displayTotalPages}{" "}·{" "}
+          <span data-testid="search-total" data-total={displayTotal}>
+            {footerLoading || externalTotal === null
+              ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+              : displayTotal.toLocaleString()}
+          </span>{" "}
+          {footerLoading || externalTotal === null
+            ? <span className="inline-block h-3 w-10 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+            : "results"}
+        </span>
 
-            {showSkeleton && displayTotalPages > 1 ? (
-              <nav aria-label="Pagination">
-                <ul className="flex items-center gap-1">
-                  <li>
-                    <button
-                      type="button"
-                      disabled
-                      className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700"
-                    >
-                      Prev
-                    </button>
-                  </li>
-                  <li aria-hidden>
-                    <span className="flex h-9 min-w-9 items-center justify-center rounded-md px-3">
-                      <span className="h-4 w-8 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-                    </span>
-                  </li>
-                  <li>
-                    <button
-                      type="button"
-                      disabled
-                      className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700"
-                    >
-                      Next
-                    </button>
-                  </li>
-                </ul>
-              </nav>
-            ) : displayTotalPages > 1 ? (
-              <nav aria-label="Pagination">
-                <ul className="flex items-center gap-1">
-                  <li>
-                    <button
-                      type="button"
-                      data-testid="prev-page"
-                      onClick={() => goToAdjacentPage("prev")}
-                      disabled={page <= 1 || (isControlled ? controlledLoading : loading)}
-                      className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
-                    >
-                      Prev
-                    </button>
-                  </li>
+        {(footerLoading || externalTotal === null) && displayTotalPages > 1 ? (
+          <nav aria-label="Pagination">
+            <ul className="flex items-center gap-1">
+              <li>
+                <button type="button" disabled
+                  className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700">
+                  Prev
+                </button>
+              </li>
+              <li>
+                <button type="button" aria-current="page"
+                  className="flex h-9 min-w-9 items-center justify-center rounded-md px-3 text-sm bg-indigo-600 text-white">
+                  {page}
+                </button>
+              </li>
+              <li aria-hidden className="px-1">
+                <span className="inline-block h-3 w-24 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+              </li>
+              <li>
+                <button type="button" disabled
+                  className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700">
+                  Next
+                </button>
+              </li>
+            </ul>
+          </nav>
+        ) : displayTotalPages > 1 ? (
+          <nav aria-label="Pagination">
+            <ul className="flex items-center gap-1">
+              <li>
+                <button
+                  type="button"
+                  data-testid="prev-page"
+                  onClick={() => goToAdjacentPage("prev")}
+                  disabled={page <= 1 || (isControlled ? controlledLoading : loading)}
+                  className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
+                >
+                  Prev
+                </button>
+              </li>
 
-                  {pageItems.map((item) => {
-                    if (item === "left-ellipsis" || item === "right-ellipsis") {
-                      return (
-                        <li
-                          key={item}
-                          aria-hidden
-                          className="px-2 text-sm text-gray-400"
-                        >
-                          …
-                        </li>
-                      );
-                    }
-                    const isActive = item === page;
-                    // The two number buttons immediately adjacent to the current
-                    // page are the exact same destination as Prev/Next — route
-                    // them through the same cursor path so clicking the sibling
-                    // number doesn't pay full OFFSET cost that clicking Prev/Next
-                    // right next to it wouldn't. "1" and the true last page (via
-                    // any other click) don't need it: "1" is always cheap, and
-                    // the true last page is already handled server-side by the
-                    // reverse-scan regardless of how it's reached.
-                    const adjacentDirection =
-                      item === page - 1 ? "prev" : item === page + 1 ? "next" : null;
-                    return (
-                      <li key={item} data-testid={`page-${item}`}>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            adjacentDirection ? goToAdjacentPage(adjacentDirection) : goToPage(item)
-                          }
-                          aria-current={isActive ? "page" : undefined}
-                          data-testid={isActive ? "current-page" : undefined}
-                          className={cn(
-                            "flex h-9 min-w-9 items-center justify-center rounded-md px-3 text-sm transition-colors",
-                            isActive
-                              ? "bg-indigo-600 text-white"
-                              : "border border-gray-300 hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800",
-                          )}
-                        >
-                          {item}
-                        </button>
-                      </li>
-                    );
-                  })}
-
-                  <li>
+              {pageItems.map((item) => {
+                if (item === "left-ellipsis" || item === "right-ellipsis") {
+                  return (
+                    <li
+                      key={item}
+                      aria-hidden
+                      className="px-2 text-sm text-gray-400"
+                    >
+                      …
+                    </li>
+                  );
+                }
+                const isActive = item === page;
+                const handleClick =
+                  item === page - 1
+                    ? () => goToAdjacentPage("prev")
+                    : item === page + 1
+                      ? () => goToAdjacentPage("next")
+                      : () => goToPage(item);
+                return (
+                  <li key={item} data-testid={`page-${item}`}>
                     <button
                       type="button"
-                      data-testid="next-page"
-                      onClick={() => goToAdjacentPage("next")}
-                      disabled={page >= displayTotalPages || (isControlled ? controlledLoading : loading)}
-                      className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
+                      onClick={handleClick}
+                      aria-current={isActive ? "page" : undefined}
+                      data-testid={isActive ? "current-page" : undefined}
+                      className={cn(
+                        "flex h-9 min-w-9 items-center justify-center rounded-md px-3 text-sm transition-colors",
+                        isActive
+                          ? "bg-indigo-600 text-white"
+                          : "border border-gray-300 hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800",
+                      )}
                     >
-                      Next
+                      {item}
                     </button>
                   </li>
-                </ul>
-              </nav>
-            ) : null}
-          </footer>
-        );
-      })()}
+                );
+              })}
+
+              <li>
+                <button
+                  type="button"
+                  data-testid="next-page"
+                  onClick={() => goToAdjacentPage("next")}
+                  disabled={page >= displayTotalPages || (isControlled ? controlledLoading : loading)}
+                  className="flex h-9 items-center rounded-md border border-gray-300 px-3 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
+                >
+                  Next
+                </button>
+              </li>
+            </ul>
+          </nav>
+        ) : null}
+      </footer>
     </section>
   );
 }
