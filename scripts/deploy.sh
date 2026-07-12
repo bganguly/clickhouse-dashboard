@@ -8,6 +8,63 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+_tf_ws_count() {
+  local state_file="$ROOT_DIR/infra/terraform.tfstate.d/$1/terraform.tfstate"
+  [[ -f "$state_file" ]] || { printf '0'; return; }
+  python3 -c "import json; d=json.load(open('$state_file')); print(sum(len(r.get('instances',[])) for r in d.get('resources',[])))" 2>/dev/null || printf '0'
+}
+_local_running=0
+lsof -ti:3004 >/dev/null 2>&1 && _local_running=1 || true
+_lite_count=$(_tf_ws_count lite)
+_full_count=$(_tf_ws_count full)
+
+printf '\n=== nextjs-dashboard ===\n\n'
+printf '  [1] Local  — Next.js on localhost + local Postgres (no AWS cost)'
+(( _local_running )) && printf ' [running]' || printf ' [not detected]'
+printf '\n'
+printf '  [2] Lite   — AWS: EC2 t3.small + RDS db.t3.micro'
+(( _lite_count > 0 )) && printf ' [%s resources active]' "$_lite_count" || printf ' [not deployed]'
+printf '\n'
+printf '  [3] Full   — AWS: EC2 t3.medium + RDS db.t3.large'
+(( _full_count > 0 )) && printf ' [%s resources active]' "$_full_count" || printf ' [not deployed]'
+printf '\n'
+printf '\nChoice [1/2/3]: '
+read -r _MODE
+case "$_MODE" in
+  2) _TARGET="remote"; DEPLOY_MODE="lite" ;;
+  3) _TARGET="remote"; DEPLOY_MODE="full" ;;
+  *) _TARGET="local";  DEPLOY_MODE=""    ;;
+esac
+
+if [[ "$_TARGET" == "local" ]]; then
+  exec "$ROOT_DIR/scripts/local-dev.sh"
+fi
+
+if [[ "$DEPLOY_MODE" == "lite" ]]; then
+  printf '\n--- Lite AWS summary ---\n'
+  printf '  EC2:        t3.small (2 vCPU, 2 GB)\n'
+  printf '  RDS:        db.t3.micro (2 vCPU, 1 GB), 20 GB\n'
+  printf '  Cost est:   ~$30-50/mo if left running\n'
+  export DEPLOY_WORKSPACE="lite"
+  export TF_VAR_name_prefix="dash-lite"
+  export TF_VAR_ec2_instance_type="t3.small"
+  export TF_VAR_instance_class="db.t3.micro"
+  export TF_VAR_allocated_storage="20"
+else
+  printf '\n--- Full AWS summary ---\n'
+  printf '  EC2:        t3.medium (2 vCPU, 4 GB)\n'
+  printf '  RDS:        db.t3.large (2 vCPU, 8 GB), 50 GB\n'
+  printf '  Cost est:   ~$100-130/mo if left running (~$4/day) — TEAR DOWN when done\n'
+  export DEPLOY_WORKSPACE="full"
+  export TF_VAR_name_prefix="dash-full"
+  export TF_VAR_ec2_instance_type="t3.medium"
+  export TF_VAR_instance_class="db.t3.large"
+  export TF_VAR_allocated_storage="50"
+fi
+printf '\nProceed? [Y/n] '
+read -r _CONFIRM
+[[ -z "$_CONFIRM" || "$_CONFIRM" =~ ^[Yy]$ ]] || { printf 'Aborted.\n'; exit 0; }
+
 "$ROOT_DIR/scripts/bootstrap-deps.sh" psql
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -116,7 +173,7 @@ if [[ -z "$SSH_KEY" || ! -f "$SSH_KEY" ]]; then
   exit 0
 fi
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -i $SSH_KEY"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i $SSH_KEY"
 
 # Load the key into ssh-agent once so passphrase is only entered once (if at all).
 if ! ssh-add -l 2>/dev/null | grep -qF "$SSH_KEY"; then
@@ -344,55 +401,73 @@ REMOTE
 
 CDN_URL="$(cd "$ROOT_DIR/infra" && terraform output -raw cdn_url 2>/dev/null || true)"
 
+_BASE_URL="${CDN_URL:-http://${EC2_IP}}"
 echo ""
-echo "✓ Dashboard live at  ${CDN_URL:-http://${EC2_IP} (CloudFront URL unavailable, HTTP only)}"
+echo "✓ Dashboard live at  ${_BASE_URL}"
+echo "  API Explorer:      ${_BASE_URL}/api-explorer"
+
+PORTFOLIO_SET_LIVE="$(cd "$ROOT_DIR/../../../portfolio/scripts" 2>/dev/null && pwd || true)/set-live-url.sh"
+if [[ -n "$CDN_URL" && -f "$PORTFOLIO_SET_LIVE" ]]; then
+  echo ""
+  echo "  Updating portfolio live-urls.js..."
+  bash "$PORTFOLIO_SET_LIVE" nextjs "$CDN_URL" "$CDN_URL/api-explorer"
+fi
 echo "  Direct (HTTP):     http://${EC2_IP}"
 echo "  Quick Order at:    ${QUICKORDER_URL}  (separate instance — deploy via websockets-quickorder/scripts/deploy.sh)"
 echo "  SSH:               ssh -i ${SSH_KEY} ec2-user@${EC2_IP}"
 echo "  Tear down:         ./scripts/infra-down.sh"
 
 # ── 4. Demo-scale check — ask before a long reseed, never do it silently ─────
-DEMO_SCALE_THRESHOLD=1000000
+if [[ "$DEPLOY_MODE" == "lite" ]]; then
+  DEMO_SCALE_THRESHOLD=400000
+  DEMO_SNAPSHOT_S3_URI_VALUE="s3://bikram-nextjs-subsecond-fetch-with-websockets/nextjs-dash/demo-lite.dump"
+  DEMO_ORDER_COUNT_VALUE=500000
+else
+  DEMO_SCALE_THRESHOLD=1000000
+  DEMO_SNAPSHOT_S3_URI_VALUE="s3://bikram-nextjs-subsecond-fetch-with-websockets/nextjs-dash/demo.dump"
+  DEMO_ORDER_COUNT_VALUE=4000000
+fi
+
+_SEED_RUNNING="$(ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
+  'pgrep -f "seed-large\|prepare-demo-data\|rebuild-dashboard-read-models\|bake-demo-snapshot" 2>/dev/null | head -1 || true' 2>/dev/null || true)"
+
+if [[ -n "$_SEED_RUNNING" ]]; then
+  echo ""
+  echo "  A seed/rebuild/bake job is already running on EC2 (pid $_SEED_RUNNING)."
+  printf "  Re-attach to its log? [Y/n] "
+  read -r yn_reattach
+  if [[ ! "$yn_reattach" =~ ^[Nn]$ ]]; then
+    ssh $SSH_OPTS "ec2-user@${EC2_IP}" 'tail -f /app/seed-and-bake.log & _TAIL_PID=$!; until [ -f /app/seed-and-bake.status ]; do sleep 5; done; sleep 1; kill $_TAIL_PID 2>/dev/null; echo ""; echo "=== $(cat /app/seed-and-bake.status) ==="'
+  else
+    echo "  To re-attach later:"
+    echo "    ssh $SSH_OPTS ec2-user@${EC2_IP} 'tail -f /app/seed-and-bake.log'"
+  fi
+  exit 0
+fi
+
 CURRENT_ORDERS="$(psql "$DATABASE_URL" -Atqc 'SELECT count(*) FROM orders' 2>/dev/null || echo 0)"
 if [[ "$CURRENT_ORDERS" =~ ^[0-9]+$ ]] && (( CURRENT_ORDERS < DEMO_SCALE_THRESHOLD )); then
   echo ""
   echo "  RDS has $CURRENT_ORDERS orders (below demo scale)."
-  printf "  Proceed to seed to 4M again — will take 45-90 minutes on AWS infra? [y/N] "
+  printf "  Restore from S3 snapshot + rebuild read models + re-bake? [Y/n] "
   read -r yn
-  if [[ "$yn" =~ ^[Yy]$ ]]; then
-    # EC2's instance type doesn't matter here — it's just the psql client;
-    # RDS's own CPU/memory is what the rebuild's cross-join is bound by.
+  if [[ ! "$yn" =~ ^[Nn]$ ]]; then
     MY_IP="$(curl -fsSL https://checkip.amazonaws.com || true)"
     ALLOWED_CIDR_NOW="${MY_IP:+${MY_IP}/32}"
     ALLOWED_CIDR_NOW="${ALLOWED_CIDR_NOW:-0.0.0.0/0}"
     SCALED_UP=0
-    printf "  Scale RDS up to db.m5.2xlarge first, to speed up the rebuild step? [y/N] "
-    read -r yn_scale
-    if [[ "$yn_scale" =~ ^[Yy]$ ]]; then
-      echo "  Scaling RDS up to db.m5.2xlarge..."
-      (cd "$ROOT_DIR/infra" && terraform apply -auto-approve -input=false \
-        -var "instance_class=db.m5.2xlarge" \
-        -var "allowed_cidr=$ALLOWED_CIDR_NOW" \
-        -var "ssh_public_key_path=${SSH_KEY}.pub")
-      SCALED_UP=1
-    fi
 
-    echo "  Seeding to 4M orders + rebuilding read models + re-baking the S3 snapshot on EC2 (backgrounded)..."
+    echo "  Restoring from S3 snapshot + rebuilding read models + re-baking (backgrounded on EC2)..."
     ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
       cd /app
       rm -f /app/seed-and-bake.status
       export DATABASE_URL='${DATABASE_URL}'
+      export DEMO_SNAPSHOT_S3_URI='${DEMO_SNAPSHOT_S3_URI_VALUE}'
+      export DEMO_ORDER_COUNT='${DEMO_ORDER_COUNT_VALUE}'
+      export PGOPTIONS="-c synchronous_commit=off -c maintenance_work_mem=1GB"
       nohup bash -c '
-        # Session-level tuning for the bulk load only — libpq applies these to
-        # every new connection (seed-large.sql is one session; the rebuild
-        # script opens a fresh psql connection per phase, so a plain SQL SET
-        # would only cover the first one). synchronous_commit=off is safe here
-        # since this is disposable demo/seed data, not data we need durability
-        # guarantees on if the instance crashed mid-load.
-        export PGOPTIONS="-c synchronous_commit=off -c maintenance_work_mem=1GB"
-        if psql "\$DATABASE_URL" -v orders=4000000 -v batch_size=500000 -f scripts/seed-large.sql &&
-           DATABASE_URL="\$DATABASE_URL" ./scripts/rebuild-dashboard-read-models.sh &&
-           DEMO_SNAPSHOT_S3_URI="s3://bikram-nextjs-subsecond-fetch-with-websockets/nextjs-dash/demo.dump" ./scripts/bake-demo-snapshot.sh
+        if DEMO_SNAPSHOT_S3_URI="\$DEMO_SNAPSHOT_S3_URI" DEMO_ORDER_COUNT="\$DEMO_ORDER_COUNT" DATABASE_URL="\$DATABASE_URL" ./scripts/prepare-demo-data.sh &&
+           DEMO_SNAPSHOT_S3_URI="\$DEMO_SNAPSHOT_S3_URI" DATABASE_URL="\$DATABASE_URL" ./scripts/bake-demo-snapshot.sh
         then
           echo SUCCESS > /app/seed-and-bake.status
         else
@@ -402,8 +477,15 @@ if [[ "$CURRENT_ORDERS" =~ ^[0-9]+$ ]] && (( CURRENT_ORDERS < DEMO_SCALE_THRESHO
       disown
       echo "  Started in background (pid \$!)."
 REMOTE
-    echo "  Tail progress with:"
-    echo "    ssh $SSH_OPTS ec2-user@${EC2_IP} 'tail -f /app/seed-and-bake.log'"
+    printf "  Tail the log now (auto-detaches on completion)? [Y/n] "
+    read -r yn_tail
+    if [[ ! "$yn_tail" =~ ^[Nn]$ ]]; then
+      echo "  Tailing — will auto-detach when job finishes (Ctrl+C to detach early)..."
+      ssh $SSH_OPTS "ec2-user@${EC2_IP}" 'tail -f /app/seed-and-bake.log & _TAIL_PID=$!; until [ -f /app/seed-and-bake.status ]; do sleep 5; done; sleep 1; kill $_TAIL_PID 2>/dev/null; echo ""; echo "=== $(cat /app/seed-and-bake.status) ==="'
+    else
+      echo "  To tail later (auto-detaches on completion):"
+      echo "    ssh $SSH_OPTS ec2-user@${EC2_IP} 'tail -f /app/seed-and-bake.log & _TAIL_PID=\$!; until [ -f /app/seed-and-bake.status ]; do sleep 5; done; sleep 1; kill \$_TAIL_PID 2>/dev/null; echo; echo \"=== \$(cat /app/seed-and-bake.status) ===\"'"
+    fi
 
     if [[ "$SCALED_UP" == "1" ]]; then
       echo "  RDS is scaled up — waiting for the background job to finish so it can scale back down (polling every 2 min)..."
@@ -417,19 +499,51 @@ REMOTE
       else
         echo "  Seed + rebuild + bake FAILED — check /app/seed-and-bake.log on the instance before deciding whether to scale down."
       fi
-      printf "  Scale RDS back down to db.m5.xlarge now? [Y/n] "
+      printf "  Scale RDS back down to db.t3.large now? [Y/n] "
       read -r yn_down
       if [[ ! "$yn_down" =~ ^[Nn]$ ]]; then
-        echo "  Scaling RDS back down to db.m5.xlarge..."
+        echo "  Scaling RDS back down to db.t3.large..."
         (cd "$ROOT_DIR/infra" && terraform apply -auto-approve -input=false \
-          -var "instance_class=db.m5.xlarge" \
+          -var "instance_class=db.t3.large" \
           -var "allowed_cidr=$ALLOWED_CIDR_NOW" \
           -var "ssh_public_key_path=${SSH_KEY}.pub")
       else
-        echo "  Left scaled up at db.m5.2xlarge — remember to scale it back down later to avoid the extra cost."
+        echo "  Left scaled up — remember to scale it back down later to avoid the extra cost."
       fi
     fi
   else
     echo "  Skipped."
+  fi
+elif [[ "$CURRENT_ORDERS" =~ ^[0-9]+$ ]] && (( CURRENT_ORDERS >= DEMO_SCALE_THRESHOLD )); then
+  _TOKEN_ROWS="$(psql "$DATABASE_URL" -Atqc 'SELECT count(*) FROM daily_customer_token_category_summary' 2>/dev/null || echo 0)"
+  if [[ "$_TOKEN_ROWS" == "0" ]]; then
+    echo ""
+    echo "  RDS has $CURRENT_ORDERS orders but read models are empty (schema change detected)."
+    printf "  Rebuild read models + re-bake snapshot? [Y/n] "
+    read -r yn_rebuild
+    if [[ ! "$yn_rebuild" =~ ^[Nn]$ ]]; then
+      echo "  Rebuilding read models + re-baking (backgrounded on EC2)..."
+      ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
+        cd /app
+        rm -f /app/seed-and-bake.status
+        export DATABASE_URL='${DATABASE_URL}'
+        export DEMO_SNAPSHOT_S3_URI='${DEMO_SNAPSHOT_S3_URI_VALUE}'
+        nohup bash -c '
+          if DATABASE_URL="\$DATABASE_URL" ./scripts/rebuild-dashboard-read-models.sh &&
+             DEMO_SNAPSHOT_S3_URI="\$DEMO_SNAPSHOT_S3_URI" DATABASE_URL="\$DATABASE_URL" ./scripts/bake-demo-snapshot.sh
+          then
+            echo SUCCESS > /app/seed-and-bake.status
+          else
+            echo FAILED > /app/seed-and-bake.status
+          fi
+        ' > /app/seed-and-bake.log 2>&1 &
+        disown
+        echo "  Started in background (pid \$!)."
+REMOTE
+      echo "  Tail progress with:"
+      echo "    ssh $SSH_OPTS ec2-user@${EC2_IP} 'tail -f /app/seed-and-bake.log'"
+    else
+      echo "  Skipped."
+    fi
   fi
 fi
