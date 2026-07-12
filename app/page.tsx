@@ -156,6 +156,12 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
+      {process.env.NEXT_PUBLIC_DEMO_SCALE && (
+        <div className="w-full text-center text-[11px] font-semibold py-1.5 px-4"
+          style={{ background:"rgba(99,102,241,0.12)", borderBottom:"1px solid rgba(99,102,241,0.2)", color:"#818cf8", letterSpacing:"0.04em" }}>
+          Demo dataset · {process.env.NEXT_PUBLIC_DEMO_SCALE}
+        </div>
+      )}
       <main className="w-full px-5 py-8">
         <header className="mb-6 flex items-start justify-between gap-4">
           <div>
@@ -163,12 +169,6 @@ export default function Dashboard() {
             <p className="text-sm text-gray-500">
               Live aggregates, search, and event stream.
             </p>
-            {process.env.NEXT_PUBLIC_DEMO_SCALE && (
-              <span className="inline-block mt-1 text-[11px] px-2 py-0.5 rounded-full font-medium"
-                style={{ background:"rgba(99,102,241,0.10)", border:"1px solid rgba(99,102,241,0.25)", color:"#818cf8" }}>
-                demo · {process.env.NEXT_PUBLIC_DEMO_SCALE}
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-3">
             <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
