@@ -37,6 +37,16 @@ case "$_MODE" in
 esac
 
 if [[ "$_TARGET" == "local" ]]; then
+  QUICKORDER_DEPLOY="$(cd "$ROOT_DIR/../websockets-quickorder/scripts" 2>/dev/null && pwd || true)/deploy.sh"
+  if [[ -f "$QUICKORDER_DEPLOY" ]]; then
+    printf '\nAlso start Quick Order dev server on :3005? [Y/n] '
+    read -r _qo_yn
+    if [[ -z "$_qo_yn" || "$_qo_yn" =~ ^[Yy]$ ]]; then
+      DEPLOY_MODE="local" BACKEND_URL="http://localhost:3004" bash "$QUICKORDER_DEPLOY" \
+        >"$ROOT_DIR/.quickorder-dev.log" 2>&1 &
+      printf 'Quick Order starting in background (log: .quickorder-dev.log)\n'
+    fi
+  fi
   exec "$ROOT_DIR/scripts/local-dev.sh"
 fi
 
@@ -77,6 +87,20 @@ read -r _CONFIRM
 # folder as already applied, then retry. A genuinely fresh database never
 # hits P3005 and just runs `migrate deploy` normally.
 apply_migrations() {
+  if ! psql "$DATABASE_URL" -Atqc \
+      "SELECT 1 FROM pg_available_extensions WHERE name='pg_bigm'" \
+      2>/dev/null | grep -q 1; then
+    printf '  pg_bigm not found — building from source...\n'
+    _pg_cfg=$(brew --prefix postgresql@16)/bin/pg_config
+    _tmp=$(mktemp -d)
+    git clone --depth 1 https://github.com/pgbigm/pg_bigm.git "$_tmp/pg_bigm"
+    make -C "$_tmp/pg_bigm" USE_PGXS=1 PG_CONFIG="$_pg_cfg"
+    make -C "$_tmp/pg_bigm" USE_PGXS=1 PG_CONFIG="$_pg_cfg" install
+    rm -rf "$_tmp"
+    printf '  pg_bigm installed — restarting postgresql@16...\n'
+    brew services restart postgresql@16
+    for _i in $(seq 1 10); do pg_isready -q 2>/dev/null && break; sleep 1; done
+  fi
   echo ""
   echo "  Applying migrations (prisma migrate deploy)..."
   local log_file
@@ -234,7 +258,7 @@ ssh $SSH_OPTS "ec2-user@${EC2_IP}" '
 # certainly a NAT/router idle-connection drop over the public-internet hop,
 # which running from EC2's same-VPC path avoids entirely).
 echo "  Checking for schema drift..."
-EXPECTED_TABLES="count_cache daily_customer_category_summary daily_customer_token_category_rollup daily_customer_token_category_summary daily_customer_token_order_summary daily_filter_category_summary daily_status_category_summary order_category_facts order_events"
+EXPECTED_TABLES="count_cache daily_customer_category_summary daily_filter_category_summary daily_status_category_summary order_category_facts order_events"
 EXPECTED_COLUMNS="daily_filter_category_summary.updatedAt daily_status_category_summary.updatedAt order_category_facts.orderTotal order_category_facts.regionCode order_category_facts.regionId order_category_facts.status orders.search_text"
 
 SCHEMA_DRIFT=0
@@ -417,8 +441,16 @@ if [[ -n "$CDN_URL" && -f "$PORTFOLIO_SET_LIVE" ]]; then
   echo "  Updating portfolio live-urls.js..."
   bash "$PORTFOLIO_SET_LIVE" --tier "$DEPLOY_MODE" nextjs "$CDN_URL" "$CDN_URL/api-explorer"
 fi
+
+QUICKORDER_DEPLOY="$(cd "$ROOT_DIR/../websockets-quickorder/scripts" 2>/dev/null && pwd || true)/deploy.sh"
+if [[ -f "$QUICKORDER_DEPLOY" ]]; then
+  echo ""
+  echo "  Chaining Quick Order deploy (${DEPLOY_MODE}, backend: http://${EC2_IP})..."
+  DEPLOY_MODE="$DEPLOY_MODE" BACKEND_URL="http://${EC2_IP}" bash "$QUICKORDER_DEPLOY"
+fi
+
 echo "  Direct (HTTP):     http://${EC2_IP}"
-echo "  Quick Order at:    ${QUICKORDER_URL}  (separate instance — deploy via websockets-quickorder/scripts/deploy.sh)"
+echo "  Quick Order at:    ${QUICKORDER_URL}  (separate instance)"
 echo "  SSH:               ssh -i ${SSH_KEY} ec2-user@${EC2_IP}"
 echo "  Tear down:         ./scripts/infra-down.sh"
 
@@ -518,37 +550,5 @@ REMOTE
     fi
   else
     echo "  Skipped."
-  fi
-elif [[ "$CURRENT_ORDERS" =~ ^[0-9]+$ ]] && (( CURRENT_ORDERS >= DEMO_SCALE_THRESHOLD )); then
-  _TOKEN_ROWS="$(psql "$DATABASE_URL" -Atqc 'SELECT count(*) FROM daily_customer_token_category_summary' 2>/dev/null || echo 0)"
-  if [[ "$_TOKEN_ROWS" == "0" ]]; then
-    echo ""
-    echo "  RDS has $CURRENT_ORDERS orders but read models are empty (schema change detected)."
-    printf "  Rebuild read models + re-bake snapshot? [Y/n] "
-    read -r yn_rebuild
-    if [[ ! "$yn_rebuild" =~ ^[Nn]$ ]]; then
-      echo "  Rebuilding read models + re-baking (backgrounded on EC2)..."
-      ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
-        cd /app
-        rm -f /app/seed-and-bake.status
-        export DATABASE_URL='${DATABASE_URL}'
-        export DEMO_SNAPSHOT_S3_URI='${DEMO_SNAPSHOT_S3_URI_VALUE}'
-        nohup bash -c '
-          if DATABASE_URL="\$DATABASE_URL" ./scripts/rebuild-dashboard-read-models.sh &&
-             DEMO_SNAPSHOT_S3_URI="\$DEMO_SNAPSHOT_S3_URI" DATABASE_URL="\$DATABASE_URL" ./scripts/bake-demo-snapshot.sh
-          then
-            echo SUCCESS > /app/seed-and-bake.status
-          else
-            echo FAILED > /app/seed-and-bake.status
-          fi
-        ' > /app/seed-and-bake.log 2>&1 &
-        disown
-        echo "  Started in background (pid \$!)."
-REMOTE
-      echo "  Tail progress with:"
-      echo "    ssh $SSH_OPTS ec2-user@${EC2_IP} 'tail -f /app/seed-and-bake.log'"
-    else
-      echo "  Skipped."
-    fi
   fi
 fi
