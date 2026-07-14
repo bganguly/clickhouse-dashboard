@@ -133,3 +133,9 @@ if [[ -f "$QUICKORDER_DOWN" ]]; then
   printf '\n  Chaining Quick Order (%s) teardown...\n' "$_WORKSPACE"
   DEPLOY_MODE="$_WORKSPACE" bash "$QUICKORDER_DOWN"
 fi
+
+PORTFOLIO_SET_LIVE="$(cd "$ROOT_DIR/../../portfolio/scripts" 2>/dev/null && pwd || true)/set-live-url.sh"
+if [[ -f "$PORTFOLIO_SET_LIVE" ]]; then
+  printf '\n  Marking nextjs/%s offline in portfolio...\n' "$_WORKSPACE"
+  bash "$PORTFOLIO_SET_LIVE" --down --tier "$_WORKSPACE" nextjs
+fi

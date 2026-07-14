@@ -535,7 +535,7 @@ echo ""
 echo "✓ Dashboard live at  ${_BASE_URL}"
 echo "  API Explorer:      ${_BASE_URL}/api-explorer"
 
-PORTFOLIO_SET_LIVE="$(cd "$ROOT_DIR/../../../portfolio/scripts" 2>/dev/null && pwd || true)/set-live-url.sh"
+PORTFOLIO_SET_LIVE="$(cd "$ROOT_DIR/../../portfolio/scripts" 2>/dev/null && pwd || true)/set-live-url.sh"
 if [[ -n "$CDN_URL" && -f "$PORTFOLIO_SET_LIVE" ]]; then
   echo ""
   echo "  Updating portfolio live-urls.js..."
