@@ -92,15 +92,34 @@ curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
 
 ---
 
+### Cost control — scheduled 8am–5pm Pacific window (weekdays)
+
+EC2 and RDS auto-stop on a weekday schedule managed by EventBridge Scheduler:
+
+| Resource | Start | Stop | Idle cost |
+|---|---|---|---|
+| **EC2** (t3.small / t3.medium) | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped instance) |
+| **RDS** (db.t3.micro / db.t3.large) | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped, storage only) |
+
+`./scripts/deploy.sh` shows an interactive prompt at the top of every remote run:
+
+```
+  EC2: running       RDS: available
+  Auto-schedule: starts 8 am · stops 5 pm · weekdays Pacific · state=ENABLED
+  [1] Start now  [2] Stop now  [3] Suspend schedule  [4] Resume schedule  [enter] Continue:
+```
+
+> **Note:** AWS auto-restarts a stopped RDS instance after 7 continuous days — the weekday schedule prevents this from happening unintentionally.
+
+---
+
 ## Tear Down
 
 ```bash
 ./scripts/infra-down.sh
 ```
 
-Destroys all AWS resources — RDS instance, VPC, subnets, security groups — and removes `.env.rds`.
-
-> **Cost reminder:** `db.m5.xlarge` bills continuously while up (~$0.25/hr). Tear down when not in use.
+Destroys all AWS resources — EC2, RDS, VPC, subnets, security groups, EventBridge schedules — and removes the local `.env.rds`.
 
 ---
 
