@@ -1,7 +1,7 @@
 # Dashboard — Next.js + Prisma + AWS RDS
 
 Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard delivering sub-second search
-and chart responses across 4 million orders: full-text search, pre-aggregated analytics tables,
+and chart responses across 500 k orders: full-text search, pre-aggregated analytics tables,
 persistent count cache, Server-Sent Events for live updates, and Terraform IaC on AWS.
 
 Sister repo: [websockets-quickorder](https://github.com/bganguly/websockets-quickorder)
@@ -11,7 +11,7 @@ Sister repo: [websockets-quickorder](https://github.com/bganguly/websockets-quic
 | | |
 |---|---|
 | **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS, Recharts |
-| **PostgreSQL — SQL, performance tuning** | AWS RDS PG 16; Prisma migrations; GIN index; pre-aggregated summary tables; persistent `count_cache` (10-min TTL) for sub-second pagination counts on 4 M rows |
+| **PostgreSQL — SQL, performance tuning** | AWS RDS PG 16; Prisma migrations; GIN index; pre-aggregated summary tables; persistent `count_cache` (10-min TTL) for sub-second pagination counts on 500 k rows |
 | **IaC** | Terraform (`infra/main.tf`) — VPC, subnets, security groups, RDS PostgreSQL |
 | **CI/CD** | `deploy.sh` — single entry point: provisions AWS infra if needed, applies Prisma schema + SQL migrations, builds and starts the app |
 | **Real-time updates** | Server-Sent Events (`/api/stream`) — new orders pushed live to all connected dashboard tabs without polling |
@@ -23,11 +23,11 @@ Sister repo: [websockets-quickorder](https://github.com/bganguly/websockets-quic
 
 ## Scale & Performance
 
-> **4 M+ orders** in AWS RDS PostgreSQL 16 — sub-second full-text search via customer-id enumeration + GIN index; millisecond chart aggregates from pre-aggregated tables; `count_cache` removes the COUNT bottleneck on repeat queries.
+> **500 k orders** in AWS RDS PostgreSQL 16 — sub-second full-text search via customer-id enumeration + GIN index; millisecond chart aggregates from pre-aggregated tables; `count_cache` removes the COUNT bottleneck on repeat queries.
 
 ```
 Browser ──HTTP──► Next.js API routes ──Prisma──► AWS RDS PG 16
-                  (port 3004)                    VPC · 4 M+ rows · GIN index
+                  (port 3004)                    VPC · 500 k rows · GIN index
                             ▲
              Terraform IaC (infra/main.tf)
 ```
@@ -45,10 +45,17 @@ Browser ──HTTP──► Next.js API routes ──Prisma──► AWS RDS PG 
 
 EC2 and RDS auto-stop on a weekday schedule managed by EventBridge Scheduler:
 
-| Resource | Scale-up | Scale-down | Idle cost |
-|---|---|---|---|
-| **EC2** (t3.small / t3.medium) | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped instance) |
-| **RDS** (db.t3.micro / db.t3.large) | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped, storage only) |
+| Resource | Scale-up | Scale-down | Idle cost | ~$/mo scheduled ¹ | ~$/mo 24/7 |
+|---|---|---|---|---|---|
+| **EC2 t3.small** (lite & full) | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped) | ~$4 | ~$15 |
+| **RDS db.t3.micro** (lite) + 20 GB storage | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped) + $2 storage | ~$5 | ~$14 |
+| **RDS db.t3.large** (full) + 50 GB storage | 8am PT Mon–Fri | 5pm PT Mon–Fri | ~$0 (stopped) + $6 storage | ~$35 | ~$110 |
+| **Lite total** | | | | **~$9/mo** | **~$29/mo** |
+| **Full total** | | | | **~$39/mo** | **~$125/mo** |
+
+¹ Scheduled = 8 am–5 pm PT weekdays ≈ 200 hrs/month active. Prices are on-demand us-east-1; RDS storage billed regardless of instance state.
+
+> **Cold-cache note:** stopping RDS flushes PostgreSQL's `shared_buffers`. First search of each morning (e.g. a multi-word query) hits cold EBS and takes ~1 s on db.t3.micro. Keeping RDS running 24/7 (+$8/mo lite, +$75/mo full) eliminates this — matching the GCP pattern where the Postgres VM never stops.
 
 `./scripts/deploy.sh` shows an interactive prompt at the top of every remote run:
 
@@ -108,7 +115,7 @@ curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
 │   │                          │ Prisma / pg                        │     │
 │   │   ┌───────────────────────▼──────────────────────────────┐    │     │
 │   │   │  AWS RDS PostgreSQL 16 (db.m5.xlarge)                │    │     │
-│   │   │  • orders           (4 M rows)                       │    │     │
+│   │   │  • orders           (500 k rows)                       │    │     │
 │   │   │  • customers + regions + products                    │    │     │
 │   │   │  • GIN index on customers(firstName,lastName)        │    │     │
 │   │   │  • pre-agg summary tables for chart queries          │    │     │
@@ -142,7 +149,7 @@ Quick Order (port 3005, bganguly/websockets-quickorder)
 |---|---|
 | **Search performance** | Customer-id enumeration (`SELECT id FROM customers WHERE name ILIKE`) then `customerId = ANY(ids)` join on orders — avoids full-table ILIKE scan; GIN index on customers covers the probe |
 | **Chart performance** | Pre-aggregated `daily_summary`, `daily_customer_category_summary`, `daily_status_category_summary`, `daily_filter_category_summary` — chart queries never touch raw orders |
-| **Count performance** | Persistent `count_cache` table (10-min TTL) + startup warmup for first-page tokens — eliminates repeat COUNT(*) scans on 4 M rows |
+| **Count performance** | Persistent `count_cache` table (10-min TTL) + startup warmup for first-page tokens — eliminates repeat COUNT(*) scans on 500 k rows |
 | **Sort stability** | `placedAt DESC, id DESC` tiebreaker on all sort fields — prevents row duplication or skipping across pages |
 | **Real-time** | SSE over HTTP long-poll — no WebSocket server needed; compatible with Next.js API routes; dashboard updates within ~100 ms of order creation |
 
