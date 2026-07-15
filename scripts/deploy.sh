@@ -218,26 +218,39 @@ read -r _PRE_ACTION
 case "${_PRE_ACTION:-}" in
   1)
     if [[ -n "$_P_EC2_ID" ]]; then
-      printf '  Starting EC2 (%s)...\n' "$_P_EC2_ID"
-      aws ec2 start-instances --instance-ids "$_P_EC2_ID" --no-cli-pager >/dev/null
+      if [[ "$_P_EC2_STATE" == "running" ]]; then
+        printf '  EC2 is already running — triggering app startup via SSM...\n'
+        aws ssm send-command \
+          --instance-ids "$_P_EC2_ID" \
+          --document-name "AWS-RunShellScript" \
+          --parameters '{"commands":["bash /app/scripts/app-startup.sh"],"executionTimeout":["120"]}' \
+          --no-cli-pager >/dev/null 2>&1 \
+          && printf '  SSM command sent.\n' \
+          || printf '  SSM send failed — run app-startup.sh manually via SSH.\n'
+      else
+        printf '  Starting EC2 (%s)...\n' "$_P_EC2_ID"
+        aws ec2 start-instances --instance-ids "$_P_EC2_ID" --no-cli-pager >/dev/null
+      fi
       printf '  Wait until the app is live? [Y/n] '
       read -r _wait_yn
       if [[ -z "$_wait_yn" || "$_wait_yn" =~ ^[Yy]$ ]]; then
-        printf '  Polling EC2 state'
-        for _i in $(seq 1 30); do
-          _st=$(aws ec2 describe-instances --instance-ids "$_P_EC2_ID" \
-            --query "Reservations[0].Instances[0].State.Name" --output text 2>/dev/null || echo unknown)
-          if [[ "$_st" == "running" ]]; then
-            printf ' running.\n'
-            break
-          fi
-          printf '.'
-          sleep 5
-          if [[ "$_i" -eq 30 ]]; then
-            printf '\n  EC2 did not reach running state after 2.5 min — check AWS console.\n'
-            exit 1
-          fi
-        done
+        if [[ "$_P_EC2_STATE" != "running" ]]; then
+          printf '  Polling EC2 state'
+          for _i in $(seq 1 30); do
+            _st=$(aws ec2 describe-instances --instance-ids "$_P_EC2_ID" \
+              --query "Reservations[0].Instances[0].State.Name" --output text 2>/dev/null || echo unknown)
+            if [[ "$_st" == "running" ]]; then
+              printf ' running.\n'
+              break
+            fi
+            printf '.'
+            sleep 5
+            if [[ "$_i" -eq 30 ]]; then
+              printf '\n  EC2 did not reach running state after 2.5 min — check AWS console.\n'
+              exit 1
+            fi
+          done
+        fi
         _EC2_IP=$(aws ec2 describe-instances --instance-ids "$_P_EC2_ID" \
           --query "Reservations[0].Instances[0].PublicIpAddress" \
           --output text 2>/dev/null | grep -v '^None$' | grep -v '^$' || true)
@@ -261,8 +274,10 @@ case "${_PRE_ACTION:-}" in
             printf '  Live at        %s\n' "$_HEALTH_BASE"
             printf '  API Explorer:  %s/api-explorer\n' "$_HEALTH_BASE"
           else
-            printf '\n  App did not respond after ~4 min — check EC2 logs:\n'
-            printf '    ssh ec2-user@%s "sudo journalctl -u app -n 50"\n' "${_EC2_IP:-<EC2-IP>}"
+            printf '\n  App did not respond after ~4 min. Check pm2 on EC2:\n'
+            printf '    ssh ec2-user@%s\n' "${_EC2_IP:-<EC2-IP>}"
+            printf '    pm2 status\n'
+            printf '    pm2 logs dashboard --lines 50\n'
           fi
         else
           printf '  Could not determine EC2 IP — check AWS console.\n'
