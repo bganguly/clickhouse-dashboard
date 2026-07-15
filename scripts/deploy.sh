@@ -220,7 +220,56 @@ case "${_PRE_ACTION:-}" in
     if [[ -n "$_P_EC2_ID" ]]; then
       printf '  Starting EC2 (%s)...\n' "$_P_EC2_ID"
       aws ec2 start-instances --instance-ids "$_P_EC2_ID" --no-cli-pager >/dev/null
-      printf '  Done — EC2 will be ready in ~1 min. RDS runs 24/7 and is already available.\n'
+      printf '  Wait until the app is live? [Y/n] '
+      read -r _wait_yn
+      if [[ -z "$_wait_yn" || "$_wait_yn" =~ ^[Yy]$ ]]; then
+        printf '  Polling EC2 state'
+        for _i in $(seq 1 30); do
+          _st=$(aws ec2 describe-instances --instance-ids "$_P_EC2_ID" \
+            --query "Reservations[0].Instances[0].State.Name" --output text 2>/dev/null || echo unknown)
+          if [[ "$_st" == "running" ]]; then
+            printf ' running.\n'
+            break
+          fi
+          printf '.'
+          sleep 5
+          if [[ "$_i" -eq 30 ]]; then
+            printf '\n  EC2 did not reach running state after 2.5 min — check AWS console.\n'
+            exit 1
+          fi
+        done
+        _EC2_IP=$(aws ec2 describe-instances --instance-ids "$_P_EC2_ID" \
+          --query "Reservations[0].Instances[0].PublicIpAddress" \
+          --output text 2>/dev/null | grep -v '^None$' | grep -v '^$' || true)
+        _CDN_URL=$(cd "$ROOT_DIR/infra" && terraform workspace select "${DEPLOY_WORKSPACE}" >/dev/null 2>&1 \
+          && terraform output -raw cdn_url 2>/dev/null || true)
+        [[ "$_CDN_URL" =~ ^https?:// ]] || _CDN_URL=""
+        _HEALTH_BASE="${_CDN_URL:-http://${_EC2_IP}}"
+        if [[ -n "$_EC2_IP" || -n "$_CDN_URL" ]]; then
+          printf '  Waiting for app at %s/api/health' "$_HEALTH_BASE"
+          _APP_UP=0
+          for _j in $(seq 1 24); do
+            if curl -fsS --max-time 6 "${_HEALTH_BASE}/api/health" >/dev/null 2>&1; then
+              _APP_UP=1
+              break
+            fi
+            printf '.'
+            sleep 10
+          done
+          if [[ "$_APP_UP" == "1" ]]; then
+            printf ' up.\n'
+            printf '  Live at        %s\n' "$_HEALTH_BASE"
+            printf '  API Explorer:  %s/api-explorer\n' "$_HEALTH_BASE"
+          else
+            printf '\n  App did not respond after ~4 min — check EC2 logs:\n'
+            printf '    ssh ec2-user@%s "sudo journalctl -u app -n 50"\n' "${_EC2_IP:-<EC2-IP>}"
+          fi
+        else
+          printf '  Could not determine EC2 IP — check AWS console.\n'
+        fi
+      else
+        printf '  EC2 is starting — check the portfolio in a few minutes.\n'
+      fi
     else
       printf '  EC2 not found — nothing to start (deploy first).\n'
     fi
@@ -281,6 +330,15 @@ fi
 
 DATABASE_URL="$("$ROOT_DIR/scripts/database-url.sh")"
 export DATABASE_URL
+
+echo "  Storing DATABASE_URL in SSM Parameter Store..."
+aws ssm put-parameter \
+  --name "/${TF_VAR_name_prefix}/database-url" \
+  --value "$DATABASE_URL" \
+  --type SecureString \
+  --overwrite \
+  --no-cli-pager >/dev/null
+echo "  Done."
 
 EC2_IP=$(cd "$ROOT_DIR/infra" && terraform output -raw ec2_public_ip 2>/dev/null || true)
 if [[ -z "$EC2_IP" ]]; then
@@ -446,6 +504,7 @@ rsync -az --delete \
   --exclude='infra' \
   -e "ssh $SSH_OPTS" \
   "$ROOT_DIR/" "ec2-user@${EC2_IP}:/app/"
+ssh $SSH_OPTS "ec2-user@${EC2_IP}" "echo '${TF_VAR_name_prefix}' > /app/.name-prefix"
 
 QUICKORDER_DIR="$(cd "$ROOT_DIR/../websockets-quickorder" 2>/dev/null && pwd || true)"
 QUICKORDER_DEPLOY="${QUICKORDER_DIR}/scripts/deploy.sh"
@@ -485,11 +544,7 @@ ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
   export NEXT_PUBLIC_QUICK_ORDER_URL='${QUICKORDER_URL}'
   export NEXT_PUBLIC_DEMO_SCALE='${DEMO_SCALE}'
   npm run build
-  pm2 stop dashboard 2>/dev/null || true
-  pm2 start "npm start" --name dashboard
-  pm2 stop aggregates-worker 2>/dev/null || true
-  pm2 start "npx tsx scripts/aggregates-worker.ts" --name aggregates-worker
-  pm2 save
+  bash /app/scripts/app-startup.sh
 
   # Nginx reverse proxy — clean http://<EC2-IP>/ instead of :3004. Quick
   # Order is a separate instance/IP entirely (see websockets-quickorder/infra),
