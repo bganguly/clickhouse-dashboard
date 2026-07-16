@@ -205,3 +205,11 @@ printf '\n  Dashboard live at:  %s\n' "$BASE_URL"
 printf '  API Explorer:       %s/api-explorer\n' "$BASE_URL"
 printf '  SSH:                ssh -i %s ec2-user@%s\n' "$SSH_PRIVATE_KEY" "$EC2_IP"
 printf '  Tear down:          ./scripts/infra-down.sh\n\n'
+
+PORTFOLIO_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../portfolio/scripts && pwd)/set-live-url.sh"
+if [[ -x "$PORTFOLIO_SCRIPT" ]]; then
+  printf 'Updating portfolio live URL...\n'
+  bash "$PORTFOLIO_SCRIPT" clickhouse "$BASE_URL"
+else
+  printf 'Portfolio script not found at %s — skipping.\n' "$PORTFOLIO_SCRIPT"
+fi
