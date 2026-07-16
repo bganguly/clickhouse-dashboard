@@ -50,11 +50,14 @@ next-env.d.ts
 /aggregates-worker.log
 /scripts/aggregates-worker.pid
 
-# terraform / rds infra
+# terraform / infra
 /infra/.terraform/
 /infra/*.tfstate
 /infra/*.tfstate.*
 /.env.rds
+
+# local clickhouse credentials (written by deploy.sh)
+/.clickhouse-creds
 
 # local agent/session artifacts
 /.claude/

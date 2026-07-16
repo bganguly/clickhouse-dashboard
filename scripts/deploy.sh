@@ -15,15 +15,71 @@ fi
 
 printf '\n=== clickhouse-dashboard deploy ===\n\n'
 
-USE_CH_API=1
-if [[ -z "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
-  if [[ -z "${CLICKHOUSE_URL:-}" || -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
-    printf 'ERROR: set either CLICKHOUSE_CLOUD_KEY (to manage the service automatically)\n'
-    printf '       or CLICKHOUSE_URL + CLICKHOUSE_PASSWORD (to use an existing service).\n'
-    exit 1
+CREDS_FILE="$ROOT_DIR/.clickhouse-creds"
+
+_prompt_creds() {
+  printf 'Do you have an existing ClickHouse Cloud service? [Y/n]: '
+  read -r HAS_SVC
+  HAS_SVC="${HAS_SVC:-Y}"
+  if [[ "$HAS_SVC" =~ ^[Yy] ]]; then
+    USE_CH_API=0
+    printf 'ClickHouse hostname (e.g. abc123.us-east-1.aws.clickhouse.cloud): '
+    read -r CH_HOSTNAME
+    printf 'ClickHouse password: '
+    read -rs CLICKHOUSE_PASSWORD
+    printf '\n'
+    export CLICKHOUSE_URL="https://${CH_HOSTNAME}:8443"
+    export CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
+    export CLICKHOUSE_PASSWORD
+  else
+    USE_CH_API=1
+    printf 'ClickHouse Cloud API key (key-id:key-secret): '
+    read -rs CLICKHOUSE_CLOUD_KEY
+    printf '\n'
+    export CLICKHOUSE_CLOUD_KEY
   fi
+  printf 'Save credentials for future deploys? [Y/n]: '
+  read -r SAVE_CREDS
+  SAVE_CREDS="${SAVE_CREDS:-Y}"
+  if [[ "$SAVE_CREDS" =~ ^[Yy] ]]; then
+    if [[ "$USE_CH_API" == "1" ]]; then
+      printf 'CLICKHOUSE_CLOUD_KEY=%s\n' "$CLICKHOUSE_CLOUD_KEY" > "$CREDS_FILE"
+    else
+      printf 'CLICKHOUSE_URL=%s\nCLICKHOUSE_USER=%s\nCLICKHOUSE_PASSWORD=%s\n' \
+        "$CLICKHOUSE_URL" "${CLICKHOUSE_USER:-default}" "$CLICKHOUSE_PASSWORD" > "$CREDS_FILE"
+    fi
+    chmod 600 "$CREDS_FILE"
+    printf '  Saved to .clickhouse-creds\n\n'
+  fi
+}
+
+USE_CH_API=0
+
+if [[ -n "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
+  USE_CH_API=1
+  printf 'Using CLICKHOUSE_CLOUD_KEY from environment.\n\n'
+elif [[ -n "${CLICKHOUSE_URL:-}" && -n "${CLICKHOUSE_PASSWORD:-}" ]]; then
   USE_CH_API=0
-  printf 'CLICKHOUSE_CLOUD_KEY not set — using CLICKHOUSE_URL directly (skipping CH Cloud API).\n\n'
+  printf 'Using CLICKHOUSE_URL from environment: %s\n\n' "$CLICKHOUSE_URL"
+elif [[ -f "$CREDS_FILE" ]]; then
+  source "$CREDS_FILE"
+  if [[ -n "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
+    USE_CH_API=1
+    printf 'Loaded API key from .clickhouse-creds. Use it? [Y/n]: '
+  else
+    USE_CH_API=0
+    printf 'Loaded saved endpoint: %s. Use it? [Y/n]: ' "${CLICKHOUSE_URL:-}"
+  fi
+  read -r USE_SAVED
+  USE_SAVED="${USE_SAVED:-Y}"
+  if [[ ! "$USE_SAVED" =~ ^[Yy] ]]; then
+    unset CLICKHOUSE_CLOUD_KEY CLICKHOUSE_URL CLICKHOUSE_PASSWORD
+    _prompt_creds
+  else
+    printf '\n'
+  fi
+else
+  _prompt_creds
 fi
 
 for dep in aws terraform ssh rsync; do
