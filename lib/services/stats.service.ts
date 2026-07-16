@@ -1,5 +1,4 @@
-import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
+import { query } from "@/lib/clickhouse";
 import { mapDbError } from "@/lib/errors";
 
 export interface SeedStats {
@@ -9,14 +8,13 @@ export interface SeedStats {
 
 export async function getSeedStats(): Promise<SeedStats> {
   try {
-    const rows = await prisma.$queryRaw<{ customers: bigint; products: bigint }[]>(Prisma.sql`
-      SELECT
-        (SELECT count(*) FROM customers) AS customers,
-        (SELECT count(*) FROM products)  AS products`);
-    const row = rows[0];
+    const [cRows, pRows] = await Promise.all([
+      query<{ n: string }>(`SELECT count() AS n FROM customers`),
+      query<{ n: string }>(`SELECT count() AS n FROM products`),
+    ]);
     return {
-      customers: Number(row.customers),
-      products: Number(row.products),
+      customers: Number(cRows[0]?.n ?? 0),
+      products: Number(pRows[0]?.n ?? 0),
     };
   } catch (err) {
     mapDbError(err, "getSeedStats");

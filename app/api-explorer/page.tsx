@@ -679,11 +679,6 @@ export default function ApiExplorer() {
         style={{ borderColor:"rgba(255,255,255,0.06)", background:"rgba(15,15,19,0.9)", backdropFilter:"blur(16px)" }}>
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <a href={PORTFOLIO_URL}
-            onClick={e => {
-              if (window.location.hostname==="localhost"||window.location.hostname==="127.0.0.1") {
-                e.preventDefault(); window.history.back();
-              }
-            }}
             className="flex items-center gap-2 text-sm transition-colors"
             style={{ color:"#71717a" }}
             onMouseEnter={e => (e.currentTarget.style.color="#f4f4f5")}

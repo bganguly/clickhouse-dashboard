@@ -225,6 +225,9 @@ export default function Chart({
   // the last request's querystring so that echo is a no-op instead of a
   // second full round trip to the backend.
   const lastRequestKeyRef = useRef<string | null>(null);
+  // Track the last refreshSignal value seen by the fetch effect so we can
+  // detect SSE-driven refetches and bypass the dedup guard for those.
+  const lastRefreshSignalRef = useRef(refreshSignal);
 
   const fetchAggregates = useCallback(
     async (from: string, to: string) => {
@@ -296,6 +299,13 @@ export default function Chart({
     // Keep the displayed range (header text, brush position) in sync too.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRange({ from, to });
+    // SSE events bump refreshSignal without changing filters — same params,
+    // so the dedup guard inside fetchAggregates would block the refetch. Clear
+    // the key when refreshSignal advances so SSE-driven fetches always go through.
+    if (refreshSignal !== lastRefreshSignalRef.current) {
+      lastRefreshSignalRef.current = refreshSignal;
+      lastRequestKeyRef.current = null;
+    }
     // Kicks off an async fetch (which toggles loading state); intentional.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchAggregates(from, to);
@@ -371,9 +381,9 @@ export default function Chart({
       };
       return next;
     });
-    // No separate exact-total bump needed here: matchedOrders now derives
-    // from summedCategoryOrders, which is a useMemo over rawData — the
-    // setRawData optimistic bump above already flows through automatically.
+    // matchedOrders = apiTotal ?? summedCategoryOrders: apiTotal takes precedence
+    // when set, so the Total tile and onTotalChange stay stale without this bump.
+    setApiTotal((prev) => (prev != null ? prev + 1 : prev));
     // searchQuery/filters intentionally omitted: read via closure at the
     // render where lastSseOrder changed, which is what we want — re-running
     // this effect on a pure filter change (no new order) would be a no-op

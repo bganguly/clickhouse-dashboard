@@ -1,21 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  buildCountCacheKey,
-  buildFilterConditions,
-  buildSearchTextConditions,
-  cachedCount,
-  exactCount,
-  isPureDateRangeQuery,
-  resolveFilters,
-  sumDailyOrderCount,
-  whereClause,
-} from "@/lib/services";
+import { getOrderCount, resolveFilters } from "@/lib/services";
 
-// GET /api/orders/count?q=&status=&regionCode=&from=&to=&minTotal=&maxTotal=
-// Refinement endpoint fired by the frontend after a /api/orders response comes
-// back `approximate: true` (see cappedCount in orders.service.ts). Always runs
-// an uncapped exact count and writes it to count_cache, so this is also what
-// makes a later cappedCount call for the same filter signature a cache hit.
+// GET /api/orders/count — exact count for the same filters as /api/orders.
+// Fired after an approximate response; ClickHouse makes this cheap without a cache.
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const num = (name: string) => {
@@ -33,13 +20,6 @@ export async function GET(req: NextRequest) {
     maxTotal: num("maxTotal") ?? null,
   });
 
-  const conds = [...buildSearchTextConditions(q), ...buildFilterConditions(filters)];
-  const whereSql = whereClause(conds);
-  const cacheKey = buildCountCacheKey(q, filters);
-
-  const total = isPureDateRangeQuery(q, filters)
-    ? await sumDailyOrderCount(filters.from, filters.to)
-    : await cachedCount(cacheKey, () => exactCount(whereSql));
-
+  const total = await getOrderCount(q, filters);
   return NextResponse.json({ total });
 }

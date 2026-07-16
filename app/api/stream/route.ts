@@ -2,9 +2,8 @@ import { NextRequest } from "next/server";
 import { subscribeToOrders } from "@/lib/services";
 import type { StreamEventName } from "@/lib/types";
 
-// GET /api/stream — SSE endpoint backed by Postgres LISTEN/NOTIFY.
-// All DB access is delegated to the stream service; this handler only adapts
-// the subscription to the Server-Sent Events wire format.
+// GET /api/stream — SSE endpoint. Delegates to the stream service (in-process
+// EventEmitter); this handler only adapts the subscription to the SSE wire format.
 export async function GET(req: NextRequest) {
   const encoder = new TextEncoder();
 
