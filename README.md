@@ -4,7 +4,13 @@ Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard deliver
 and chart responses across 500 k orders: full-text search, pre-aggregated analytics tables,
 persistent count cache, Server-Sent Events for live updates, and Terraform IaC on AWS.
 
-Sister repo: [websockets-quickorder](https://github.com/bganguly/websockets-quickorder)
+**[→ Portfolio demo](https://bganguly.github.io/?open=nextjs)**
+
+## Using the App
+
+1. **Search** — type in the search bar to find orders by customer name; sub-second via customer-id enumeration + GIN index on 500 k rows.
+2. **Aggregates** — the chart shows daily order totals by category from pre-aggregated tables; never touches raw orders.
+3. **Live updates** — open a second tab to the Quick Order tool and place an order; the dashboard refreshes within ~100 ms via SSE.
 
 ---
 
