@@ -15,9 +15,15 @@ fi
 
 printf '\n=== clickhouse-dashboard deploy ===\n\n'
 
+USE_CH_API=1
 if [[ -z "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
-  printf 'ERROR: CLICKHOUSE_CLOUD_KEY env var is required.\n'
-  exit 1
+  if [[ -z "${CLICKHOUSE_URL:-}" || -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
+    printf 'ERROR: set either CLICKHOUSE_CLOUD_KEY (to manage the service automatically)\n'
+    printf '       or CLICKHOUSE_URL + CLICKHOUSE_PASSWORD (to use an existing service).\n'
+    exit 1
+  fi
+  USE_CH_API=0
+  printf 'CLICKHOUSE_CLOUD_KEY not set — using CLICKHOUSE_URL directly (skipping CH Cloud API).\n\n'
 fi
 
 for dep in aws terraform ssh rsync; do
@@ -42,28 +48,29 @@ EC2_IP="$(terraform output -raw ec2_public_ip)"
 CDN_URL="$(terraform output -raw cdn_url 2>/dev/null || true)"
 printf '  EC2 ready: %s\n' "$EC2_IP"
 
-printf '[3/4] Ensuring ClickHouse Cloud service is running...\n'
+if [[ "$USE_CH_API" == "1" ]]; then
+  printf '[3/4] Ensuring ClickHouse Cloud service is running...\n'
 
-CH_ORG_ID="${CLICKHOUSE_ORG_ID:-}"
-CH_SERVICE_NAME="${CLICKHOUSE_SERVICE_NAME:-clickhouse-dashboard}"
-CH_REGION="${CLICKHOUSE_CLOUD_REGION:-aws-us-east-1}"
-CH_TIER="${CLICKHOUSE_CLOUD_TIER:-development}"
+  CH_ORG_ID="${CLICKHOUSE_ORG_ID:-}"
+  CH_SERVICE_NAME="${CLICKHOUSE_SERVICE_NAME:-clickhouse-dashboard}"
+  CH_REGION="${CLICKHOUSE_CLOUD_REGION:-aws-us-east-1}"
+  CH_TIER="${CLICKHOUSE_CLOUD_TIER:-development}"
 
-_ch_api() {
-  local method="$1" path="$2"
-  shift 2
-  curl -fsSL -X "$method" \
-    -H "Authorization: Basic $(printf '%s' "$CLICKHOUSE_CLOUD_KEY" | base64)" \
-    -H "Content-Type: application/json" \
-    "https://api.clickhouse.cloud/v1${path}" "$@"
-}
+  _ch_api() {
+    local method="$1" path="$2"
+    shift 2
+    curl -fsSL -X "$method" \
+      -H "Authorization: Basic $(printf '%s' "$CLICKHOUSE_CLOUD_KEY" | base64)" \
+      -H "Content-Type: application/json" \
+      "https://api.clickhouse.cloud/v1${path}" "$@"
+  }
 
-if [[ -z "$CH_ORG_ID" ]]; then
-  CH_ORG_ID="$(_ch_api GET /organizations | python3 -c "import sys,json;orgs=json.load(sys.stdin).get('result',[]); print(orgs[0]['id'] if orgs else '')" 2>/dev/null || true)"
-fi
-[[ -z "$CH_ORG_ID" ]] && { printf 'ERROR: could not determine ClickHouse org ID. Set CLICKHOUSE_ORG_ID.\n'; exit 1; }
+  if [[ -z "$CH_ORG_ID" ]]; then
+    CH_ORG_ID="$(_ch_api GET /organizations | python3 -c "import sys,json;orgs=json.load(sys.stdin).get('result',[]); print(orgs[0]['id'] if orgs else '')" 2>/dev/null || true)"
+  fi
+  [[ -z "$CH_ORG_ID" ]] && { printf 'ERROR: could not determine ClickHouse org ID. Set CLICKHOUSE_ORG_ID.\n'; exit 1; }
 
-EXISTING_SERVICE="$(_ch_api GET "/organizations/${CH_ORG_ID}/services" | python3 -c "
+  EXISTING_SERVICE="$(_ch_api GET "/organizations/${CH_ORG_ID}/services" | python3 -c "
 import sys,json
 data=json.load(sys.stdin)
 for s in data.get('result',[]):
@@ -72,34 +79,37 @@ for s in data.get('result',[]):
         break
 " 2>/dev/null || true)"
 
-if [[ -z "$EXISTING_SERVICE" ]]; then
-  printf '  Creating new ClickHouse Cloud service (%s / %s)...\n' "$CH_TIER" "$CH_REGION"
-  CREATED="$(_ch_api POST "/organizations/${CH_ORG_ID}/services" \
-    -d "{\"name\":\"${CH_SERVICE_NAME}\",\"provider\":\"aws\",\"region\":\"${CH_REGION}\",\"tier\":\"${CH_TIER}\"}")"
-  CH_HOST="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['endpoints'][0]['hostname'])" 2>/dev/null || true)"
-  CH_PASS="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['password'])" 2>/dev/null || true)"
-  CH_SERVICE_ID="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['id'])" 2>/dev/null || true)"
-else
-  CH_HOST="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);ep=d.get('endpoints',[]); print(ep[0]['hostname'] if ep else '')" 2>/dev/null || true)"
-  CH_SERVICE_ID="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('id',''))" 2>/dev/null || true)"
-  CH_STATE="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('state',''))" 2>/dev/null || true)"
-  CH_PASS="${CLICKHOUSE_PASSWORD:-}"
-
-  if [[ "$CH_STATE" == "idle" || "$CH_STATE" == "stopped" ]]; then
-    printf '  Resuming paused service %s...\n' "$CH_SERVICE_ID"
-    _ch_api PATCH "/organizations/${CH_ORG_ID}/services/${CH_SERVICE_ID}/state" \
-      -d '{"command":"start"}' >/dev/null
-    printf '  Resume command sent (service starts in background).\n'
+  if [[ -z "$EXISTING_SERVICE" ]]; then
+    printf '  Creating new ClickHouse Cloud service (%s / %s)...\n' "$CH_TIER" "$CH_REGION"
+    CREATED="$(_ch_api POST "/organizations/${CH_ORG_ID}/services" \
+      -d "{\"name\":\"${CH_SERVICE_NAME}\",\"provider\":\"aws\",\"region\":\"${CH_REGION}\",\"tier\":\"${CH_TIER}\"}")"
+    CH_HOST="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['endpoints'][0]['hostname'])" 2>/dev/null || true)"
+    CH_PASS="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['password'])" 2>/dev/null || true)"
   else
-    printf '  Service state: %s\n' "$CH_STATE"
+    CH_HOST="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);ep=d.get('endpoints',[]); print(ep[0]['hostname'] if ep else '')" 2>/dev/null || true)"
+    CH_SERVICE_ID="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('id',''))" 2>/dev/null || true)"
+    CH_STATE="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('state',''))" 2>/dev/null || true)"
+    CH_PASS="${CLICKHOUSE_PASSWORD:-}"
+
+    if [[ "$CH_STATE" == "idle" || "$CH_STATE" == "stopped" ]]; then
+      printf '  Resuming paused service %s...\n' "$CH_SERVICE_ID"
+      _ch_api PATCH "/organizations/${CH_ORG_ID}/services/${CH_SERVICE_ID}/state" \
+        -d '{"command":"start"}' >/dev/null
+      printf '  Resume command sent (service starts in background).\n'
+    else
+      printf '  Service state: %s\n' "$CH_STATE"
+    fi
   fi
+
+  [[ -z "$CH_HOST" ]] && { printf 'ERROR: could not determine ClickHouse host.\n'; exit 1; }
+  [[ -z "$CH_PASS" ]] && { printf 'ERROR: CLICKHOUSE_PASSWORD is required for an existing service.\n'; exit 1; }
+  CLICKHOUSE_URL="https://${CH_HOST}:8443"
+  printf '  ClickHouse endpoint: %s\n' "$CLICKHOUSE_URL"
+else
+  printf '[3/4] Using provided CLICKHOUSE_URL (skipping CH Cloud API).\n'
+  CH_PASS="${CLICKHOUSE_PASSWORD}"
+  printf '  ClickHouse endpoint: %s\n' "$CLICKHOUSE_URL"
 fi
-
-[[ -z "$CH_HOST" ]] && { printf 'ERROR: could not determine ClickHouse host.\n'; exit 1; }
-[[ -z "$CH_PASS" ]] && { printf 'ERROR: CLICKHOUSE_PASSWORD is required for an existing service.\n'; exit 1; }
-
-CLICKHOUSE_URL="https://${CH_HOST}:8443"
-printf '  ClickHouse endpoint: %s\n' "$CLICKHOUSE_URL"
 
 printf '[4/4] Deploying app to EC2...\n'
 
