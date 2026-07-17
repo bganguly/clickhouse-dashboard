@@ -318,6 +318,28 @@ function genId(): number {
   return ++_nextId;
 }
 
+function prefixTokens(word: string, minLen = 3): string {
+  if (word.length <= minLen) return "";
+  const out: string[] = [];
+  for (let i = minLen; i < word.length; i++) {
+    out.push(word.slice(0, i).toLowerCase());
+  }
+  return out.join(" ");
+}
+
+function buildSearchText(
+  firstName: string,
+  lastName: string,
+  orderId: number,
+  notes?: string | null,
+): string {
+  const parts = [firstName, lastName, String(orderId)];
+  if (notes) parts.push(notes);
+  const prefs = [prefixTokens(firstName), prefixTokens(lastName)].filter(Boolean);
+  if (prefs.length) parts.push(...prefs);
+  return parts.join(" ");
+}
+
 export async function createOrder(input: CreateOrderInput): Promise<CreateOrderResult> {
   if (!input.customerId || !input.regionId || !Array.isArray(input.items) || input.items.length === 0) {
     throw new AppError("BAD_REQUEST", "customerId, regionId, and at least one item are required");
@@ -360,7 +382,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     const orderId = genId();
     const placedAt = new Date().toISOString().replace("T", " ").replace("Z", "");
     const date = placedAt.slice(0, 10);
-    const searchText = `${customer.firstName} ${customer.lastName} ${customer.email}${input.notes ? " " + input.notes : ""}`;
+    const searchText = buildSearchText(customer.firstName, customer.lastName, orderId, input.notes);
 
     await insert("orders", [{
       orderId,

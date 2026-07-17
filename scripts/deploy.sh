@@ -370,26 +370,21 @@ else
   wait "$_SEED_PID"
 fi
 
-printf '\n[search-backfill] Checking searchText column...\n'
+printf '\n[search-backfill] Checking searchText format (pruned+prefix vs legacy email)...\n'
 _SEARCH_FIX_NEEDED="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT if(positionCaseInsensitive(searchText, customerFirstName) > 0, 0, 1) FROM orders LIMIT 1" \
+  --data-binary "SELECT if(positionCaseInsensitive(searchText, '@') > 0, 1, 0) FROM orders LIMIT 1" \
   2>/dev/null || echo 0)"
 if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 0 ]]; then
-  printf '  searchText already contains customer names — skipping.\n'
-  printf '  NOTE: searchText migration is complete. You can simplify buildWhereParts\n'
-  printf '        in lib/services/orders.service.ts to search only searchText (drop the\n'
-  printf '        customerFirstName/customerLastName OR clauses) — the ngrambf index\n'
-  printf '        will then be used for all searches.\n'
+  printf '  searchText already in pruned+prefix format — skipping.\n'
 else
-  printf '  searchText missing names — submitting UPDATE mutation...\n'
+  printf '  Legacy email format detected — submitting UPDATE to pruned+prefix+tokens format...\n'
   curl -sf -u "default:${CH_PASS}" \
     "${CLICKHOUSE_URL}/?max_execution_time=10" \
-    --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', customerEmail, ' order ', toString(orderId)) WHERE positionCaseInsensitive(searchText, customerFirstName) = 0 AND customerFirstName != ''" \
+    --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE positionCaseInsensitive(searchText, '@') > 0" \
     2>/dev/null || true
-  printf '  searchText mutation submitted (ClickHouse processes in background).\n'
+  printf '  Mutation submitted — polling progress every 15s (up to 20 checks / 5 min)...\n'
 
-  printf '\n[search-backfill-progress] Polling mutation status (up to 5 min)...\n'
   _MUT_DONE=0
   for _i in $(seq 1 20); do
     _MUT_ROW="$(curl -sf -u "default:${CH_PASS}" \
@@ -399,32 +394,32 @@ else
     _IS_DONE="$(printf '%s' "${_MUT_ROW}" | cut -f1)"
     _PARTS_LEFT="$(printf '%s' "${_MUT_ROW}" | cut -f2)"
     if [[ "${_IS_DONE}" == "1" ]]; then
-      printf '  [%2d/20] Done — all parts mutated.\n' "${_i}"
+      printf '  [%2d/20] Done — all parts updated.\n' "${_i}"
       _MUT_DONE=1
       break
     elif [[ -n "${_PARTS_LEFT}" ]]; then
-      printf '  [%2d/20] Parts remaining: %s\n' "${_i}" "${_PARTS_LEFT}"
+      printf '  [%2d/20] parts_to_do: %s\n' "${_i}" "${_PARTS_LEFT}"
     else
-      printf '  [%2d/20] Mutation queued (not yet visible in system.mutations)\n' "${_i}"
+      printf '  [%2d/20] Mutation not yet visible — still queuing...\n' "${_i}"
     fi
     sleep 15
   done
-  if [[ "${_MUT_DONE}" -eq 1 ]]; then
-    printf '  NOTE: searchText migration complete. On next deploy the backfill step will\n'
-    printf '        be skipped. You can now simplify buildWhereParts in\n'
-    printf '        lib/services/orders.service.ts to search only searchText — the\n'
-    printf '        ngrambf index will then be used and the OR fallback columns removed.\n'
-  else
-    printf '  Mutation still running — deploy continues. Re-run deploy.sh later to verify.\n'
+  if [[ "${_MUT_DONE}" -ne 1 ]]; then
+    printf '  Mutation still running after 5 min — deploy continues, index queued behind it.\n'
   fi
 fi
 
-printf '\n[search-index] Materializing full_text index on orders.searchText (background)...\n'
-curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?max_execution_time=10" \
-  --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
-  2>/dev/null || true
-printf '  index materialization submitted.\n'
+printf '\n[search-index] Full-text index on orders.searchText...\n'
+if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 1 ]]; then
+  printf '  Submitting MATERIALIZE INDEX (queued after UPDATE mutation in ClickHouse)...\n'
+  curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?max_execution_time=10" \
+    --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
+    2>/dev/null || true
+  printf '  Index materialization queued — builds in background, search improves as it progresses.\n'
+else
+  printf '  searchText current — index already materialized.\n'
+fi
 
 printf '\n[facts] Checking order_category_facts...\n'
 _FACTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
