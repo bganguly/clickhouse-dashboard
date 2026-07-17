@@ -377,6 +377,10 @@ _SEARCH_FIX_NEEDED="$(curl -sf -u "default:${CH_PASS}" \
   2>/dev/null || echo 0)"
 if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 0 ]]; then
   printf '  searchText already contains customer names — skipping.\n'
+  printf '  NOTE: searchText migration is complete. You can simplify buildWhereParts\n'
+  printf '        in lib/services/orders.service.ts to search only searchText (drop the\n'
+  printf '        customerFirstName/customerLastName OR clauses) — the ngrambf index\n'
+  printf '        will then be used for all searches.\n'
 else
   printf '  searchText missing names — submitting UPDATE mutation...\n'
   curl -sf -u "default:${CH_PASS}" \
@@ -384,6 +388,35 @@ else
     --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', customerEmail, ' order ', toString(orderId)) WHERE positionCaseInsensitive(searchText, customerFirstName) = 0 AND customerFirstName != ''" \
     2>/dev/null || true
   printf '  searchText mutation submitted (ClickHouse processes in background).\n'
+
+  printf '\n[search-backfill-progress] Polling mutation status (up to 5 min)...\n'
+  _MUT_DONE=0
+  for _i in $(seq 1 20); do
+    _MUT_ROW="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do FROM system.mutations WHERE table='orders' AND command LIKE '%searchText%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    _IS_DONE="$(printf '%s' "${_MUT_ROW}" | cut -f1)"
+    _PARTS_LEFT="$(printf '%s' "${_MUT_ROW}" | cut -f2)"
+    if [[ "${_IS_DONE}" == "1" ]]; then
+      printf '  [%2d/20] Done — all parts mutated.\n' "${_i}"
+      _MUT_DONE=1
+      break
+    elif [[ -n "${_PARTS_LEFT}" ]]; then
+      printf '  [%2d/20] Parts remaining: %s\n' "${_i}" "${_PARTS_LEFT}"
+    else
+      printf '  [%2d/20] Mutation queued (not yet visible in system.mutations)\n' "${_i}"
+    fi
+    sleep 15
+  done
+  if [[ "${_MUT_DONE}" -eq 1 ]]; then
+    printf '  NOTE: searchText migration complete. On next deploy the backfill step will\n'
+    printf '        be skipped. You can now simplify buildWhereParts in\n'
+    printf '        lib/services/orders.service.ts to search only searchText — the\n'
+    printf '        ngrambf index will then be used and the OR fallback columns removed.\n'
+  else
+    printf '  Mutation still running — deploy continues. Re-run deploy.sh later to verify.\n'
+  fi
 fi
 
 printf '\n[search-index] Materializing ngrambf index on orders.searchText (background)...\n'

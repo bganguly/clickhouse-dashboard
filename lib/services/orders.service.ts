@@ -17,6 +17,12 @@ import type {
   SortDir,
 } from "@/lib/types";
 
+const SEARCH_CACHE = {
+  use_query_cache: 1 as const,
+  query_cache_ttl: 60,
+  query_cache_share_between_users: 1 as const,
+};
+
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_SORT: OrderSortField = "placedAt";
@@ -169,10 +175,12 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       query<{ n: string }>(
         `SELECT count() AS n FROM orders ${where}`,
         params,
+        SEARCH_CACHE,
       ),
       query<{ orderId: string }>(
         `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
         { ...params, lim: pageSize, off: offset },
+        SEARCH_CACHE,
       ),
     ]);
     const rawTotal = Number(countRows[0]?.n ?? 0);
@@ -219,10 +227,12 @@ export async function listOrdersByCursor(
       query<{ n: string }>(
         `SELECT count() AS n FROM orders ${whereSQL(baseClauses)}`,
         baseParams,
+        SEARCH_CACHE,
       ),
       query<{ orderId: string }>(
         `SELECT orderId FROM orders ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
         { ...allParams, lim: pageSize },
+        SEARCH_CACHE,
       ),
     ]);
 
@@ -309,6 +319,7 @@ async function computeFacets(
      UNION ALL
      SELECT 'region' AS dim, regionCode AS key, count() AS n FROM orders ${where} GROUP BY regionCode`,
     params,
+    SEARCH_CACHE,
   );
 
   const status: FacetCount[] = [];
@@ -470,6 +481,7 @@ export async function getOrderCount(
   const rows = await query<{ n: string }>(
     `SELECT count() AS n FROM orders ${where}`,
     params,
+    SEARCH_CACHE,
   );
   return Number(rows[0]?.n ?? 0);
 }

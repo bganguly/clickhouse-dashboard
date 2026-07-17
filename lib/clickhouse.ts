@@ -1,4 +1,4 @@
-import { createClient, type ClickHouseClient } from "@clickhouse/client";
+import { createClient, type ClickHouseClient, type ClickHouseSettings } from "@clickhouse/client";
 
 const globalForCh = globalThis as unknown as { ch: ClickHouseClient };
 
@@ -19,13 +19,16 @@ if (process.env.NODE_ENV !== "production") globalForCh.ch = ch;
 export async function query<T = Record<string, unknown>>(
   sql: string,
   params?: Record<string, unknown>,
+  settings?: ClickHouseSettings,
 ): Promise<T[]> {
-  const rs = await ch.query({ query: sql, format: "JSONEachRow", query_params: params });
+  const rs = await ch.query({ query: sql, format: "JSONEachRow", query_params: params, clickhouse_settings: settings });
   return rs.json<T>();
 }
 
 export async function execute(sql: string, params?: Record<string, unknown>): Promise<void> {
-  await ch.exec({ query: sql, query_params: params });
+  const { stream } = await ch.exec({ query: sql, query_params: params });
+  stream.resume();
+  await new Promise<void>((resolve) => stream.once("close", resolve));
 }
 
 export async function insert<T extends Record<string, unknown>>(
