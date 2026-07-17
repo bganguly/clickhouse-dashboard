@@ -8,6 +8,7 @@ const MAX_LIMIT = 50;
 export async function search(input: SearchInput): Promise<SearchResult> {
   const q = input.q?.trim();
   if (!q) throw new AppError("BAD_REQUEST", "q (search query) is required");
+  const qLower = q.toLowerCase();
 
   const limit = Math.min(Math.max(input.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 
@@ -16,9 +17,9 @@ export async function search(input: SearchInput): Promise<SearchResult> {
       (!input.entityType || input.entityType === "order")
         ? query<{ orderId: string; searchText: string }>(
             `SELECT orderId, searchText FROM orders
-             WHERE hasTokenCaseInsensitive(searchText, {q: String})
+             WHERE hasToken(lower(searchText), {q: String})
              ORDER BY placedAt DESC LIMIT {lim: UInt32}`,
-            { q, lim: limit },
+            { q: qLower, lim: limit },
           )
         : Promise.resolve([]),
       (!input.entityType || input.entityType === "product")
