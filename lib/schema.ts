@@ -213,7 +213,25 @@ export const DDL_STATEMENTS = [
 ];
 
 export async function runMigrations(): Promise<void> {
-  const { execute } = await import("./clickhouse");
+  const { ch, execute } = await import("./clickhouse");
+
+  // ClickHouse Cloud development tier auto-pauses; wait up to 3 min for it to wake.
+  const deadline = Date.now() + 3 * 60 * 1000;
+  let attempt = 0;
+  while (true) {
+    try {
+      const rs = await ch.query({ query: "SELECT 1", format: "JSONEachRow" });
+      await rs.json();
+      break;
+    } catch {
+      if (Date.now() > deadline) throw new Error("ClickHouse did not become ready within 3 minutes");
+      attempt++;
+      const delay = Math.min(5000 * attempt, 20_000);
+      console.log(`ClickHouse not ready yet (attempt ${attempt}), retrying in ${delay / 1000}s…`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
   for (const stmt of DDL_STATEMENTS) {
     await execute(stmt);
   }

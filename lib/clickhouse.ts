@@ -9,6 +9,7 @@ export const ch: ClickHouseClient =
     username: process.env.CLICKHOUSE_USER ?? "default",
     password: process.env.CLICKHOUSE_PASSWORD ?? "",
     database: "default",
+    request_timeout: 120_000,
     clickhouse_settings: {
       output_format_json_quote_64bit_integers: 0,
     },
