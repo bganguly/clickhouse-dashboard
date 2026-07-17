@@ -449,8 +449,13 @@ else
   _SEED_PID=$!
   _poll_seed 50000000 "$_SEED_PID"
   wait "$_SEED_PID"
-  printf '  Invalidating S3 dump — will rebake on next deploy.\n'
-  aws s3 rm "s3://${_CH_DUMP_BUCKET}/clickhouse-dash/" --recursive 2>/dev/null || true
+  printf '  Rebaking S3 dump with new names (ClickHouse → S3, no local I/O)...\n'
+  CLICKHOUSE_URL="${CLICKHOUSE_URL}" \
+  CLICKHOUSE_USER=default \
+  CLICKHOUSE_PASSWORD="${CH_PASS}" \
+  AWS_ACCESS_KEY_ID="${_AWS_KEY}" \
+  AWS_SECRET_ACCESS_KEY="${_AWS_SECRET}" \
+    bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
 fi
 
 printf '\n[search-backfill] Checking searchText format (pruned+prefix vs legacy email)...\n'
