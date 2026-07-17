@@ -44,7 +44,7 @@ function normalizeDir(dir: string | null | undefined): SortDir {
 }
 
 export function escapeLike(input: string): string {
-  return input.replace(/[%_]/g, "");
+  return input.replace(/'/g, "''");
 }
 
 export function normalizeStatusList(csv: string | null | undefined): OrderStatus[] {
@@ -105,12 +105,16 @@ function buildWhereParts(
 ): { clauses: string[]; params: Record<string, unknown> } {
   const clauses: string[] = [];
   const params: Record<string, unknown> = {};
-  let pi = 0;
 
+  let pi = 0;
   for (const tok of searchTokens) {
     const k = `stok${pi++}`;
-    clauses.push(`positionCaseInsensitive(searchText, {${k}: String}) > 0`);
-    params[k] = escapeLike(tok);
+    clauses.push(
+      `(positionCaseInsensitive(searchText, {${k}: String}) > 0` +
+      ` OR positionCaseInsensitive(customerFirstName, {${k}: String}) > 0` +
+      ` OR positionCaseInsensitive(customerLastName, {${k}: String}) > 0)`
+    );
+    params[k] = tok;
   }
   if (f.statuses.length) {
     clauses.push(`status IN ({statuses: Array(String)})`);
@@ -161,19 +165,21 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     const sortCol = SORT_COL[sort];
     const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
-    const countRows = await query<{ n: string }>(
-      `SELECT count() AS n FROM orders ${where}`,
-      params,
-    );
+    const [countRows, idRows] = await Promise.all([
+      query<{ n: string }>(
+        `SELECT count() AS n FROM (SELECT 1 FROM orders ${where} LIMIT {sentinel: UInt32})`,
+        { ...params, sentinel: COUNT_SENTINEL },
+      ),
+      query<{ orderId: string }>(
+        `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+        { ...params, lim: pageSize, off: offset },
+      ),
+    ]);
     const rawTotal = Number(countRows[0]?.n ?? 0);
-    const approximate = rawTotal > COUNT_SENTINEL - 1;
+    const approximate = rawTotal >= COUNT_SENTINEL;
     const total = approximate ? COUNT_SENTINEL - 1 : rawTotal;
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
-    const idRows = await query<{ orderId: string }>(
-      `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
-      { ...params, lim: pageSize, off: offset },
-    );
     const ids = idRows.map((r) => Number(r.orderId));
     const data = await hydrateOrders(ids);
     const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate };
@@ -210,7 +216,10 @@ export async function listOrdersByCursor(
     const dirSQL = isNext ? "DESC" : "ASC";
 
     const [countRows, pageRows] = await Promise.all([
-      query<{ n: string }>(`SELECT count() AS n FROM orders ${whereSQL(baseClauses)}`, baseParams),
+      query<{ n: string }>(
+        `SELECT count() AS n FROM (SELECT 1 FROM orders ${whereSQL(baseClauses)} LIMIT {sentinel: UInt32})`,
+        { ...baseParams, sentinel: COUNT_SENTINEL },
+      ),
       query<{ orderId: string }>(
         `SELECT orderId FROM orders ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
         { ...allParams, lim: pageSize },
@@ -218,7 +227,7 @@ export async function listOrdersByCursor(
     ]);
 
     const rawTotal = Number(countRows[0]?.n ?? 0);
-    const approximate = rawTotal > COUNT_SENTINEL - 1;
+    const approximate = rawTotal >= COUNT_SENTINEL;
     const total = approximate ? COUNT_SENTINEL - 1 : rawTotal;
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 

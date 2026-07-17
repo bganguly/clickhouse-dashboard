@@ -370,6 +370,13 @@ else
   wait "$_SEED_PID"
 fi
 
+printf '\n[search-index] Materializing ngrambf index on orders.searchText (background)...\n'
+curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?max_execution_time=10" \
+  --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_text" \
+  2>/dev/null || true
+printf '  index materialization submitted.\n'
+
 printf '\n[facts] Checking order_category_facts...\n'
 _FACTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
