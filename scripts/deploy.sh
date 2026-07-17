@@ -331,6 +331,19 @@ ENV
 
   npm ci --prefer-offline
 
+  _SORT_KEY="\$(curl -sf -u 'default:${CH_PASS}' \
+    '${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10' \
+    --data-binary \"SELECT sorting_key FROM system.tables WHERE name='orders' AND database='default'\" \
+    2>/dev/null || echo '')"
+  if echo "\$_SORT_KEY" | grep -q 'toDate'; then
+    echo '[schema] orders ORDER BY uses toDate(placedAt) — dropping for migration to (placedAt, orderId)...'
+    curl -sf -u 'default:${CH_PASS}' '${CLICKHOUSE_URL}/?max_execution_time=30' \
+      --data-binary 'DROP TABLE IF EXISTS orders' 2>/dev/null || true
+    curl -sf -u 'default:${CH_PASS}' '${CLICKHOUSE_URL}/?max_execution_time=30' \
+      --data-binary 'DROP TABLE IF EXISTS order_category_facts' 2>/dev/null || true
+    echo '[schema] Tables dropped — will reseed from S3 after migrations.'
+  fi
+
   node -e "
     const { runMigrations } = require('./lib/schema.js');
     runMigrations().then(() => { console.log('Migrations done'); process.exit(0); }).catch(e => { console.error(e); process.exit(1); });

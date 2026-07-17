@@ -72,7 +72,7 @@ export const DDL_STATEMENTS = [
     searchText        String,
     placedAt          DateTime64(3, 'UTC')
   ) ENGINE = MergeTree()
-  ORDER BY (toDate(placedAt), orderId)`,
+  ORDER BY (placedAt, orderId)`,
 
   `CREATE TABLE IF NOT EXISTS order_items (
     itemId       UInt64,
