@@ -12,6 +12,8 @@ export const ch: ClickHouseClient =
     request_timeout: 120_000,
     clickhouse_settings: {
       output_format_json_quote_64bit_integers: 0,
+      send_progress_in_http_headers: 1,
+      http_headers_progress_interval_ms: "5000",
     },
   });
 

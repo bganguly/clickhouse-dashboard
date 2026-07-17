@@ -209,7 +209,7 @@ export const DDL_STATEMENTS = [
   FROM order_category_facts`,
 
   `ALTER TABLE orders DROP INDEX IF EXISTS idx_search_text`,
-  `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_fulltext searchText TYPE full_text GRANULARITY 1`,
+  `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_fulltext searchText TYPE text GRANULARITY 1`,
 ];
 
 export async function runMigrations(): Promise<void> {
