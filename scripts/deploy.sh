@@ -55,14 +55,14 @@ _prompt_creds() {
 }
 
 _poll_materialize_idx() {
-  local t0 elapsed total left done_parts pct eta row is_done
+  local t0 elapsed total left done_parts pct eta row is_done failed
   t0=$(date +%s)
   total=0
   for _w in $(seq 1 12); do
     sleep 5
     row="$(curl -sf -u "default:${CH_PASS}" \
       "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
       2>/dev/null || echo '')"
     [[ -n "$row" ]] && break
     printf '\r  waiting for mutation to register (%ds)...     ' $(( _w * 5 ))
@@ -71,11 +71,16 @@ _poll_materialize_idx() {
   while true; do
     row="$(curl -sf -u "default:${CH_PASS}" \
       "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
       2>/dev/null || echo '')"
     is_done="$(printf '%s' "$row" | cut -f1)"
     left="$(printf '%s' "$row" | cut -f2)"
+    failed="$(printf '%s' "$row" | cut -f3)"
     if [[ "$is_done" == "1" ]]; then
+      if [[ -n "$failed" ]]; then
+        printf '\r  ERROR: mutation failed on part: %s\n' "$failed"
+        return 1
+      fi
       printf '\r  done — index fully materialized.                              \n'
       return 0
     fi
@@ -422,46 +427,53 @@ if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 0 ]]; then
 else
   printf '  Legacy email format detected — submitting UPDATE to pruned+prefix+tokens format...\n'
   curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?max_execution_time=10" \
+    "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE positionCaseInsensitive(searchText, '@') > 0" \
     2>/dev/null || true
-  printf '  Mutation submitted — polling progress every 15s (up to 20 checks / 5 min)...\n'
+  printf '  Mutation submitted — polling every 15s...\n'
 
   _MUT_DONE=0
-  for _i in $(seq 1 20); do
+  for _i in $(seq 1 80); do
     _MUT_ROW="$(curl -sf -u "default:${CH_PASS}" \
       "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do FROM system.mutations WHERE table='orders' AND command LIKE '%searchText%' ORDER BY create_time DESC LIMIT 1" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%searchText%' ORDER BY create_time DESC LIMIT 1" \
       2>/dev/null || echo '')"
     _IS_DONE="$(printf '%s' "${_MUT_ROW}" | cut -f1)"
     _PARTS_LEFT="$(printf '%s' "${_MUT_ROW}" | cut -f2)"
+    _FAILED="$(printf '%s' "${_MUT_ROW}" | cut -f3)"
     if [[ "${_IS_DONE}" == "1" ]]; then
-      printf '  [%2d/20] Done — all parts updated.\n' "${_i}"
+      if [[ -n "${_FAILED}" ]]; then
+        printf '  [%2d] ERROR: mutation failed on part: %s\n' "${_i}" "${_FAILED}"
+        break
+      fi
+      printf '  [%2d] Done — all parts updated.\n' "${_i}"
       _MUT_DONE=1
       break
     elif [[ -n "${_PARTS_LEFT}" ]]; then
-      printf '  [%2d/20] parts_to_do: %s\n' "${_i}" "${_PARTS_LEFT}"
+      printf '  [%2d] parts_to_do: %s\n' "${_i}" "${_PARTS_LEFT}"
     else
-      printf '  [%2d/20] Mutation not yet visible — still queuing...\n' "${_i}"
+      printf '  [%2d] Mutation not yet visible — still queuing...\n' "${_i}"
     fi
     sleep 15
   done
   if [[ "${_MUT_DONE}" -ne 1 ]]; then
-    printf '  Mutation still running after 5 min — deploy continues, index queued behind it.\n'
+    printf '  Mutation still running — deploy continues; check system.mutations for progress.\n'
   fi
 fi
 
 printf '\n[search-index] Materializing text index on orders.searchText...\n'
-_IDX_DONE="$(curl -sf -u "default:${CH_PASS}" \
+_IDX_CHECK="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT is_done FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
-  2>/dev/null || echo '')"
-if [[ "${_IDX_DONE}" == "1" ]]; then
-  printf '  Already done — skipping.\n'
+  --data-binary "SELECT countIf(has(skip_indices, 'idx_search_fulltext')), count() FROM system.parts WHERE table='orders' AND active=1" \
+  2>/dev/null || echo '0	1')"
+_IDX_PARTS="$(printf '%s' "${_IDX_CHECK}" | cut -f1)"
+_TOT_PARTS="$(printf '%s' "${_IDX_CHECK}" | cut -f2)"
+if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -eq "${_TOT_PARTS}" ]]; then
+  printf '  Already fully materialized (%s / %s parts) — skipping.\n' "$_IDX_PARTS" "$_TOT_PARTS"
 else
-  printf '  Submitting mutation...\n'
+  printf '  %s / %s parts indexed — submitting MATERIALIZE INDEX...\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
   curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
     2>/dev/null || true
   _poll_materialize_idx
