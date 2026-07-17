@@ -4,7 +4,7 @@ Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickH
 
 **[→ Portfolio demo](https://bganguly.github.io/?open=clickhouse)**
 
-## Live Service URLs
+## Live Service URLs&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[→ API Explorer walkthrough](https://claude.ai/code/artifact/079e248c-2e53-4b02-ac1c-b4f3356ecb5f)
 
 | | |
 |---|---|
