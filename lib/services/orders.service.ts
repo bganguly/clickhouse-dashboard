@@ -113,9 +113,11 @@ function buildWhereParts(
   const clauses: string[] = [];
   const params: Record<string, unknown> = {};
 
-  if (searchTokens.length > 0) {
-    clauses.push(`hasAllTokens(lower(searchText), {searchTokens: Array(String)})`);
-    params["searchTokens"] = searchTokens.map((t) => t.toLowerCase());
+  let pi = 0;
+  for (const tok of searchTokens) {
+    const k = `stok${pi++}`;
+    clauses.push(`hasToken(lower(searchText), {${k}: String})`);
+    params[k] = tok.toLowerCase();
   }
   if (f.statuses.length) {
     clauses.push(`status IN ({statuses: Array(String)})`);

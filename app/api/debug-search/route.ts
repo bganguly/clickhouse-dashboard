@@ -1,3 +1,4 @@
+// TODO: delete this endpoint before going to production
 import { NextRequest, NextResponse } from "next/server";
 import { ch } from "@/lib/clickhouse";
 
