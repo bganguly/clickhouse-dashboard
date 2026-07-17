@@ -241,6 +241,63 @@ resource "aws_iam_role_policy" "eventbridge_ssm" {
   })
 }
 
+resource "aws_iam_role" "scheduler_ec2" {
+  name = "${var.name_prefix}-scheduler-ec2"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "scheduler_ec2" {
+  name = "${var.name_prefix}-scheduler-ec2"
+  role = aws_iam_role.scheduler_ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ec2:StartInstances", "ec2:StopInstances"]
+      Resource = [aws_instance.app.arn]
+    }]
+  })
+}
+
+resource "aws_scheduler_schedule" "app_start" {
+  name = "${var.name_prefix}-app-start"
+
+  flexible_time_window { mode = "OFF" }
+
+  schedule_expression          = "cron(0 8 ? * MON-FRI *)"
+  schedule_expression_timezone = "America/Los_Angeles"
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ec2:startInstances"
+    role_arn = aws_iam_role.scheduler_ec2.arn
+    input    = jsonencode({ InstanceIds = [aws_instance.app.id] })
+  }
+}
+
+resource "aws_scheduler_schedule" "app_stop" {
+  name = "${var.name_prefix}-app-stop"
+
+  flexible_time_window { mode = "OFF" }
+
+  schedule_expression          = "cron(0 17 ? * MON-FRI *)"
+  schedule_expression_timezone = "America/Los_Angeles"
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
+    role_arn = aws_iam_role.scheduler_ec2.arn
+    input    = jsonencode({ InstanceIds = [aws_instance.app.id] })
+  }
+}
+
 resource "aws_cloudwatch_event_rule" "app_start" {
   name        = "${var.name_prefix}-app-start"
   description = "Start pm2 app via SSM when EC2 enters running state"

@@ -9,7 +9,8 @@ STARTUP_ONLY=0
 
 if [[ "$STARTUP_ONLY" == "1" ]]; then
   cd /app
-  pm2 start npm --name dashboard -- start 2>/dev/null || pm2 restart dashboard
+  pm2 delete dashboard 2>/dev/null || true
+  pm2 start npm --name dashboard -- start
   exit 0
 fi
 
@@ -51,6 +52,75 @@ _prompt_creds() {
     chmod 600 "$CREDS_FILE"
     printf '  Saved to .clickhouse-creds\n\n'
   fi
+}
+
+_poll_count() {
+  local table=$1 target=$2 pid=$3
+  local t0 elapsed cur pct eta
+  t0=$(date +%s)
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5
+    cur=$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT count() FROM ${table}" 2>/dev/null || echo 0)
+    elapsed=$(( $(date +%s) - t0 ))
+    pct=0; eta='?'
+    [[ ${cur:-0} -gt 0 && $target -gt 0 ]] && pct=$(( cur * 100 / target ))
+    if [[ ${cur:-0} -gt 0 && $elapsed -gt 0 ]]; then
+      local rate=$(( cur / elapsed ))
+      local remaining=$(( target - cur ))
+      [[ $rate -gt 0 ]] && eta="$(( remaining / rate ))s"
+    fi
+    printf '\r  %s: %s / %s (%s%%)  ETA: %s     ' \
+      "$table" "${cur:-0}" "$target" "$pct" "$eta"
+  done
+  printf '\n'
+}
+
+_poll_seed() {
+  local target=$1 pid=$2
+  local t0 elapsed raw
+  t0=$(date +%s)
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5
+    raw=$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+      --data-binary "
+SELECT 'regions',count() FROM regions
+UNION ALL SELECT 'categories',count() FROM categories
+UNION ALL SELECT 'products',count() FROM products
+UNION ALL SELECT 'customers',count() FROM customers
+UNION ALL SELECT 'orders',count() FROM orders
+UNION ALL SELECT 'order_items',count() FROM order_items
+UNION ALL SELECT 'order_category_facts',count() FROM order_category_facts
+" 2>/dev/null || echo "")
+    elapsed=$(( $(date +%s) - t0 ))
+    printf '%s' "$(awk -F'\t' -v target="$target" -v elapsed="$elapsed" '
+      BEGIN {
+        n = split("regions categories products customers orders order_items order_category_facts", tbls)
+        xp["regions"]=50; xp["categories"]=200; xp["products"]=5000; xp["customers"]=200000
+        xp["orders"]=target; xp["order_items"]=target; xp["order_category_facts"]=target
+      }
+      { cnt[$1] = $2+0 }
+      END {
+        done=0; active=""; ac=0; ae=0
+        for (i=1; i<=n; i++) {
+          t=tbls[i]; c=cnt[t]+0; e=xp[t]+0
+          if (c>=e && e>0) done++
+          else if (c>0 && active=="") { active=t; ac=c; ae=e }
+        }
+        ord=cnt["orders"]+0
+        pct = (target>0 && ord>0) ? int(ord*100/target) : 0
+        eta = "?"
+        if (ord>0 && elapsed>0) { r=ord/elapsed; rem=target-ord; if (r>0) eta=int(rem/r) "s" }
+        sm = (active!="" && active!="orders" && active!="order_items" && active!="order_category_facts") \
+             ? sprintf("  inserting: %s (%d/%d)", active, ac, ae) : ""
+        printf "\r  [%d/7 done, %d remain]%s  |  orders: %d/%d (%d%%)  ETA: %s     ",
+          done, 7-done, sm, ord, target, pct, eta
+      }
+    ' <<< "$raw")"
+  done
+  printf '\n'
 }
 
 USE_CH_API=0
@@ -228,7 +298,8 @@ ENV
 
   cat > /etc/systemd/system/dashboard.env.placeholder <<ENV 2>/dev/null || true
 ENV
-  pm2 start npm --name dashboard -- start 2>/dev/null || pm2 restart dashboard
+  pm2 delete dashboard 2>/dev/null || true
+  pm2 start npm --name dashboard -- start
 
   sudo env PATH=\$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ec2-user --hp /home/ec2-user 2>/dev/null || true
   pm2 save
@@ -256,13 +327,91 @@ NGINX
   sudo systemctl restart nginx
 REMOTE
 
+_AWS_KEY="$(aws configure get aws_access_key_id 2>/dev/null || echo "${AWS_ACCESS_KEY_ID:-}")"
+_AWS_SECRET="$(aws configure get aws_secret_access_key 2>/dev/null || echo "${AWS_SECRET_ACCESS_KEY:-}")"
+_CH_DUMP_BUCKET="bikram-nextjs-subsecond-fetch-with-websockets"
+_CH_DUMP_S3_KEY="clickhouse-dash/orders.parquet"
+_CH_DUMP_S3_PREFIX="https://s3.us-east-1.amazonaws.com/${_CH_DUMP_BUCKET}/clickhouse-dash"
+
+printf '\n[bake] Checking S3 Parquet dump...\n'
+if aws s3 ls "s3://${_CH_DUMP_BUCKET}/${_CH_DUMP_S3_KEY}" >/dev/null 2>&1; then
+  printf '  Dump exists — skipping bake.\n'
+else
+  printf '  No dump found — baking 50M rows to S3 (runs entirely in ClickHouse Cloud)...\n'
+  CLICKHOUSE_URL="${CLICKHOUSE_URL}" \
+  CLICKHOUSE_USER=default \
+  CLICKHOUSE_PASSWORD="${CH_PASS}" \
+  AWS_ACCESS_KEY_ID="${_AWS_KEY}" \
+  AWS_SECRET_ACCESS_KEY="${_AWS_SECRET}" \
+    bash "$ROOT_DIR/scripts/bake-ch-dump.sh" &
+  _BAKE_PID=$!
+  _poll_seed 50000000 "$_BAKE_PID"
+  wait "$_BAKE_PID"
+fi
+
+printf '\n[seed] Checking demo data...\n'
+_SEED_COUNT="$(ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
+  "curl -sf -u 'default:${CH_PASS}' '${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30' \
+   --data-binary 'SELECT count() FROM orders' 2>/dev/null || echo 0" 2>/dev/null || echo 0)"
+if [[ "${_SEED_COUNT:-0}" -gt 0 ]]; then
+  printf '  orders has %s rows — skipping seed.\n' "$_SEED_COUNT"
+else
+  printf '  orders table is empty — restoring from S3 dump on EC2...\n'
+  ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
+    "CLICKHOUSE_URL='${CLICKHOUSE_URL}' \
+     CLICKHOUSE_USER=default \
+     CLICKHOUSE_PASSWORD='${CH_PASS}' \
+     CH_DUMP_S3_PREFIX='${_CH_DUMP_S3_PREFIX}' \
+     AWS_ACCESS_KEY_ID='${_AWS_KEY}' \
+     AWS_SECRET_ACCESS_KEY='${_AWS_SECRET}' \
+     bash /app/scripts/seed.sh" &
+  _SEED_PID=$!
+  _poll_seed 50000000 "$_SEED_PID"
+  wait "$_SEED_PID"
+fi
+
+printf '\n[facts] Checking order_category_facts...\n'
+_FACTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary 'SELECT count() FROM order_category_facts' 2>/dev/null || echo 0)"
+if [[ "${_FACTS_COUNT:-0}" -gt 0 ]]; then
+  printf '  order_category_facts has %s rows — skipping backfill.\n' "$_FACTS_COUNT"
+else
+  printf '  order_category_facts empty — backfilling from orders JOIN order_items...\n'
+  curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
+    --data-binary "
+INSERT INTO order_category_facts
+  (orderId, date, placedAt, customerId, regionId, regionCode,
+   status, orderTotal, categoryId, categoryName, totalItems, totalRevenue)
+SELECT
+  o.orderId,
+  toDate(o.placedAt),
+  o.placedAt,
+  o.customerId,
+  o.regionId,
+  o.regionCode,
+  o.status,
+  o.total,
+  i.categoryId,
+  i.categoryName,
+  i.quantity,
+  toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2)
+FROM orders AS o
+INNER JOIN order_items AS i ON i.orderId = o.orderId
+" &
+  _FACTS_PID=$!
+  _poll_count order_category_facts 50000000 "$_FACTS_PID"
+  wait "$_FACTS_PID"
+fi
+
 BASE_URL="${CDN_URL:-http://${EC2_IP}}"
 printf '\n  Dashboard live at:  %s\n' "$BASE_URL"
 printf '  API Explorer:       %s/api-explorer\n' "$BASE_URL"
 printf '  SSH:                ssh -i %s ec2-user@%s\n' "$SSH_PRIVATE_KEY" "$EC2_IP"
 printf '  Tear down:          ./scripts/infra-down.sh\n\n'
 
-PORTFOLIO_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../portfolio/scripts && pwd)/set-live-url.sh"
+PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
 if [[ -x "$PORTFOLIO_SCRIPT" ]]; then
   printf 'Updating portfolio live URL...\n'
   bash "$PORTFOLIO_SCRIPT" clickhouse "$BASE_URL"
