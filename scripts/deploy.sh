@@ -54,6 +54,48 @@ _prompt_creds() {
   fi
 }
 
+_poll_materialize_idx() {
+  local t0 elapsed total left done_parts pct eta row is_done
+  t0=$(date +%s)
+  total=0
+  for _w in $(seq 1 12); do
+    sleep 5
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    [[ -n "$row" ]] && break
+    printf '\r  waiting for mutation to register (%ds)...     ' $(( _w * 5 ))
+  done
+  printf '\n'
+  while true; do
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    is_done="$(printf '%s' "$row" | cut -f1)"
+    left="$(printf '%s' "$row" | cut -f2)"
+    if [[ "$is_done" == "1" ]]; then
+      printf '\r  done — index fully materialized.                              \n'
+      return 0
+    fi
+    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
+    elapsed=$(( $(date +%s) - t0 ))
+    pct=0; eta='?'
+    if [[ $total -gt 0 && -n "$left" ]]; then
+      done_parts=$(( total - left ))
+      pct=$(( done_parts * 100 / total ))
+      if [[ $done_parts -gt 0 && $elapsed -gt 0 ]]; then
+        local rate=$(( done_parts / elapsed ))
+        [[ $rate -gt 0 ]] && eta="$(( left / rate ))s"
+      fi
+    fi
+    printf '\r  parts remaining: %s / %s (%d%%)  elapsed: %ds  ETA: %s     ' \
+      "${left:-?}" "${total:-?}" "$pct" "$elapsed" "$eta"
+    sleep 10
+  done
+}
+
 _poll_count() {
   local table=$1 target=$2 pid=$3
   local t0 elapsed cur pct eta
@@ -409,20 +451,20 @@ else
   fi
 fi
 
-printf '\n[search-index] Full-text index on orders.searchText...\n'
+printf '\n[search-index] Materializing text index on orders.searchText...\n'
 _IDX_DONE="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
   --data-binary "SELECT is_done FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
   2>/dev/null || echo '')"
 if [[ "${_IDX_DONE}" == "1" ]]; then
-  printf '  idx_search_fulltext already materialized — skipping.\n'
+  printf '  Already done — skipping.\n'
 else
-  printf '  Submitting MATERIALIZE INDEX (background mutation)...\n'
+  printf '  Submitting mutation...\n'
   curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?max_execution_time=10" \
+    "${CLICKHOUSE_URL}/?max_execution_time=30" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
     2>/dev/null || true
-  printf '  Index materialization queued — search improves as it builds in background.\n'
+  _poll_materialize_idx
 fi
 
 printf '\n[facts] Checking order_category_facts...\n'
