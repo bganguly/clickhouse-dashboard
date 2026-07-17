@@ -167,8 +167,8 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
 
     const [countRows, idRows] = await Promise.all([
       query<{ n: string }>(
-        `SELECT count() AS n FROM (SELECT 1 FROM orders ${where} LIMIT {sentinel: UInt32})`,
-        { ...params, sentinel: COUNT_SENTINEL },
+        `SELECT count() AS n FROM orders ${where}`,
+        params,
       ),
       query<{ orderId: string }>(
         `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
@@ -176,8 +176,8 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       ),
     ]);
     const rawTotal = Number(countRows[0]?.n ?? 0);
-    const approximate = rawTotal >= COUNT_SENTINEL;
-    const total = approximate ? COUNT_SENTINEL - 1 : rawTotal;
+    const approximate = false;
+    const total = rawTotal;
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
     const ids = idRows.map((r) => Number(r.orderId));
@@ -217,8 +217,8 @@ export async function listOrdersByCursor(
 
     const [countRows, pageRows] = await Promise.all([
       query<{ n: string }>(
-        `SELECT count() AS n FROM (SELECT 1 FROM orders ${whereSQL(baseClauses)} LIMIT {sentinel: UInt32})`,
-        { ...baseParams, sentinel: COUNT_SENTINEL },
+        `SELECT count() AS n FROM orders ${whereSQL(baseClauses)}`,
+        baseParams,
       ),
       query<{ orderId: string }>(
         `SELECT orderId FROM orders ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
@@ -227,8 +227,8 @@ export async function listOrdersByCursor(
     ]);
 
     const rawTotal = Number(countRows[0]?.n ?? 0);
-    const approximate = rawTotal >= COUNT_SENTINEL;
-    const total = approximate ? COUNT_SENTINEL - 1 : rawTotal;
+    const approximate = false;
+    const total = rawTotal;
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
     const idRows = isNext ? pageRows : pageRows.reverse();

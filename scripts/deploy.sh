@@ -370,6 +370,22 @@ else
   wait "$_SEED_PID"
 fi
 
+printf '\n[search-backfill] Checking searchText column...\n'
+_SEARCH_FIX_NEEDED="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT if(positionCaseInsensitive(searchText, customerFirstName) > 0, 0, 1) FROM orders LIMIT 1" \
+  2>/dev/null || echo 0)"
+if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 0 ]]; then
+  printf '  searchText already contains customer names — skipping.\n'
+else
+  printf '  searchText missing names — submitting UPDATE mutation...\n'
+  curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?max_execution_time=10" \
+    --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', customerEmail, ' order ', toString(orderId)) WHERE positionCaseInsensitive(searchText, customerFirstName) = 0 AND customerFirstName != ''" \
+    2>/dev/null || true
+  printf '  searchText mutation submitted (ClickHouse processes in background).\n'
+fi
+
 printf '\n[search-index] Materializing ngrambf index on orders.searchText (background)...\n'
 curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?max_execution_time=10" \
