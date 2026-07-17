@@ -116,11 +116,11 @@ export interface OrderListResult {
   data: OrderDTO[];
   page: number;
   pageSize: number;
-  /** Matching rows. Capped (and `approximate: true`) for broad searches. */
   total: number;
   totalPages: number;
-  /** True when `total`/`totalPages` are a capped estimate (broad result set). */
   approximate: boolean;
+  /** True when count was not included in this response — client should fetch /api/orders/count separately. */
+  countPending?: boolean;
   /** Present only when `facets` was requested. */
   facets?: OrderFacets;
 }

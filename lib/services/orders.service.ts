@@ -1,6 +1,7 @@
 import { query, insert } from "@/lib/clickhouse";
 import { AppError, mapDbError } from "@/lib/errors";
 import { invalidateAggregatesCache } from "@/lib/aggregates-cache";
+import { searchCacheGet, searchCacheSet, invalidateSearchCache } from "@/lib/search-cache";
 import { publishOrderEvent } from "./stream.service";
 import type {
   CreateOrderInput,
@@ -115,7 +116,7 @@ function buildWhereParts(
   let pi = 0;
   for (const tok of searchTokens) {
     const k = `stok${pi++}`;
-    clauses.push(`positionCaseInsensitive(searchText, {${k}: String}) > 0`);
+    clauses.push(`hasTokenCaseInsensitive(searchText, {${k}: String})`);
     params[k] = tok;
   }
   if (f.statuses.length) {
@@ -160,6 +161,10 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const tokens = (input.q?.trim() ?? "").split(/\s+/).filter(Boolean);
   const offset = (page - 1) * pageSize;
 
+  const cacheKey = `rows:${JSON.stringify({ q: input.q, page, pageSize, sort, dir, status: input.status, regionCode: input.regionCode, from: input.from, to: input.to, minTotal: input.minTotal, maxTotal: input.maxTotal })}`;
+  const cached = searchCacheGet<OrderListResult>(cacheKey);
+  if (cached) return cached;
+
   try {
     const filters = await resolveFilters(input);
     const { clauses, params } = buildWhereParts(tokens, filters);
@@ -167,27 +172,17 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     const sortCol = SORT_COL[sort];
     const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
-    const [countRows, idRows] = await Promise.all([
-      query<{ n: string }>(
-        `SELECT count() AS n FROM orders ${where}`,
-        params,
-        SEARCH_CACHE,
-      ),
-      query<{ orderId: string }>(
-        `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
-        { ...params, lim: pageSize, off: offset },
-        SEARCH_CACHE,
-      ),
-    ]);
-    const rawTotal = Number(countRows[0]?.n ?? 0);
-    const approximate = false;
-    const total = rawTotal;
-    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+    const idRows = await query<{ orderId: string }>(
+      `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+      { ...params, lim: pageSize, off: offset },
+      SEARCH_CACHE,
+    );
 
     const ids = idRows.map((r) => Number(r.orderId));
     const data = await hydrateOrders(ids);
-    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate };
+    const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
     if (input.facets) result.facets = await computeFacets(where, params);
+    searchCacheSet(cacheKey, result);
     return result;
   } catch (err) {
     mapDbError(err, "listOrders");
@@ -219,28 +214,16 @@ export async function listOrdersByCursor(
     const where = whereSQL(allClauses);
     const dirSQL = isNext ? "DESC" : "ASC";
 
-    const [countRows, pageRows] = await Promise.all([
-      query<{ n: string }>(
-        `SELECT count() AS n FROM orders ${whereSQL(baseClauses)}`,
-        baseParams,
-        SEARCH_CACHE,
-      ),
-      query<{ orderId: string }>(
-        `SELECT orderId FROM orders ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
-        { ...allParams, lim: pageSize },
-        SEARCH_CACHE,
-      ),
-    ]);
-
-    const rawTotal = Number(countRows[0]?.n ?? 0);
-    const approximate = false;
-    const total = rawTotal;
-    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+    const pageRows = await query<{ orderId: string }>(
+      `SELECT orderId FROM orders ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
+      { ...allParams, lim: pageSize },
+      SEARCH_CACHE,
+    );
 
     const idRows = isNext ? pageRows : pageRows.reverse();
     const ids = idRows.map((r) => Number(r.orderId));
     const data = await hydrateOrders(ids);
-    const result: OrderListResult = { data, page, pageSize, total, totalPages, approximate };
+    const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
     if (input.facets) result.facets = await computeFacets(whereSQL(baseClauses), baseParams);
     return result;
   } catch (err) {
@@ -450,6 +433,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     }).catch(() => {});
 
     invalidateAggregatesCache();
+    invalidateSearchCache();
 
     return { id: orderId, status: "PENDING", total, placedAt: new Date(placedAt).toISOString() };
   } catch (err) {
@@ -471,6 +455,10 @@ export async function getOrderCount(
   q: string | undefined,
   filters: ResolvedFilters,
 ): Promise<number> {
+  const cacheKey = `count:${JSON.stringify({ q, ...filters })}`;
+  const cached = searchCacheGet<number>(cacheKey);
+  if (cached != null) return cached;
+
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);
   const { clauses, params } = buildWhereParts(tokens, filters);
   const where = whereSQL(clauses);
@@ -479,5 +467,7 @@ export async function getOrderCount(
     params,
     SEARCH_CACHE,
   );
-  return Number(rows[0]?.n ?? 0);
+  const total = Number(rows[0]?.n ?? 0);
+  searchCacheSet(cacheKey, total);
+  return total;
 }

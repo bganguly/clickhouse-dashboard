@@ -419,10 +419,10 @@ else
   fi
 fi
 
-printf '\n[search-index] Materializing ngrambf index on orders.searchText (background)...\n'
+printf '\n[search-index] Materializing full_text index on orders.searchText (background)...\n'
 curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?max_execution_time=10" \
-  --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_text" \
+  --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
   2>/dev/null || true
 printf '  index materialization submitted.\n'
 

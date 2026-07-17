@@ -208,7 +208,8 @@ export const DDL_STATEMENTS = [
     toUInt64(totalItems) AS totalItems
   FROM order_category_facts`,
 
-  `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_text searchText TYPE ngrambf_v1(3, 262144, 3, 0) GRANULARITY 1`,
+  `ALTER TABLE orders DROP INDEX IF EXISTS idx_search_text`,
+  `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_fulltext searchText TYPE full_text GRANULARITY 1`,
 ];
 
 export async function runMigrations(): Promise<void> {

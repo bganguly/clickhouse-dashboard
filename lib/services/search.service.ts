@@ -16,7 +16,7 @@ export async function search(input: SearchInput): Promise<SearchResult> {
       (!input.entityType || input.entityType === "order")
         ? query<{ orderId: string; searchText: string }>(
             `SELECT orderId, searchText FROM orders
-             WHERE positionCaseInsensitive(searchText, {q: String}) > 0
+             WHERE hasTokenCaseInsensitive(searchText, {q: String})
              ORDER BY placedAt DESC LIMIT {lim: UInt32}`,
             { q, lim: limit },
           )

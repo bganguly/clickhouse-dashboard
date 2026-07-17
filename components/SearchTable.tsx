@@ -16,8 +16,9 @@ export interface SearchResponse {
   page: number;
   totalPages: number;
   total: number;
-  /** True when `total` is a capped estimate (broad result set). */
   approximate?: boolean;
+  /** Server did not compute count; client should fetch /api/orders/count separately. */
+  countPending?: boolean;
 }
 
 export interface TableRequestState {
@@ -161,6 +162,8 @@ export default function SearchTable({
   const [dir, setDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [countLoading, setCountLoading] = useState(false);
+  const [countSettled, setCountSettled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Row currently playing the new-order flash (cleared after the animation).
   const [flashId, setFlashId] = useState<string | number | null>(null);
@@ -245,17 +248,37 @@ export default function SearchTable({
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: SearchResponse = await res.json();
-        // An aborted controller doesn't guarantee its fetch promise rejects
-        // before a newer, faster request's promise resolves — without this
-        // guard, a slower stale response can land after and silently
-        // overwrite the correct state from the request that superseded it.
         if (abortRef.current !== controller) return;
         const data = Array.isArray(json.data) ? json.data : [];
         setRows(data);
-        setTotalPages(Math.max(1, json.totalPages ?? 1));
-        setTotal(json.total ?? 0);
+        setCountSettled(false);
         onRowsRef.current?.(data);
         updateCursorAnchor(sortCol, sortDir, data);
+
+        if (json.countPending) {
+          setCountLoading(true);
+          setTotal(0);
+          setTotalPages(1);
+          const countParams = new URLSearchParams(params);
+          countParams.delete("page");
+          countParams.delete("pageSize");
+          countParams.delete("sort");
+          countParams.delete("dir");
+          fetch(`/api/orders/count?${countParams}`, { signal: controller.signal })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+            .then((cj: { total: number }) => {
+              if (abortRef.current !== controller) return;
+              setTotal(cj.total ?? 0);
+              setTotalPages(Math.max(1, Math.ceil((cj.total ?? 0) / pageSize)));
+              setCountSettled(true);
+              setTimeout(() => setCountSettled(false), 600);
+            })
+            .catch(() => {})
+            .finally(() => { if (abortRef.current === controller) setCountLoading(false); });
+        } else {
+          setTotal(json.total ?? 0);
+          setTotalPages(Math.max(1, json.totalPages ?? 1));
+        }
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         if (abortRef.current !== controller) return;
@@ -513,6 +536,7 @@ export default function SearchTable({
   );
 
   const footerLoading = isControlled ? controlledLoading : searchLoading;
+  const countStillLoading = countLoading && !isControlled;
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -677,15 +701,15 @@ export default function SearchTable({
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-gray-500 dark:text-gray-400">
           Page {page} of{" "}
-          {footerLoading || externalTotal === null
+          {footerLoading || externalTotal === null || countStillLoading
             ? <span className="inline-block h-3 w-8 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
             : displayTotalPages}{" "}·{" "}
           <span data-testid="search-total" data-total={displayTotal}>
-            {footerLoading || externalTotal === null
+            {footerLoading || externalTotal === null || countStillLoading
               ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
-              : displayTotal.toLocaleString()}
+              : <span className={countSettled ? "count-settle" : undefined}>{displayTotal.toLocaleString()}</span>}
           </span>{" "}
-          {footerLoading || externalTotal === null
+          {footerLoading || externalTotal === null || countStillLoading
             ? <span className="inline-block h-3 w-10 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
             : "results"}
         </span>
