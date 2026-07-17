@@ -430,6 +430,29 @@ else
   wait "$_SEED_PID"
 fi
 
+printf '\n[names] Verifying name dictionary freshness...\n'
+_NAME_UNIQ="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT uniqExact(customerFirstName) FROM orders" \
+  2>/dev/null || echo 0)"
+if [[ "${_NAME_UNIQ:-0}" -ge 50 ]]; then
+  printf '  %s distinct first names — OK.\n' "$_NAME_UNIQ"
+else
+  printf '  Only %s distinct first names — reseeding with expanded dictionary...\n' "$_NAME_UNIQ"
+  ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
+    "CLICKHOUSE_URL='${CLICKHOUSE_URL}' \
+     CLICKHOUSE_USER=default \
+     CLICKHOUSE_PASSWORD='${CH_PASS}' \
+     SEED_FORCE=1 \
+     CH_DUMP_S3_PREFIX='' \
+     bash /app/scripts/seed.sh" &
+  _SEED_PID=$!
+  _poll_seed 50000000 "$_SEED_PID"
+  wait "$_SEED_PID"
+  printf '  Invalidating S3 dump — will rebake on next deploy.\n'
+  aws s3 rm "s3://${_CH_DUMP_BUCKET}/clickhouse-dash/" --recursive 2>/dev/null || true
+fi
+
 printf '\n[search-backfill] Checking searchText format (pruned+prefix vs legacy email)...\n'
 _SEARCH_FIX_NEEDED="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
