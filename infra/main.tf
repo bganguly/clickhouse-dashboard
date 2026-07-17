@@ -298,6 +298,58 @@ resource "aws_scheduler_schedule" "app_stop" {
   }
 }
 
+resource "aws_iam_role" "scheduler_ssm" {
+  name = "${var.name_prefix}-scheduler-ssm"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "scheduler_ssm" {
+  name = "${var.name_prefix}-scheduler-ssm"
+  role = aws_iam_role.scheduler_ssm.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = "ssm:SendCommand"
+      Resource = [
+        "arn:aws:ssm:${data.aws_region.current.name}::document/AWS-RunShellScript",
+        aws_instance.app.arn
+      ]
+    }]
+  })
+}
+
+resource "aws_scheduler_schedule" "keep_warm" {
+  name = "${var.name_prefix}-keep-warm"
+
+  flexible_time_window { mode = "OFF" }
+  schedule_expression = "rate(10 minutes)"
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ssm:sendCommand"
+    role_arn = aws_iam_role.scheduler_ssm.arn
+
+    input = jsonencode({
+      DocumentName = "AWS-RunShellScript"
+      InstanceIds  = [aws_instance.app.id]
+      Parameters = {
+        commands         = ["curl -sf http://localhost:3004/api/health > /dev/null 2>&1 || true"]
+        workingDirectory = ["/"]
+        executionTimeout = ["30"]
+      }
+    })
+  }
+}
+
 resource "aws_cloudwatch_event_rule" "app_start" {
   name        = "${var.name_prefix}-app-start"
   description = "Start pm2 app via SSM when EC2 enters running state"
