@@ -115,11 +115,7 @@ function buildWhereParts(
   let pi = 0;
   for (const tok of searchTokens) {
     const k = `stok${pi++}`;
-    clauses.push(
-      `(positionCaseInsensitive(searchText, {${k}: String}) > 0` +
-      ` OR positionCaseInsensitive(customerFirstName, {${k}: String}) > 0` +
-      ` OR positionCaseInsensitive(customerLastName, {${k}: String}) > 0)`
-    );
+    clauses.push(`positionCaseInsensitive(searchText, {${k}: String}) > 0`);
     params[k] = tok;
   }
   if (f.statuses.length) {
