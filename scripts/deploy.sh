@@ -561,6 +561,23 @@ printf '  API Explorer:       %s/api-explorer\n' "$BASE_URL"
 printf '  SSH:                ssh -i %s ec2-user@%s\n' "$SSH_PRIVATE_KEY" "$EC2_IP"
 printf '  Tear down:          ./scripts/infra-down.sh\n\n'
 
+if [[ -f "$ROOT_DIR/README.md" ]]; then
+  python3 - "$BASE_URL" "$ROOT_DIR/README.md" <<'PYEOF'
+import re, sys
+url, path = sys.argv[1], sys.argv[2]
+content = open(path).read()
+content = re.sub(r'(\| \*\*Dashboard\*\* \| )(https?://\S+)( \|)', r'\g<1>' + url + r'\g<3>', content)
+content = re.sub(r'(\| \*\*API Explorer\*\* \| )(https?://\S+)( \|)', r'\g<1>' + url + '/api-explorer' + r'\g<3>', content)
+open(path, 'w').write(content)
+PYEOF
+  git -C "$ROOT_DIR" add README.md
+  if ! git -C "$ROOT_DIR" diff --cached --quiet; then
+    git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${BASE_URL}"
+    git -C "$ROOT_DIR" push origin HEAD:main
+    printf '  README updated and pushed.\n'
+  fi
+fi
+
 PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
 if [[ -x "$PORTFOLIO_SCRIPT" ]]; then
   printf 'Updating portfolio live URL...\n'

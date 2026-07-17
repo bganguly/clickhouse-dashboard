@@ -2,7 +2,12 @@
 
 Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickHouse Cloud** (Development tier, auto-pause). Sub-second full-text search, real-time SSE updates, and chart aggregates maintained by ClickHouse Materialized Views — no Prisma, no Postgres, no aggregates worker.
 
-**[→ Portfolio demo](#)** _(URL not yet set — run `./scripts/deploy.sh` to provision)_
+## Live Service URLs
+
+| | |
+|---|---|
+| **Dashboard** | https://not-yet-deployed.example.com |
+| **API Explorer** | https://not-yet-deployed.example.com/api-explorer |
 
 ---
 
