@@ -410,15 +410,19 @@ else
 fi
 
 printf '\n[search-index] Full-text index on orders.searchText...\n'
-if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 1 ]]; then
-  printf '  Submitting MATERIALIZE INDEX (queued after UPDATE mutation in ClickHouse)...\n'
+_IDX_DONE="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT is_done FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
+  2>/dev/null || echo '')"
+if [[ "${_IDX_DONE}" == "1" ]]; then
+  printf '  idx_search_fulltext already materialized — skipping.\n'
+else
+  printf '  Submitting MATERIALIZE INDEX (background mutation)...\n'
   curl -sf -u "default:${CH_PASS}" \
     "${CLICKHOUSE_URL}/?max_execution_time=10" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
     2>/dev/null || true
-  printf '  Index materialization queued — builds in background, search improves as it progresses.\n'
-else
-  printf '  searchText current — index already materialized.\n'
+  printf '  Index materialization queued — search improves as it builds in background.\n'
 fi
 
 printf '\n[facts] Checking order_category_facts...\n'
