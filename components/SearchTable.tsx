@@ -718,7 +718,7 @@ export default function SearchTable({
             : "results"}
         </span>
 
-        {(footerLoading || (externalTotal == null && countStillLoading)) && displayTotalPages > 1 ? (
+        {footerLoading || (externalTotal == null && countStillLoading) ? (
           <nav aria-label="Pagination">
             <ul className="flex items-center gap-1">
               <li>
