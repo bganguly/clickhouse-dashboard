@@ -89,8 +89,14 @@ resource "aws_codebuild_project" "app" {
     image           = "aws/codebuild/standard:7.0"
     privileged_mode = true
 
-    environment_variable { name = "ECR_REPO_URI",      value = aws_ecr_repository.app.repository_url }
-    environment_variable { name = "AWS_DEFAULT_REGION", value = var.aws_region }
+    environment_variable {
+      name  = "ECR_REPO_URI"
+      value = aws_ecr_repository.app.repository_url
+    }
+    environment_variable {
+      name  = "AWS_DEFAULT_REGION"
+      value = var.aws_region
+    }
   }
 
   source {
