@@ -8,8 +8,8 @@ Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickH
 
 | | |
 |---|---|
-| **Dashboard** | https://not-yet-deployed.example.com |
-| **API Explorer** | https://not-yet-deployed.example.com/api-explorer |
+| **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
+| **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
 
 ---
 
