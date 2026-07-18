@@ -74,16 +74,12 @@ elif [[ -f "$CREDS_FILE" ]]; then
     unset CLICKHOUSE_CLOUD_KEY CLICKHOUSE_URL CLICKHOUSE_PASSWORD
     _prompt_creds
   elif [[ "$USE_CH_API" == "0" ]]; then
-    printf 'New password? [Enter to keep saved]: '
-    read -rs NEW_PASS; printf '\n'
-    if [[ -n "$NEW_PASS" ]]; then
-      CLICKHOUSE_PASSWORD="$NEW_PASS"
-      export CLICKHOUSE_PASSWORD
-      printf 'CLICKHOUSE_URL=%s\nCLICKHOUSE_USER=%s\nCLICKHOUSE_PASSWORD=%s\n' \
-        "$CLICKHOUSE_URL" "${CLICKHOUSE_USER:-default}" "$CLICKHOUSE_PASSWORD" > "$CREDS_FILE"
-      chmod 600 "$CREDS_FILE"
-      printf '  Password updated in .clickhouse-creds\n\n'
-    fi
+    printf 'ClickHouse password: '
+    read -rs CLICKHOUSE_PASSWORD; printf '\n'
+    export CLICKHOUSE_PASSWORD
+    printf 'CLICKHOUSE_URL=%s\nCLICKHOUSE_USER=%s\nCLICKHOUSE_PASSWORD=%s\n' \
+      "$CLICKHOUSE_URL" "${CLICKHOUSE_USER:-default}" "$CLICKHOUSE_PASSWORD" > "$CREDS_FILE"
+    chmod 600 "$CREDS_FILE"
   fi
 else
   _prompt_creds
@@ -214,6 +210,16 @@ done
 
 printf '[5/5] Deploying to App Runner...\n'
 cd "$INFRA_DIR"
+_AR_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
+if [[ -n "$_AR_ARN" ]]; then
+  _AR_REGION="$(printf '%s' "$_AR_ARN" | cut -d: -f4)"
+  _AR_STATUS="$(aws apprunner describe-service --service-arn "$_AR_ARN" \
+    --region "$_AR_REGION" --query 'Service.Status' --output text 2>/dev/null || true)"
+  if [[ "$_AR_STATUS" == "CREATE_FAILED" ]]; then
+    printf '  App Runner in CREATE_FAILED — tainting for recreation...\n'
+    terraform taint aws_apprunner_service.app
+  fi
+fi
 terraform apply -auto-approve -input=false
 APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
 CDN_URL="$(terraform output -raw cdn_url)"
