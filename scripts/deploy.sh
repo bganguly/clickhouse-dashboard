@@ -3,18 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
+PROJECT_NAME="$(basename "$ROOT_DIR")"
 
-STARTUP_ONLY=0
-[[ "${1:-}" == "--startup" ]] && STARTUP_ONLY=1
-
-if [[ "$STARTUP_ONLY" == "1" ]]; then
-  cd /app
-  pm2 delete dashboard 2>/dev/null || true
-  pm2 start npm --name dashboard -- start
-  exit 0
-fi
-
-printf '\n=== clickhouse-dashboard deploy ===\n\n'
+printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 
 CREDS_FILE="$ROOT_DIR/.clickhouse-creds"
 
@@ -77,10 +68,7 @@ _poll_materialize_idx() {
     left="$(printf '%s' "$row" | cut -f2)"
     failed="$(printf '%s' "$row" | cut -f3)"
     if [[ "$is_done" == "1" ]]; then
-      if [[ -n "$failed" ]]; then
-        printf '\r  ERROR: mutation failed on part: %s\n' "$failed"
-        return 1
-      fi
+      [[ -n "$failed" ]] && { printf '\r  ERROR: mutation failed on part: %s\n' "$failed"; return 1; }
       printf '\r  done — index fully materialized.                              \n'
       return 0
     fi
@@ -209,57 +197,40 @@ else
   _prompt_creds
 fi
 
-for dep in aws terraform ssh rsync; do
+for dep in aws terraform; do
   command -v "$dep" >/dev/null 2>&1 || { printf 'ERROR: %s not found in PATH.\n' "$dep"; exit 1; }
 done
 
-printf '[1/4] Checking AWS credentials...\n'
+printf '[1/7] Checking AWS credentials...\n'
 aws sts get-caller-identity >/dev/null
 printf '  OK\n'
 
-printf '[2/4] Provisioning EC2 (terraform apply)...\n'
-cd "$INFRA_DIR"
-SSH_KEY=""
-for candidate in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
-  [[ -f "$(eval echo "$candidate")" ]] && { SSH_KEY="$(eval echo "$candidate")"; break; }
-done
-[[ -z "$SSH_KEY" ]] && { printf 'ERROR: no SSH public key found in ~/.ssh/\n'; exit 1; }
-export TF_VAR_ssh_public_key_path="$SSH_KEY"
-terraform init -input=false -upgrade >/dev/null
-terraform apply -auto-approve -input=false
-EC2_IP="$(terraform output -raw ec2_public_ip)"
-CDN_URL="$(terraform output -raw cdn_url 2>/dev/null || true)"
-printf '  EC2 ready: %s\n' "$EC2_IP"
+printf '[2/7] Resolving ClickHouse Cloud endpoint...\n'
 
 if [[ "$USE_CH_API" == "1" ]]; then
-  printf '[3/4] Ensuring ClickHouse Cloud service is running...\n'
-
   CH_ORG_ID="${CLICKHOUSE_ORG_ID:-}"
-  CH_SERVICE_NAME="${CLICKHOUSE_SERVICE_NAME:-clickhouse-dashboard}"
+  CH_SERVICE_NAME="${CLICKHOUSE_SERVICE_NAME:-$PROJECT_NAME}"
   CH_REGION="${CLICKHOUSE_CLOUD_REGION:-aws-us-east-1}"
   CH_TIER="${CLICKHOUSE_CLOUD_TIER:-development}"
 
   _ch_api() {
-    local method="$1" path="$2"
-    shift 2
+    local method="$1" path="$2"; shift 2
     curl -fsSL -X "$method" \
       -H "Authorization: Basic $(printf '%s' "$CLICKHOUSE_CLOUD_KEY" | base64)" \
       -H "Content-Type: application/json" \
       "https://api.clickhouse.cloud/v1${path}" "$@"
   }
 
-  if [[ -z "$CH_ORG_ID" ]]; then
-    CH_ORG_ID="$(_ch_api GET /organizations | python3 -c "import sys,json;orgs=json.load(sys.stdin).get('result',[]); print(orgs[0]['id'] if orgs else '')" 2>/dev/null || true)"
-  fi
-  [[ -z "$CH_ORG_ID" ]] && { printf 'ERROR: could not determine ClickHouse org ID. Set CLICKHOUSE_ORG_ID.\n'; exit 1; }
+  [[ -z "$CH_ORG_ID" ]] && CH_ORG_ID="$(_ch_api GET /organizations | python3 -c \
+    "import sys,json;orgs=json.load(sys.stdin).get('result',[]); print(orgs[0]['id'] if orgs else '')" 2>/dev/null || true)"
+  [[ -z "$CH_ORG_ID" ]] && { printf 'ERROR: could not determine ClickHouse org ID.\n'; exit 1; }
 
   EXISTING_SERVICE="$(_ch_api GET "/organizations/${CH_ORG_ID}/services" | python3 -c "
 import sys,json
 data=json.load(sys.stdin)
 for s in data.get('result',[]):
     if s.get('name')=='${CH_SERVICE_NAME}':
-        print(json.dumps(s))
-        break
+        print(json.dumps(s)); break
 " 2>/dev/null || true)"
 
   if [[ -z "$EXISTING_SERVICE" ]]; then
@@ -273,129 +244,115 @@ for s in data.get('result',[]):
     CH_SERVICE_ID="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('id',''))" 2>/dev/null || true)"
     CH_STATE="$(printf '%s' "$EXISTING_SERVICE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('state',''))" 2>/dev/null || true)"
     CH_PASS="${CLICKHOUSE_PASSWORD:-}"
-
     if [[ "$CH_STATE" == "idle" || "$CH_STATE" == "stopped" ]]; then
       printf '  Resuming paused service %s...\n' "$CH_SERVICE_ID"
-      _ch_api PATCH "/organizations/${CH_ORG_ID}/services/${CH_SERVICE_ID}/state" \
-        -d '{"command":"start"}' >/dev/null
-      printf '  Resume command sent (service starts in background).\n'
+      _ch_api PATCH "/organizations/${CH_ORG_ID}/services/${CH_SERVICE_ID}/state" -d '{"command":"start"}' >/dev/null
     else
       printf '  Service state: %s\n' "$CH_STATE"
     fi
   fi
 
   [[ -z "$CH_HOST" ]] && { printf 'ERROR: could not determine ClickHouse host.\n'; exit 1; }
-  [[ -z "$CH_PASS" ]] && { printf 'ERROR: CLICKHOUSE_PASSWORD is required for an existing service.\n'; exit 1; }
+  [[ -z "$CH_PASS" ]] && { printf 'ERROR: CLICKHOUSE_PASSWORD required for existing service.\n'; exit 1; }
   CLICKHOUSE_URL="https://${CH_HOST}:8443"
-  printf '  ClickHouse endpoint: %s\n' "$CLICKHOUSE_URL"
 else
-  printf '[3/4] Using provided CLICKHOUSE_URL (skipping CH Cloud API).\n'
   CH_PASS="${CLICKHOUSE_PASSWORD}"
-  printf '  ClickHouse endpoint: %s\n' "$CLICKHOUSE_URL"
 fi
 
-printf '[4/4] Deploying app to EC2...\n'
+printf '  ClickHouse endpoint: %s\n' "$CLICKHOUSE_URL"
+export TF_VAR_clickhouse_url="${CLICKHOUSE_URL}"
+export TF_VAR_clickhouse_password="${CH_PASS}"
 
-SSH_PRIVATE_KEY="${SSH_KEY%.pub}"
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=30 -i ${SSH_PRIVATE_KEY}"
+printf '[3/7] Provisioning ECR + CodeBuild (terraform apply)...\n'
+cd "$INFRA_DIR"
+terraform init -input=false -upgrade >/dev/null
 
-printf '  Waiting for SSH...\n'
-for i in $(seq 1 36); do
-  if ssh $SSH_OPTS "ec2-user@${EC2_IP}" true 2>/dev/null; then
-    printf '  SSH ready.\n'
-    break
+ECR_IMAGE_EXISTS="$(aws ecr describe-images \
+  --repository-name "ch-dash-app" \
+  --image-ids imageTag=latest \
+  --query 'imageDetails[0].imageDigest' \
+  --output text 2>/dev/null || true)"
+
+if [[ -z "$ECR_IMAGE_EXISTS" || "$ECR_IMAGE_EXISTS" == "None" ]]; then
+  printf '  First deploy — provisioning ECR + CodeBuild only (App Runner needs image first).\n'
+  terraform apply -auto-approve -input=false \
+    -target=aws_ecr_repository.app \
+    -target=aws_ecr_lifecycle_policy.app \
+    -target=aws_s3_bucket.codebuild_src \
+    -target=aws_iam_role.codebuild \
+    -target=aws_iam_role_policy.codebuild \
+    -target=aws_codebuild_project.app \
+    -target=aws_iam_role.apprunner_ecr \
+    -target=aws_iam_role_policy_attachment.apprunner_ecr \
+    -target=aws_apprunner_auto_scaling_configuration_version.app \
+    -target=aws_s3_bucket.maintenance \
+    -target=aws_s3_bucket_public_access_block.maintenance \
+    -target=aws_s3_bucket_website_configuration.maintenance \
+    -target=aws_s3_bucket_policy.maintenance \
+    -target=aws_s3_object.maintenance_html
+  FIRST_DEPLOY=1
+else
+  terraform apply -auto-approve -input=false
+  FIRST_DEPLOY=0
+fi
+
+SRC_BUCKET="$(terraform output -raw codebuild_source_bucket)"
+CB_PROJECT="$(terraform output -raw codebuild_project_name)"
+
+printf '[4/7] Building Docker image via CodeBuild...\n'
+TMPZIP="/tmp/${PROJECT_NAME}-source.zip"
+cd "$ROOT_DIR"
+zip -qr "$TMPZIP" . \
+  --exclude ".git/*" \
+  --exclude "node_modules/*" \
+  --exclude ".next/*" \
+  --exclude "infra/.terraform/*" \
+  --exclude "infra/terraform.tfstate*" \
+  --exclude ".env*" \
+  --exclude ".clickhouse-creds"
+aws s3 cp "$TMPZIP" "s3://${SRC_BUCKET}/source.zip" --quiet
+rm -f "$TMPZIP"
+
+BUILD_ID="$(aws codebuild start-build --project-name "$CB_PROJECT" --query 'build.id' --output text)"
+printf '  Build %s started...\n' "$BUILD_ID"
+
+while true; do
+  STATUS="$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].buildStatus' --output text)"
+  if [[ "$STATUS" == "SUCCEEDED" ]]; then printf '  Build succeeded.\n'; break; fi
+  if [[ "$STATUS" == "FAILED" || "$STATUS" == "FAULT" || "$STATUS" == "STOPPED" || "$STATUS" == "TIMED_OUT" ]]; then
+    printf 'ERROR: CodeBuild failed (%s). Logs:\n' "$STATUS"
+    aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].logs.deepLink' --output text
+    exit 1
   fi
-  [[ $i -eq 36 ]] && { printf 'ERROR: SSH not available after 3 min.\n'; exit 1; }
-  sleep 5
+  printf '  Status: %s — waiting...\n' "$STATUS"
+  sleep 20
 done
 
-printf '  Syncing app files...\n'
-rsync -az --delete \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='.next' \
-  --exclude='.env*' \
-  --exclude='infra' \
-  -e "ssh $SSH_OPTS" \
-  "$ROOT_DIR/" "ec2-user@${EC2_IP}:/app/"
+printf '[5/7] Running schema migrations...\n'
+cd "$ROOT_DIR"
+export CLICKHOUSE_URL CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS"
 
-DEMO_SCALE="${NEXT_PUBLIC_DEMO_SCALE:-}"
-QUICKORDER_URL="${NEXT_PUBLIC_QUICK_ORDER_URL:-http://localhost:3005}"
+_SORT_KEY="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT sorting_key FROM system.tables WHERE name='orders' AND database='default'" \
+  2>/dev/null || echo '')"
+if echo "$_SORT_KEY" | grep -q 'toDate'; then
+  printf '  Legacy ORDER BY detected — dropping orders table for migration...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary 'DROP TABLE IF EXISTS orders' >/dev/null 2>&1 || true
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary 'DROP TABLE IF EXISTS order_category_facts' >/dev/null 2>&1 || true
+fi
 
-printf '  Running schema migrations and starting app on EC2...\n'
-ssh $SSH_OPTS "ec2-user@${EC2_IP}" bash <<REMOTE
-  set -e
-  cd /app
+npx tsx -e "
+  import { runMigrations } from './lib/schema.ts';
+  runMigrations().then(() => { console.log('Migrations done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); });
+" 2>/dev/null || node -e "
+  const { runMigrations } = require('./lib/schema.js');
+  runMigrations().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
+"
 
-  cat > /app/.env.clickhouse <<ENV
-CLICKHOUSE_URL=${CLICKHOUSE_URL}
-CLICKHOUSE_USER=default
-CLICKHOUSE_PASSWORD=${CH_PASS}
-ENV
-
-  export CLICKHOUSE_URL='${CLICKHOUSE_URL}'
-  export CLICKHOUSE_USER='default'
-  export CLICKHOUSE_PASSWORD='${CH_PASS}'
-
-  command -v nginx >/dev/null 2>&1 || sudo dnf install -y nginx
-
-  npm ci --prefer-offline
-
-  _SORT_KEY="\$(curl -sf -u 'default:${CH_PASS}' \
-    '${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10' \
-    --data-binary \"SELECT sorting_key FROM system.tables WHERE name='orders' AND database='default'\" \
-    2>/dev/null || echo '')"
-  if echo "\$_SORT_KEY" | grep -q 'toDate'; then
-    echo '[schema] orders ORDER BY uses toDate(placedAt) — dropping for migration to (placedAt, orderId)...'
-    curl -sf -u 'default:${CH_PASS}' '${CLICKHOUSE_URL}/?max_execution_time=30' \
-      --data-binary 'DROP TABLE IF EXISTS orders' 2>/dev/null || true
-    curl -sf -u 'default:${CH_PASS}' '${CLICKHOUSE_URL}/?max_execution_time=30' \
-      --data-binary 'DROP TABLE IF EXISTS order_category_facts' 2>/dev/null || true
-    echo '[schema] Tables dropped — will reseed from S3 after migrations.'
-  fi
-
-  node -e "
-    const { runMigrations } = require('./lib/schema.js');
-    runMigrations().then(() => { console.log('Migrations done'); process.exit(0); }).catch(e => { console.error(e); process.exit(1); });
-  " 2>/dev/null || npx tsx -e "
-    import { runMigrations } from './lib/schema.ts';
-    runMigrations().then(() => { console.log('Migrations done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); });
-  "
-
-  export NEXT_PUBLIC_QUICK_ORDER_URL='${QUICKORDER_URL}'
-  export NEXT_PUBLIC_DEMO_SCALE='${DEMO_SCALE}'
-  npm run build
-
-  cat > /etc/systemd/system/dashboard.env.placeholder <<ENV 2>/dev/null || true
-ENV
-  pm2 delete dashboard 2>/dev/null || true
-  pm2 start npm --name dashboard -- start
-
-  sudo env PATH=\$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ec2-user --hp /home/ec2-user 2>/dev/null || true
-  pm2 save
-
-  sudo tee /etc/nginx/conf.d/app.conf > /dev/null <<'NGINX'
-server {
-    listen 80 default_server;
-    server_name _;
-    location / {
-        proxy_pass http://127.0.0.1:3004;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 86400;
-    }
-}
-NGINX
-  sudo rm -f /etc/nginx/conf.d/default.conf
-  sudo nginx -t
-  sudo systemctl enable nginx
-  sudo systemctl restart nginx
-REMOTE
+printf '[6/7] Seeding and indexing...\n'
 
 _AWS_KEY="$(aws configure get aws_access_key_id 2>/dev/null || echo "${AWS_ACCESS_KEY_ID:-}")"
 _AWS_SECRET="$(aws configure get aws_secret_access_key 2>/dev/null || echo "${AWS_SECRET_ACCESS_KEY:-}")"
@@ -403,159 +360,93 @@ _CH_DUMP_BUCKET="bikram-nextjs-subsecond-fetch-with-websockets"
 _CH_DUMP_S3_KEY="clickhouse-dash/orders.parquet"
 _CH_DUMP_S3_PREFIX="https://s3.us-east-1.amazonaws.com/${_CH_DUMP_BUCKET}/clickhouse-dash"
 
-printf '\n[bake] Checking S3 Parquet dump...\n'
+printf '  Checking S3 Parquet dump...\n'
 if aws s3 ls "s3://${_CH_DUMP_BUCKET}/${_CH_DUMP_S3_KEY}" >/dev/null 2>&1; then
   printf '  Dump exists — skipping bake.\n'
 else
-  printf '  No dump found — baking 50M rows to S3 (runs entirely in ClickHouse Cloud)...\n'
-  CLICKHOUSE_URL="${CLICKHOUSE_URL}" \
-  CLICKHOUSE_USER=default \
-  CLICKHOUSE_PASSWORD="${CH_PASS}" \
-  AWS_ACCESS_KEY_ID="${_AWS_KEY}" \
-  AWS_SECRET_ACCESS_KEY="${_AWS_SECRET}" \
+  printf '  No dump found — baking 50M rows to S3...\n'
+  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
+  AWS_ACCESS_KEY_ID="$_AWS_KEY" AWS_SECRET_ACCESS_KEY="$_AWS_SECRET" \
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh" &
   _BAKE_PID=$!
   _poll_seed 50000000 "$_BAKE_PID"
   wait "$_BAKE_PID"
 fi
 
-printf '\n[seed] Checking demo data...\n'
-_SEED_COUNT="$(ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
-  "curl -sf -u 'default:${CH_PASS}' '${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30' \
-   --data-binary 'SELECT count() FROM orders' 2>/dev/null || echo 0" 2>/dev/null || echo 0)"
+printf '  Checking demo data...\n'
+_SEED_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary 'SELECT count() FROM orders' 2>/dev/null || echo 0)"
 if [[ "${_SEED_COUNT:-0}" -gt 0 ]]; then
-  printf '  orders has %s rows — skipping seed.\n' "$_SEED_COUNT"
+  printf '  orders: %s rows — skipping seed.\n' "$_SEED_COUNT"
 else
-  printf '  orders table is empty — restoring from S3 dump on EC2...\n'
-  ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
-    "CLICKHOUSE_URL='${CLICKHOUSE_URL}' \
-     CLICKHOUSE_USER=default \
-     CLICKHOUSE_PASSWORD='${CH_PASS}' \
-     CH_DUMP_S3_PREFIX='${_CH_DUMP_S3_PREFIX}' \
-     AWS_ACCESS_KEY_ID='${_AWS_KEY}' \
-     AWS_SECRET_ACCESS_KEY='${_AWS_SECRET}' \
-     bash /app/scripts/seed.sh" &
+  printf '  orders table empty — restoring from S3 dump...\n'
+  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
+  CH_DUMP_S3_PREFIX="$_CH_DUMP_S3_PREFIX" \
+  AWS_ACCESS_KEY_ID="$_AWS_KEY" AWS_SECRET_ACCESS_KEY="$_AWS_SECRET" \
+    bash "$ROOT_DIR/scripts/seed.sh" &
   _SEED_PID=$!
   _poll_seed 50000000 "$_SEED_PID"
   wait "$_SEED_PID"
 fi
 
-printf '\n[names] Verifying name dictionary freshness...\n'
+printf '  Checking name dictionary...\n'
 _NAME_UNIQ="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT uniqExact(customerFirstName) FROM orders" \
-  2>/dev/null || echo 0)"
-if [[ "${_NAME_UNIQ:-0}" -ge 50 ]]; then
-  printf '  %s distinct first names — OK.\n' "$_NAME_UNIQ"
-else
-  printf '  Only %s distinct first names — reseeding with expanded dictionary...\n' "$_NAME_UNIQ"
-  ssh $SSH_OPTS "ec2-user@${EC2_IP}" \
-    "CLICKHOUSE_URL='${CLICKHOUSE_URL}' \
-     CLICKHOUSE_USER=default \
-     CLICKHOUSE_PASSWORD='${CH_PASS}' \
-     SEED_FORCE=1 \
-     CH_DUMP_S3_PREFIX='' \
-     bash /app/scripts/seed.sh" &
+  --data-binary "SELECT uniqExact(customerFirstName) FROM orders" 2>/dev/null || echo 0)"
+if [[ "${_NAME_UNIQ:-0}" -lt 50 ]]; then
+  printf '  Only %s distinct first names — reseeding...\n' "$_NAME_UNIQ"
+  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
+  SEED_FORCE=1 CH_DUMP_S3_PREFIX='' \
+    bash "$ROOT_DIR/scripts/seed.sh" &
   _SEED_PID=$!
   _poll_seed 50000000 "$_SEED_PID"
   wait "$_SEED_PID"
-  printf '  Rebaking S3 dump with new names (ClickHouse → S3, no local I/O)...\n'
-  CLICKHOUSE_URL="${CLICKHOUSE_URL}" \
-  CLICKHOUSE_USER=default \
-  CLICKHOUSE_PASSWORD="${CH_PASS}" \
-  AWS_ACCESS_KEY_ID="${_AWS_KEY}" \
-  AWS_SECRET_ACCESS_KEY="${_AWS_SECRET}" \
+  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
+  AWS_ACCESS_KEY_ID="$_AWS_KEY" AWS_SECRET_ACCESS_KEY="$_AWS_SECRET" \
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
 fi
 
-printf '\n[search-backfill] Checking searchText format (pruned+prefix vs legacy email)...\n'
-_SEARCH_FIX_NEEDED="$(curl -sf -u "default:${CH_PASS}" \
+printf '  Checking searchText format...\n'
+_SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
   --data-binary "SELECT if(positionCaseInsensitive(searchText, '@') > 0, 1, 0) FROM orders LIMIT 1" \
   2>/dev/null || echo 0)"
-if [[ "${_SEARCH_FIX_NEEDED:-0}" -eq 0 ]]; then
-  printf '  searchText already in pruned+prefix format — skipping.\n'
-else
-  printf '  Legacy email format detected — submitting UPDATE to pruned+prefix+tokens format...\n'
-  curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?mutations_sync=0" \
+if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
+  printf '  Legacy email format — submitting searchText UPDATE...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE positionCaseInsensitive(searchText, '@') > 0" \
     2>/dev/null || true
-  printf '  Mutation submitted — polling every 15s...\n'
-
-  _MUT_DONE=0
-  for _i in $(seq 1 80); do
-    _MUT_ROW="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%searchText%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    _IS_DONE="$(printf '%s' "${_MUT_ROW}" | cut -f1)"
-    _PARTS_LEFT="$(printf '%s' "${_MUT_ROW}" | cut -f2)"
-    _FAILED="$(printf '%s' "${_MUT_ROW}" | cut -f3)"
-    if [[ "${_IS_DONE}" == "1" ]]; then
-      if [[ -n "${_FAILED}" ]]; then
-        printf '  [%2d] ERROR: mutation failed on part: %s\n' "${_i}" "${_FAILED}"
-        break
-      fi
-      printf '  [%2d] Done — all parts updated.\n' "${_i}"
-      _MUT_DONE=1
-      break
-    elif [[ -n "${_PARTS_LEFT}" ]]; then
-      printf '  [%2d] parts_to_do: %s\n' "${_i}" "${_PARTS_LEFT}"
-    else
-      printf '  [%2d] Mutation not yet visible — still queuing...\n' "${_i}"
-    fi
-    sleep 15
-  done
-  if [[ "${_MUT_DONE}" -ne 1 ]]; then
-    printf '  Mutation still running — deploy continues; check system.mutations for progress.\n'
-  fi
 fi
 
-printf '\n[search-index] Materializing text index on orders.searchText...\n'
+printf '  Checking search index...\n'
 _IDX_CHECK="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
   --data-binary "SELECT countIf(has(skip_indices, 'idx_search_fulltext')), count() FROM system.parts WHERE table='orders' AND active=1" \
   2>/dev/null || echo '0	1')"
 _IDX_PARTS="$(printf '%s' "${_IDX_CHECK}" | cut -f1)"
 _TOT_PARTS="$(printf '%s' "${_IDX_CHECK}" | cut -f2)"
-if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -eq "${_TOT_PARTS}" ]]; then
-  printf '  Already fully materialized (%s / %s parts) — skipping.\n' "$_IDX_PARTS" "$_TOT_PARTS"
-else
+if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -ne "${_TOT_PARTS}" ]]; then
   printf '  %s / %s parts indexed — submitting MATERIALIZE INDEX...\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
-  curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?mutations_sync=0" \
-    --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" \
-    2>/dev/null || true
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+    --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" 2>/dev/null || true
   _poll_materialize_idx
 fi
 
-printf '\n[facts] Checking order_category_facts...\n'
+printf '  Checking order_category_facts...\n'
 _FACTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
   --data-binary 'SELECT count() FROM order_category_facts' 2>/dev/null || echo 0)"
-if [[ "${_FACTS_COUNT:-0}" -gt 0 ]]; then
-  printf '  order_category_facts has %s rows — skipping backfill.\n' "$_FACTS_COUNT"
-else
-  printf '  order_category_facts empty — backfilling from orders JOIN order_items...\n'
+if [[ "${_FACTS_COUNT:-0}" -eq 0 ]]; then
+  printf '  order_category_facts empty — backfilling...\n'
   curl -sf -u "default:${CH_PASS}" \
     "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "
 INSERT INTO order_category_facts
   (orderId, date, placedAt, customerId, regionId, regionCode,
    status, orderTotal, categoryId, categoryName, totalItems, totalRevenue)
-SELECT
-  o.orderId,
-  toDate(o.placedAt),
-  o.placedAt,
-  o.customerId,
-  o.regionId,
-  o.regionCode,
-  o.status,
-  o.total,
-  i.categoryId,
-  i.categoryName,
-  i.quantity,
+SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode,
+  o.status, o.total, i.categoryId, i.categoryName, i.quantity,
   toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2)
 FROM orders AS o
 INNER JOIN order_items AS i ON i.orderId = o.orderId
@@ -565,14 +456,34 @@ INNER JOIN order_items AS i ON i.orderId = o.orderId
   wait "$_FACTS_PID"
 fi
 
-BASE_URL="${CDN_URL:-http://${EC2_IP}}"
-printf '\n  Dashboard live at:  %s\n' "$BASE_URL"
-printf '  API Explorer:       %s/api-explorer\n' "$BASE_URL"
-printf '  SSH:                ssh -i %s ec2-user@%s\n' "$SSH_PRIVATE_KEY" "$EC2_IP"
-printf '  Tear down:          ./scripts/infra-down.sh\n\n'
+printf '[7/7] Completing infrastructure and deploying to App Runner...\n'
+cd "$INFRA_DIR"
+terraform apply -auto-approve -input=false
+
+APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
+CDN_URL="$(terraform output -raw cdn_url)"
+
+if [[ "$FIRST_DEPLOY" == "0" ]]; then
+  aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
+fi
+
+while true; do
+  SVC_STATUS="$(aws apprunner describe-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --query 'Service.Status' --output text)"
+  if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '  App Runner running.\n'; break; fi
+  if [[ "$SVC_STATUS" == "CREATE_FAILED" || "$SVC_STATUS" == "UPDATE_FAILED" ]]; then
+    printf 'ERROR: App Runner service failed (%s).\n' "$SVC_STATUS"; exit 1
+  fi
+  printf '  Status: %s — waiting...\n' "$SVC_STATUS"
+  sleep 20
+done
+
+printf '\n  Dashboard: %s\n' "$CDN_URL"
+printf '  Tear down: %s/scripts/infra-down.sh\n\n' "$ROOT_DIR"
 
 if [[ -f "$ROOT_DIR/README.md" ]]; then
-  python3 - "$BASE_URL" "$ROOT_DIR/README.md" <<'PYEOF'
+  python3 - "$CDN_URL" "$ROOT_DIR/README.md" <<'PYEOF'
 import re, sys
 url, path = sys.argv[1], sys.argv[2]
 content = open(path).read()
@@ -582,16 +493,12 @@ open(path, 'w').write(content)
 PYEOF
   git -C "$ROOT_DIR" add README.md
   if ! git -C "$ROOT_DIR" diff --cached --quiet; then
-    git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${BASE_URL}"
+    git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${CDN_URL}"
     git -C "$ROOT_DIR" push origin HEAD:main
-    printf '  README updated and pushed.\n'
   fi
 fi
 
 PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
 if [[ -x "$PORTFOLIO_SCRIPT" ]]; then
-  printf 'Updating portfolio live URL...\n'
-  bash "$PORTFOLIO_SCRIPT" clickhouse "$BASE_URL"
-else
-  printf 'Portfolio script not found at %s — skipping.\n' "$PORTFOLIO_SCRIPT"
+  bash "$PORTFOLIO_SCRIPT" clickhouse "$CDN_URL"
 fi

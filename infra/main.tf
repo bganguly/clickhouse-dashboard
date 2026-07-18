@@ -1,170 +1,173 @@
-data "aws_availability_zones" "available" {
-  state = "available"
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+# ── ECR ────────────────────────────────────────────────────────────────────────
+
+resource "aws_ecr_repository" "app" {
+  name                 = "${var.name_prefix}-app"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+  tags                 = { Name = "${var.name_prefix}-app" }
 }
 
-resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags = { Name = "${var.name_prefix}-vpc" }
+resource "aws_ecr_lifecycle_policy" "app" {
+  repository = aws_ecr_repository.app.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 3 images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 3 }
+      action       = { type = "expire" }
+    }]
+  })
 }
 
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.name_prefix}-igw" }
+# ── CodeBuild: build Docker image and push to ECR ─────────────────────────────
+
+resource "aws_s3_bucket" "codebuild_src" {
+  bucket        = "${var.name_prefix}-codebuild-src"
+  force_destroy = true
+  tags          = { Name = "${var.name_prefix}-codebuild-src" }
 }
 
-resource "aws_subnet" "public_a" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 4, 0)
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = true
-  tags                    = { Name = "${var.name_prefix}-public-a" }
-}
-
-resource "aws_subnet" "public_b" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 4, 1)
-  availability_zone       = data.aws_availability_zones.available.names[1]
-  map_public_ip_on_launch = true
-  tags                    = { Name = "${var.name_prefix}-public-b" }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-  tags = { Name = "${var.name_prefix}-public-rt" }
-}
-
-resource "aws_route_table_association" "public_a" {
-  subnet_id      = aws_subnet.public_a.id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table_association" "public_b" {
-  subnet_id      = aws_subnet.public_b.id
-  route_table_id = aws_route_table.public.id
-}
-
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
-  filter {
-    name   = "name"
-    values = ["al2023-ami-minimal-*-x86_64"]
-  }
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
-resource "aws_key_pair" "app" {
-  key_name   = "${var.name_prefix}-key"
-  public_key = file(pathexpand(var.ssh_public_key_path))
-}
-
-resource "aws_security_group" "app" {
-  name        = "${var.name_prefix}-app-sg"
-  description = "Dashboard app server - SSH + port 3004"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_cidr]
-  }
-
-  ingress {
-    description = "Dashboard (direct)"
-    from_port   = 3004
-    to_port     = 3004
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Nginx reverse proxy"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${var.name_prefix}-app-sg" }
-}
-
-resource "aws_iam_role" "app" {
-  name = "${var.name_prefix}-app"
-
+resource "aws_iam_role" "codebuild" {
+  name = "${var.name_prefix}-codebuild"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
+      Principal = { Service = "codebuild.amazonaws.com" }
       Action    = "sts:AssumeRole"
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "app_ssm_core" {
-  role       = aws_iam_role.app.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+resource "aws_iam_role_policy" "codebuild" {
+  name = "${var.name_prefix}-codebuild"
+  role = aws_iam_role.codebuild.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+        Resource = aws_ecr_repository.app.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = "${aws_s3_bucket.codebuild_src.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
-resource "aws_iam_instance_profile" "app" {
-  name = "${var.name_prefix}-app"
-  role = aws_iam_role.app.name
-}
+resource "aws_codebuild_project" "app" {
+  name         = "${var.name_prefix}-app"
+  service_role = aws_iam_role.codebuild.arn
 
-resource "aws_instance" "app" {
-  ami                         = data.aws_ami.amazon_linux.id
-  instance_type               = var.ec2_instance_type
-  subnet_id                   = aws_subnet.public_b.id
-  vpc_security_group_ids      = [aws_security_group.app.id]
-  key_name                    = aws_key_pair.app.key_name
-  iam_instance_profile        = aws_iam_instance_profile.app.name
-  associate_public_ip_address = true
+  artifacts { type = "NO_ARTIFACTS" }
 
-  root_block_device {
-    volume_size = var.ec2_root_volume_size
-    volume_type = "gp3"
+  environment {
+    type            = "LINUX_CONTAINER"
+    compute_type    = "BUILD_GENERAL1_SMALL"
+    image           = "aws/codebuild/standard:7.0"
+    privileged_mode = true
+
+    environment_variable { name = "ECR_REPO_URI",      value = aws_ecr_repository.app.repository_url }
+    environment_variable { name = "AWS_DEFAULT_REGION", value = var.aws_region }
   }
 
-  user_data = <<-EOF
-    #!/bin/bash
-    set -e
-    curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-    dnf install -y nodejs awscli rsync nginx amazon-ssm-agent
-    systemctl enable nginx
-    systemctl enable amazon-ssm-agent
-    npm install -g pm2
-    mkdir -p /app
-    chown ec2-user:ec2-user /app
-  EOF
+  source {
+    type      = "S3"
+    location  = "${aws_s3_bucket.codebuild_src.bucket}/source.zip"
+    buildspec = "buildspec.yml"
+  }
 
   tags = { Name = "${var.name_prefix}-app" }
 }
 
-resource "aws_eip" "app" {
-  instance = aws_instance.app.id
-  domain   = "vpc"
-  tags     = { Name = "${var.name_prefix}-app-eip" }
+# ── App Runner: scale-to-zero, wake on first ping ─────────────────────────────
+
+resource "aws_apprunner_auto_scaling_configuration_version" "app" {
+  auto_scaling_configuration_name = "${var.name_prefix}-app"
+  min_size                         = 0
+  max_size                         = 2
+  max_concurrency                  = 100
+  tags                             = { Name = "${var.name_prefix}-app" }
 }
 
-# ── Maintenance page (S3 static site, served when EC2 is down) ────────────────
+resource "aws_iam_role" "apprunner_ecr" {
+  name = "${var.name_prefix}-apprunner-ecr"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "build.apprunner.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "apprunner_ecr" {
+  role       = aws_iam_role.apprunner_ecr.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"
+}
+
+resource "aws_apprunner_service" "app" {
+  service_name                   = "${var.name_prefix}-app"
+  auto_scaling_configuration_arn = aws_apprunner_auto_scaling_configuration_version.app.arn
+
+  source_configuration {
+    authentication_configuration {
+      access_role_arn = aws_iam_role.apprunner_ecr.arn
+    }
+    image_repository {
+      image_identifier      = "${aws_ecr_repository.app.repository_url}:latest"
+      image_repository_type = "ECR"
+      image_configuration {
+        port = "3000"
+        runtime_environment_variables = {
+          NODE_ENV            = "production"
+          CLICKHOUSE_URL      = var.clickhouse_url
+          CLICKHOUSE_USER     = "default"
+          CLICKHOUSE_PASSWORD = var.clickhouse_password
+        }
+      }
+    }
+    auto_deployments_enabled = false
+  }
+
+  instance_configuration {
+    cpu    = "1024"
+    memory = "2048"
+  }
+
+  health_check_configuration {
+    protocol            = "HTTP"
+    path                = "/"
+    interval            = 10
+    timeout             = 5
+    healthy_threshold   = 1
+    unhealthy_threshold = 5
+  }
+
+  tags = { Name = "${var.name_prefix}-app" }
+
+  depends_on = [aws_iam_role_policy_attachment.apprunner_ecr]
+}
+
+# ── S3 maintenance page (failover for true errors, not cold starts) ────────────
 
 resource "aws_s3_bucket" "maintenance" {
   bucket = "${var.name_prefix}-maintenance"
@@ -208,20 +211,19 @@ resource "aws_s3_object" "maintenance_html" {
   etag         = filemd5("${path.module}/maintenance.html")
 }
 
-# ── CloudFront: EC2 primary + S3 maintenance failover ─────────────────────────
+# ── CloudFront: App Runner primary + S3 maintenance failover ──────────────────
 
 resource "aws_cloudfront_distribution" "app" {
   enabled = true
   comment = "${var.name_prefix} dashboard"
 
   origin {
-    domain_name = aws_eip.app.public_dns
+    domain_name = aws_apprunner_service.app.service_url
     origin_id   = "app-origin"
-
     custom_origin_config {
       http_port                = 80
       https_port               = 443
-      origin_protocol_policy   = "http-only"
+      origin_protocol_policy   = "https-only"
       origin_ssl_protocols     = ["TLSv1.2"]
       origin_read_timeout      = 60
       origin_keepalive_timeout = 60
@@ -231,7 +233,6 @@ resource "aws_cloudfront_distribution" "app" {
   origin {
     domain_name = aws_s3_bucket_website_configuration.maintenance.website_endpoint
     origin_id   = "maintenance-origin"
-
     custom_origin_config {
       http_port              = 80
       https_port             = 443
@@ -242,24 +243,35 @@ resource "aws_cloudfront_distribution" "app" {
 
   origin_group {
     origin_id = "app-with-maintenance"
-
-    failover_criteria {
-      status_codes = [502, 503, 504]
-    }
-
+    failover_criteria { status_codes = [502, 503, 504] }
     member { origin_id = "app-origin" }
     member { origin_id = "maintenance-origin" }
   }
 
-  default_cache_behavior {
+  ordered_cache_behavior {
+    path_pattern           = "/api/*"
     allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = "app-origin"
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 0
+    max_ttl                = 0
+    forwarded_values {
+      query_string = true
+      headers      = ["*"]
+      cookies { forward = "all" }
+    }
+  }
+
+  default_cache_behavior {
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
     target_origin_id       = "app-with-maintenance"
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
     default_ttl            = 0
     max_ttl                = 0
-
     forwarded_values {
       query_string = true
       headers      = ["*"]
@@ -276,176 +288,4 @@ resource "aws_cloudfront_distribution" "app" {
   }
 
   tags = { Name = "${var.name_prefix}-cdn" }
-}
-
-data "aws_region" "current" {}
-
-resource "aws_iam_role" "eventbridge_ssm" {
-  name = "${var.name_prefix}-eventbridge-ssm"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "events.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "eventbridge_ssm" {
-  name = "${var.name_prefix}-eventbridge-ssm"
-  role = aws_iam_role.eventbridge_ssm.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = "ssm:SendCommand"
-      Resource = [
-        "arn:aws:ssm:${data.aws_region.current.name}::document/AWS-RunShellScript",
-        aws_instance.app.arn
-      ]
-    }]
-  })
-}
-
-resource "aws_iam_role" "scheduler_ec2" {
-  name = "${var.name_prefix}-scheduler-ec2"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "scheduler.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "scheduler_ec2" {
-  name = "${var.name_prefix}-scheduler-ec2"
-  role = aws_iam_role.scheduler_ec2.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["ec2:StartInstances", "ec2:StopInstances"]
-      Resource = [aws_instance.app.arn]
-    }]
-  })
-}
-
-resource "aws_scheduler_schedule" "app_start" {
-  name = "${var.name_prefix}-app-start"
-
-  flexible_time_window { mode = "OFF" }
-
-  schedule_expression          = "cron(0 8 ? * MON-FRI *)"
-  schedule_expression_timezone = "America/Los_Angeles"
-
-  target {
-    arn      = "arn:aws:scheduler:::aws-sdk:ec2:startInstances"
-    role_arn = aws_iam_role.scheduler_ec2.arn
-    input    = jsonencode({ InstanceIds = [aws_instance.app.id] })
-  }
-}
-
-resource "aws_scheduler_schedule" "app_stop" {
-  name = "${var.name_prefix}-app-stop"
-
-  flexible_time_window { mode = "OFF" }
-
-  schedule_expression          = "cron(0 17 ? * MON-FRI *)"
-  schedule_expression_timezone = "America/Los_Angeles"
-
-  target {
-    arn      = "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
-    role_arn = aws_iam_role.scheduler_ec2.arn
-    input    = jsonencode({ InstanceIds = [aws_instance.app.id] })
-  }
-}
-
-resource "aws_iam_role" "scheduler_ssm" {
-  name = "${var.name_prefix}-scheduler-ssm"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "scheduler.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "scheduler_ssm" {
-  name = "${var.name_prefix}-scheduler-ssm"
-  role = aws_iam_role.scheduler_ssm.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = "ssm:SendCommand"
-      Resource = [
-        "arn:aws:ssm:${data.aws_region.current.name}::document/AWS-RunShellScript",
-        aws_instance.app.arn
-      ]
-    }]
-  })
-}
-
-resource "aws_scheduler_schedule" "keep_warm" {
-  name = "${var.name_prefix}-keep-warm"
-
-  flexible_time_window { mode = "OFF" }
-  schedule_expression = "rate(10 minutes)"
-
-  target {
-    arn      = "arn:aws:scheduler:::aws-sdk:ssm:sendCommand"
-    role_arn = aws_iam_role.scheduler_ssm.arn
-
-    input = jsonencode({
-      DocumentName = "AWS-RunShellScript"
-      InstanceIds  = [aws_instance.app.id]
-      Parameters = {
-        commands         = ["curl -sf http://localhost:3004/api/health > /dev/null 2>&1 || true"]
-        workingDirectory = ["/"]
-        executionTimeout = ["30"]
-      }
-    })
-  }
-}
-
-resource "aws_cloudwatch_event_rule" "app_start" {
-  name        = "${var.name_prefix}-app-start"
-  description = "Start pm2 app via SSM when EC2 enters running state"
-
-  event_pattern = jsonencode({
-    source        = ["aws.ec2"]
-    "detail-type" = ["EC2 Instance State-change Notification"]
-    detail = {
-      state         = ["running"]
-      "instance-id" = [aws_instance.app.id]
-    }
-  })
-}
-
-resource "aws_cloudwatch_event_target" "app_start_ssm" {
-  rule     = aws_cloudwatch_event_rule.app_start.name
-  arn      = "arn:aws:ssm:${data.aws_region.current.name}::document/AWS-RunShellScript"
-  role_arn = aws_iam_role.eventbridge_ssm.arn
-
-  run_command_targets {
-    key    = "InstanceIds"
-    values = [aws_instance.app.id]
-  }
-
-  input = jsonencode({
-    commands         = ["/app/scripts/deploy.sh --startup"]
-    workingDirectory = ["/"]
-    executionTimeout = ["120"]
-  })
 }
