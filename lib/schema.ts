@@ -216,7 +216,7 @@ export async function runMigrations(): Promise<void> {
   const { ch, execute } = await import("./clickhouse");
 
   // ClickHouse Cloud development tier auto-pauses; wait up to 3 min for it to wake.
-  const deadline = Date.now() + 3 * 60 * 1000;
+  const deadline = Date.now() + 10 * 60 * 1000;
   let attempt = 0;
   while (true) {
     try {
@@ -224,7 +224,7 @@ export async function runMigrations(): Promise<void> {
       await rs.json();
       break;
     } catch {
-      if (Date.now() > deadline) throw new Error("ClickHouse did not become ready within 3 minutes");
+      if (Date.now() > deadline) throw new Error("ClickHouse did not become ready within 10 minutes");
       attempt++;
       const delay = Math.min(5000 * attempt, 20_000);
       console.log(`ClickHouse not ready yet (attempt ${attempt}), retrying in ${delay / 1000}s…`);

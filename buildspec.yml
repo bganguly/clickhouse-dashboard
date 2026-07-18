@@ -13,5 +13,5 @@ phases:
   post_build:
     commands:
       - docker push "$ECR_REPO_URI:latest"
-      - npx tsx -e "import { runMigrations } from './lib/schema.ts'; runMigrations().then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })" 2>/dev/null || node -e "const { runMigrations } = require('./lib/schema.js'); runMigrations().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); })"
+      - npx tsx -e "import { runMigrations } from './lib/schema.ts'; runMigrations().then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })"
       - bash scripts/post-deploy.sh
