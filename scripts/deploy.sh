@@ -8,7 +8,7 @@ PROJECT_NAME="$(basename "$ROOT_DIR")"
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — CodeBuild → ECR → App Runner (scale-to-zero, wake on first ping)\n\n'
-printf 'Choice [1/2]: '
+printf 'Choice [1/2, default 2]: '
 read -r DEPLOY_TARGET
 case "${DEPLOY_TARGET:-2}" in
   1)
