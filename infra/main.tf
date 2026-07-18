@@ -112,7 +112,7 @@ resource "aws_codebuild_project" "app" {
 
 resource "aws_apprunner_auto_scaling_configuration_version" "app" {
   auto_scaling_configuration_name = "${var.name_prefix}-app"
-  min_size                         = 0
+  min_size                         = 1
   max_size                         = 2
   max_concurrency                  = 100
   tags                             = { Name = "${var.name_prefix}-app" }
