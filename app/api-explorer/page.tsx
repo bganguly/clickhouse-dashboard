@@ -254,17 +254,35 @@ function mono(label: string, val: string) {
 
 function OrdersCard() {
   const [loading, setLoading] = useState(false);
-  const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
-  const [err, setErr]     = useState<unknown>(null);
+  const [res, setRes]         = useState<{ json: unknown; ms: number } | null>(null);
+  const [err, setErr]         = useState<unknown>(null);
+  const [countTotal, setCountTotal]   = useState<number | null>(null);
+  const [countLoading, setCountLoading] = useState(false);
 
   async function run() {
-    setLoading(true); setErr(null); setRes(null);
-    try { setRes(await fetchTimed("/api/orders?pageSize=10&sort=placedAt&dir=desc")); }
-    catch (e) { setErr(e); } finally { setLoading(false); }
+    setLoading(true); setErr(null); setRes(null); setCountTotal(null);
+    try {
+      const result = await fetchTimed("/api/orders?pageSize=10&sort=placedAt&dir=desc");
+      setRes(result);
+      const j = result.json as Record<string, unknown>;
+      if (j.countPending) {
+        setCountLoading(true);
+        try {
+          const { json: cj } = await fetchTimed("/api/orders/count");
+          setCountTotal((cj as { total: number }).total ?? 0);
+        } catch {} finally { setCountLoading(false); }
+      } else {
+        setCountTotal((j.total as number) ?? 0);
+      }
+    } catch (e) { setErr(e); } finally { setLoading(false); }
   }
 
   const rows = (res?.json as Record<string,unknown>)?.data as OrderRow[] ?? [];
-  const total = (res?.json as Record<string,unknown>)?.total ?? rows.length;
+  const countLabel = countLoading
+    ? `showing first ${rows.length} · counting…`
+    : countTotal != null
+      ? `${Number(countTotal).toLocaleString()} total orders · showing first ${rows.length}`
+      : `showing first ${rows.length}`;
 
   return (
     <Card path="/api/orders" subtitle="Latest orders — paginated, sorted by date descending">
@@ -275,7 +293,7 @@ function OrdersCard() {
       {loading && <Loading />}
       {!!err  && <ErrMsg err={err} />}
       {res    && <>
-        <MetaBar ms={res.ms} label={`${Number(total).toLocaleString()} total orders · showing first 10`} />
+        <MetaBar ms={res.ms} label={countLabel} />
         {rows.length > 0 && <OrderTable rows={rows} />}
         <RawJson data={res.json} />
       </>}
@@ -288,16 +306,35 @@ function SearchCard() {
   const [loading, setL]   = useState(false);
   const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
+  const [countTotal, setCountTotal]     = useState<number | null>(null);
+  const [countLoading, setCountLoading] = useState(false);
 
   async function run() {
     if (!q.trim()) return;
-    setL(true); setErr(null); setRes(null);
-    try { setRes(await fetchTimed(`/api/orders?q=${encodeURIComponent(q.trim())}&pageSize=10`)); }
-    catch (e) { setErr(e); } finally { setL(false); }
+    setL(true); setErr(null); setRes(null); setCountTotal(null);
+    try {
+      const term = q.trim();
+      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&pageSize=10`);
+      setRes(result);
+      const j = result.json as Record<string, unknown>;
+      if (j.countPending) {
+        setCountLoading(true);
+        try {
+          const { json: cj } = await fetchTimed(`/api/orders/count?q=${encodeURIComponent(term)}`);
+          setCountTotal((cj as { total: number }).total ?? 0);
+        } catch {} finally { setCountLoading(false); }
+      } else {
+        setCountTotal((j.total as number) ?? 0);
+      }
+    } catch (e) { setErr(e); } finally { setL(false); }
   }
 
-  const rows  = (res?.json as Record<string,unknown>)?.data as OrderRow[] ?? [];
-  const total = (res?.json as Record<string,unknown>)?.total ?? rows.length;
+  const rows = (res?.json as Record<string,unknown>)?.data as OrderRow[] ?? [];
+  const countLabel = countLoading
+    ? `counting matches for "${q}"…`
+    : countTotal != null
+      ? `${Number(countTotal).toLocaleString()} match${Number(countTotal) !== 1 ? "es" : ""} for "${q}"`
+      : `showing ${rows.length} result${rows.length !== 1 ? "s" : ""} for "${q}"`;
 
   return (
     <Card path="/api/orders?q=…" subtitle="Full-text search via GIN trigram index">
@@ -315,7 +352,7 @@ function SearchCard() {
       {loading && <Loading />}
       {!!err   && <ErrMsg err={err} />}
       {res     && <>
-        <MetaBar ms={res.ms} label={`${Number(total).toLocaleString()} match${Number(total)!==1?"es":""} for "${q}"`} />
+        <MetaBar ms={res.ms} label={countLabel} />
         {rows.length > 0 ? <OrderTable rows={rows} /> : <p className="text-xs" style={{ color:"#71717a" }}>No results.</p>}
         <RawJson data={res.json} />
       </>}
