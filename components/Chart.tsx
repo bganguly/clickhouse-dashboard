@@ -148,6 +148,9 @@ interface ChartProps {
   /** Fired with the client-side summed category total whenever it changes, so
    *  the parent can hand the same number to SearchTable's list footer. */
   onTotalChange?: (n: number) => void;
+  /** Total from SearchTable's count request, used to seed the Total tile
+   *  before the aggregates response arrives. */
+  externalTotal?: number | null;
 }
 
 // Stable palette for stacked series. Cycled if there are more series than colors.
@@ -197,6 +200,7 @@ export default function Chart({
   controlledError = null,
   onRangeChange,
   onTotalChange,
+  externalTotal = null,
 }: ChartProps) {
   const [rawData, setRawData] = useState<RawAggregate[]>([]);
   const [range, setRange] = useState(defaultRange);
@@ -694,19 +698,19 @@ export default function Chart({
                     })()}
                   <span
                     data-testid="aggregate-tile-total"
-                    data-total={apiTotal ?? undefined}
+                    data-total={(apiTotal ?? externalTotal) ?? undefined}
                     className="inline-flex items-center gap-1.5 whitespace-nowrap border-l border-gray-200 pl-4 font-medium dark:border-gray-700"
                     style={{ color: axisColor }}
                   >
                     Total
                     <span className="font-medium tabular-nums text-gray-900 dark:text-gray-100">
-                      {apiTotal == null ? (
+                      {apiTotal == null && externalTotal == null ? (
                         <span
                           aria-hidden
                           className="inline-block h-3 w-10 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700"
                         />
                       ) : (
-                        matchedOrders.toLocaleString()
+                        (apiTotal ?? externalTotal ?? matchedOrders).toLocaleString()
                       )}
                     </span>
                   </span>

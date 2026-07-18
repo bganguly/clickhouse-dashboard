@@ -229,6 +229,7 @@ export default function Dashboard() {
                   lastSseOrder={lastSseOrder}
                   onRangeChange={(range) => setFilters((f) => ({ ...f, from: range.from, to: range.to }))}
                   onTotalChange={setChartTotal}
+                  externalTotal={chartTotal}
                 />
                 <SearchTable
                   refreshSignal={refreshSignal}
@@ -238,6 +239,7 @@ export default function Dashboard() {
                   highlightId={lastOrder?.id}
                   highlightKey={lastOrder?.seq}
                   externalTotal={chartTotal}
+                  onCountChange={(n) => setChartTotal((c) => c ?? n)}
                 />
               </div>
               {liveEnabled && (

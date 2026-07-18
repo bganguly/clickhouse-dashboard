@@ -49,11 +49,13 @@ interface SearchTableProps {
   controlledLoading?: boolean;
   controlledError?: string | null;
   onRequestStateChange?: (state: TableRequestState) => void;
-  /** Chart's client-side summed Total (see Chart's onTotalChange), shown in
-   *  the footer instead of this table's own backend total so both numbers
-   *  always agree. Null while the chart's own data is still loading — the
-   *  footer shows a skeleton pulse in that window rather than a stale figure. */
+  /** Total from the chart (via onTotalChange) or from this table's own count,
+   *  whichever settles first. Null only while both are still in flight. */
   externalTotal?: number | null;
+  /** Fired when this table's own /api/orders/count request settles, so the
+   *  parent can seed the chart's Total tile before the aggregates response
+   *  arrives. */
+  onCountChange?: (n: number) => void;
 }
 
 function cn(...classes: (string | false | undefined)[]): string {
@@ -151,6 +153,7 @@ export default function SearchTable({
   controlledError = null,
   onRequestStateChange,
   externalTotal = null,
+  onCountChange,
 }: SearchTableProps) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -270,6 +273,7 @@ export default function SearchTable({
               if (abortRef.current !== controller) return;
               setTotal(cj.total ?? 0);
               setTotalPages(Math.max(1, Math.ceil((cj.total ?? 0) / pageSize)));
+              onCountChange?.(cj.total ?? 0);
               setCountSettled(true);
               setTimeout(() => setCountSettled(false), 600);
             })
@@ -701,20 +705,20 @@ export default function SearchTable({
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-gray-500 dark:text-gray-400">
           Page {page} of{" "}
-          {footerLoading || externalTotal === null || countStillLoading
+          {footerLoading || (externalTotal == null && countStillLoading)
             ? <span className="inline-block h-3 w-8 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
             : displayTotalPages}{" "}·{" "}
           <span data-testid="search-total" data-total={displayTotal}>
-            {footerLoading || externalTotal === null || countStillLoading
+            {footerLoading || (externalTotal == null && countStillLoading)
               ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
               : <span className={countSettled ? "count-settle" : undefined}>{displayTotal.toLocaleString()}</span>}
           </span>{" "}
-          {footerLoading || externalTotal === null || countStillLoading
+          {footerLoading || (externalTotal == null && countStillLoading)
             ? <span className="inline-block h-3 w-10 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
             : "results"}
         </span>
 
-        {(footerLoading || externalTotal === null) && displayTotalPages > 1 ? (
+        {(footerLoading || (externalTotal == null && countStillLoading)) && displayTotalPages > 1 ? (
           <nav aria-label="Pagination">
             <ul className="flex items-center gap-1">
               <li>
