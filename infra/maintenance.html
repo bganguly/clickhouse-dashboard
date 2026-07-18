@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Offline — Back Soon</title>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0f13;
+      color: #e4e4e7;
+      font-family: Inter, system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 20px;
+      padding: 40px 36px;
+      max-width: 480px;
+      width: 100%;
+    }
+    .logo {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      margin-bottom: 28px;
+    }
+    .logo span:first-child {
+      background: linear-gradient(135deg, #a78bfa, #818cf8, #38bdf8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .logo span:last-child { color: #52525b; }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 0.85rem;
+      color: #71717a;
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+    .schedule-box {
+      background: rgba(167,139,250,0.06);
+      border: 1px solid rgba(167,139,250,0.15);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 28px;
+    }
+    .schedule-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      margin-bottom: 8px;
+    }
+    .schedule-row:last-child { margin-bottom: 0; }
+    .schedule-label { color: #71717a; }
+    .schedule-value { color: #a78bfa; font-weight: 500; }
+    .schedule-value.online { color: #34d399; }
+    .divider {
+      border: none;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      margin: 24px 0;
+    }
+    label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: #a1a1aa;
+      margin-bottom: 6px;
+    }
+    input[type="email"] {
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      color: #e4e4e7;
+      font-size: 0.85rem;
+      padding: 9px 12px;
+      margin-bottom: 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="email"]::placeholder { color: #52525b; }
+    input[type="email"]:focus { border-color: rgba(167,139,250,0.4); }
+    button[type="submit"] {
+      width: 100%;
+      background: rgba(167,139,250,0.12);
+      border: 1px solid rgba(167,139,250,0.25);
+      border-radius: 8px;
+      color: #a78bfa;
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 9px 16px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button[type="submit"]:hover {
+      background: rgba(167,139,250,0.18);
+      border-color: rgba(167,139,250,0.4);
+    }
+    button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
+    .msg { font-size: 0.78rem; margin-top: 8px; }
+    .msg.ok  { color: #6ee7b7; }
+    .msg.err { color: #f87171; }
+    .portfolio-link {
+      display: block;
+      text-align: center;
+      margin-top: 24px;
+      font-size: 0.75rem;
+      color: #52525b;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .portfolio-link:hover { color: #a1a1aa; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo"><span>bg</span><span>·dev</span></div>
+
+  <h1>App is offline</h1>
+  <p class="subtitle">This demo runs on a scheduled EC2 instance to keep costs low.</p>
+
+  <div class="schedule-box">
+    <div class="schedule-row">
+      <span class="schedule-label">Available</span>
+      <span class="schedule-value">Mon – Fri &nbsp;8 am – 5 pm PT</span>
+    </div>
+    <div class="schedule-row">
+      <span class="schedule-label">Current PT time</span>
+      <span class="schedule-value" id="pt-now">—</span>
+    </div>
+    <div class="schedule-row">
+      <span class="schedule-label">Next online</span>
+      <span class="schedule-value online" id="next-online">—</span>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <div id="form-area">
+    <label for="req-email">Request off-hours access</label>
+    <form onsubmit="handleRequest(event)">
+      <input id="req-email" type="email" placeholder="your@email.com" required />
+      <button type="submit">Send request</button>
+    </form>
+  </div>
+
+  <a class="portfolio-link" href="https://bganguly.github.io">← Portfolio</a>
+</div>
+
+<script>
+  (function () {
+    const key = localStorage.getItem('ejs_key');
+    if (key) emailjs.init({ publicKey: key });
+  })();
+
+  function getPTparts(d) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles',
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      weekday: 'short', hour: 'numeric', minute: '2-digit', hour12: true
+    }).formatToParts(d);
+    const get = t => parts.find(p => p.type === t)?.value ?? '';
+    return {
+      weekday: get('weekday'),
+      hour12str: get('hour') + ':' + get('minute') + ' ' + get('dayPeriod'),
+      year: parseInt(parts.find(p => p.type === 'year')?.value),
+      month: parseInt(parts.find(p => p.type === 'month')?.value),
+      day: parseInt(parts.find(p => p.type === 'day')?.value),
+      hour24: parseInt(new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false
+      }).format(d)),
+      dow: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(
+        new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/Los_Angeles', weekday: 'short'
+        }).format(d)
+      )
+    };
+  }
+
+  function nextOnlineLabel(d) {
+    const p = getPTparts(d);
+    const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+    if (p.dow >= 1 && p.dow <= 5 && p.hour24 >= 8 && p.hour24 < 17) {
+      return 'right now — refresh the page';
+    }
+
+    let dAdd;
+    if (p.dow === 0) dAdd = 1;
+    else if (p.dow === 6) dAdd = 2;
+    else if (p.dow === 5 && p.hour24 >= 17) dAdd = 3;
+    else if (p.hour24 >= 17) dAdd = 1;
+    else dAdd = 0;
+
+    const targetBase = Date.UTC(p.year, p.month - 1, p.day + dAdd);
+    const targetDay = new Date(targetBase);
+    const targetDow = targetDay.getUTCDay();
+    const dayName = FULL[targetDow];
+
+    if (dAdd === 0) return 'today at 8:00 AM PT';
+    return dayName + ' at 8:00 AM PT';
+  }
+
+  function tick() {
+    const now = new Date();
+    const p = getPTparts(now);
+    document.getElementById('pt-now').textContent = p.weekday + ' ' + p.hour12str + ' PT';
+    document.getElementById('next-online').textContent = nextOnlineLabel(now);
+  }
+
+  tick();
+  setInterval(tick, 30000);
+
+  async function handleRequest(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn  = form.querySelector('button');
+    const email = form.querySelector('input').value.trim();
+    const cfg = {
+      service:  localStorage.getItem('ejs_service')  || '',
+      template: localStorage.getItem('ejs_template') || '',
+      contact:  localStorage.getItem('ejs_contact')  || 'gangulybikramjit@gmail.com',
+    };
+
+    if (!cfg.service || !cfg.template) {
+      document.getElementById('form-area').innerHTML =
+        `<p class="msg ok">Email <a href="mailto:${cfg.contact}" style="color:#a78bfa">${cfg.contact}</a> to request access.</p>`;
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+
+    try {
+      await emailjs.send(cfg.service, cfg.template, {
+        from_email: email,
+        project: document.title,
+        requested: window.location.href,
+      });
+      document.getElementById('form-area').innerHTML =
+        '<p class="msg ok">Request sent — I\'ll reach out directly.</p>';
+    } catch {
+      btn.disabled = false;
+      btn.textContent = 'Try again';
+      form.insertAdjacentHTML('beforeend',
+        `<p class="msg err">Could not send — email <a href="mailto:${cfg.contact}" style="color:#a78bfa">${cfg.contact}</a></p>`);
+    }
+  }
+</script>
+</body>
+</html>

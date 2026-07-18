@@ -164,6 +164,52 @@ resource "aws_eip" "app" {
   tags     = { Name = "${var.name_prefix}-app-eip" }
 }
 
+# ── Maintenance page (S3 static site, served when EC2 is down) ────────────────
+
+resource "aws_s3_bucket" "maintenance" {
+  bucket = "${var.name_prefix}-maintenance"
+  tags   = { Name = "${var.name_prefix}-maintenance" }
+}
+
+resource "aws_s3_bucket_public_access_block" "maintenance" {
+  bucket                  = aws_s3_bucket.maintenance.id
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_website_configuration" "maintenance" {
+  bucket = aws_s3_bucket.maintenance.id
+  index_document { suffix = "index.html" }
+  error_document { key    = "index.html" }
+}
+
+resource "aws_s3_bucket_policy" "maintenance" {
+  bucket = aws_s3_bucket.maintenance.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "PublicRead"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = ["s3:GetObject"]
+      Resource  = "${aws_s3_bucket.maintenance.arn}/*"
+    }]
+  })
+  depends_on = [aws_s3_bucket_public_access_block.maintenance]
+}
+
+resource "aws_s3_object" "maintenance_html" {
+  bucket       = aws_s3_bucket.maintenance.id
+  key          = "index.html"
+  source       = "${path.module}/maintenance.html"
+  content_type = "text/html"
+  etag         = filemd5("${path.module}/maintenance.html")
+}
+
+# ── CloudFront: EC2 primary + S3 maintenance failover ─────────────────────────
+
 resource "aws_cloudfront_distribution" "app" {
   enabled = true
   comment = "${var.name_prefix} dashboard"
@@ -182,10 +228,33 @@ resource "aws_cloudfront_distribution" "app" {
     }
   }
 
+  origin {
+    domain_name = aws_s3_bucket_website_configuration.maintenance.website_endpoint
+    origin_id   = "maintenance-origin"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  origin_group {
+    origin_id = "app-with-maintenance"
+
+    failover_criteria {
+      status_codes = [502, 503, 504]
+    }
+
+    member { origin_id = "app-origin" }
+    member { origin_id = "maintenance-origin" }
+  }
+
   default_cache_behavior {
     allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
     cached_methods         = ["GET", "HEAD"]
-    target_origin_id       = "app-origin"
+    target_origin_id       = "app-with-maintenance"
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
     default_ttl            = 0

@@ -6,6 +6,8 @@ Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickH
 
 ## Live Service URLs&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[ClickHouse at 50M rows](https://claude.ai/code/artifact/079e248c-2e53-4b02-ac1c-b4f3356ecb5f)
 
+> **Schedule:** EC2 runs weekdays 8 am – 5 pm PT (EventBridge auto-start/stop). Outside those hours the app is offline and shows a maintenance page.
+
 | | |
 |---|---|
 | **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
