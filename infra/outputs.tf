@@ -3,15 +3,6 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.app.repository_url
 }
 
-output "codebuild_source_bucket" {
-  description = "S3 bucket name for CodeBuild source uploads"
-  value       = aws_s3_bucket.codebuild_src.bucket
-}
-
-output "codebuild_project_name" {
-  description = "CodeBuild project name"
-  value       = aws_codebuild_project.app.name
-}
 
 output "apprunner_service_arn" {
   description = "App Runner service ARN"

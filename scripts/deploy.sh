@@ -7,7 +7,7 @@ PROJECT_NAME="$(basename "$ROOT_DIR")"
 
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
-printf '  [2] Cloud  — CodeBuild → ECR → App Runner (scale-to-zero, wake on first ping)\n\n'
+printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (scale-to-zero, wake on first ping)\n\n'
 printf 'Choice [1/2, default 2]: '
 read -r DEPLOY_TARGET
 case "${DEPLOY_TARGET:-2}" in
@@ -153,14 +153,10 @@ ECR_IMAGE_EXISTS="$(aws ecr describe-images \
   --output text 2>/dev/null || true)"
 
 if [[ -z "$ECR_IMAGE_EXISTS" || "$ECR_IMAGE_EXISTS" == "None" ]]; then
-  printf '  First deploy — provisioning ECR + CodeBuild before building image.\n'
+  printf '  First deploy — provisioning ECR before image build.\n'
   terraform apply -auto-approve -input=false \
     -target=aws_ecr_repository.app \
     -target=aws_ecr_lifecycle_policy.app \
-    -target=aws_s3_bucket.codebuild_src \
-    -target=aws_iam_role.codebuild \
-    -target=aws_iam_role_policy.codebuild \
-    -target=aws_codebuild_project.app \
     -target=aws_iam_role.apprunner_ecr \
     -target=aws_iam_role_policy_attachment.apprunner_ecr \
     -target=aws_apprunner_auto_scaling_configuration_version.app \
@@ -175,38 +171,18 @@ else
   FIRST_DEPLOY=0
 fi
 
-SRC_BUCKET="$(terraform output -raw codebuild_source_bucket)"
-CB_PROJECT="$(terraform output -raw codebuild_project_name)"
-
-printf '[4/5] Building, migrating and seeding via CodeBuild...\n'
-TMPZIP="/tmp/${PROJECT_NAME}-source.zip"
-cd "$ROOT_DIR"
-zip -qr "$TMPZIP" . \
-  --exclude ".git/*" --exclude "node_modules/*" --exclude ".next/*" \
-  --exclude "infra/.terraform/*" --exclude "infra/terraform.tfstate*" \
-  --exclude ".env*" --exclude ".clickhouse-creds"
-aws s3 cp "$TMPZIP" "s3://${SRC_BUCKET}/source.zip" --quiet
-rm -f "$TMPZIP"
-
-BUILD_ID="$(aws codebuild start-build \
-  --project-name "$CB_PROJECT" \
-  --environment-variables-override \
-    name=CLICKHOUSE_URL,value="$CLICKHOUSE_URL",type=PLAINTEXT \
-    name=CLICKHOUSE_PASSWORD,value="$CH_PASS",type=PLAINTEXT \
-  --query 'build.id' --output text)"
-printf '  Build %s started...\n' "$BUILD_ID"
-
-while true; do
-  STATUS="$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].buildStatus' --output text)"
-  if [[ "$STATUS" == "SUCCEEDED" ]]; then printf '  Build succeeded.\n'; break; fi
-  if [[ "$STATUS" == "FAILED" || "$STATUS" == "FAULT" || "$STATUS" == "STOPPED" || "$STATUS" == "TIMED_OUT" ]]; then
-    printf 'ERROR: CodeBuild %s. Logs:\n' "$STATUS"
-    aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].logs.deepLink' --output text
-    exit 1
-  fi
-  printf '  %s...\n' "$STATUS"
-  sleep 20
-done
+printf '[4/5] Verifying image in ECR...\n'
+ECR_CHECK="$(aws ecr describe-images \
+  --repository-name "ch-dash-app" \
+  --image-ids imageTag=latest \
+  --query 'imageDetails[0].imageDigest' \
+  --output text 2>/dev/null || true)"
+if [[ -z "$ECR_CHECK" || "$ECR_CHECK" == "None" ]]; then
+  printf 'ERROR: ch-dash-app:latest not found in ECR.\n'
+  printf '  Push to main to trigger a GitHub Actions build, then re-run deploy.sh.\n'
+  exit 1
+fi
+printf '  Image found.\n'
 
 printf '[5/5] Deploying to App Runner...\n'
 cd "$INFRA_DIR"
