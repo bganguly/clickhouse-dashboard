@@ -227,6 +227,7 @@ if [[ -n "$_AR_ARN" ]]; then
   fi
 fi
 terraform apply -auto-approve -input=false
+printf '  Reading Terraform outputs...\n'
 APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
 CDN_URL="$(terraform output -raw cdn_url)"
 
