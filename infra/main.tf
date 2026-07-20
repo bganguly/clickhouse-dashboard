@@ -64,6 +64,7 @@ resource "aws_apprunner_service" "app" {
         port = "3000"
         runtime_environment_variables = {
           NODE_ENV            = "production"
+          HOSTNAME            = "0.0.0.0"
           CLICKHOUSE_URL      = var.clickhouse_url
           CLICKHOUSE_USER     = "default"
           CLICKHOUSE_PASSWORD = var.clickhouse_password
