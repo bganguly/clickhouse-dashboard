@@ -201,7 +201,8 @@ else
 fi
 
 printf '[4/5] Verifying image in ECR...\n'
-_DEPLOY_TAG="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")"
+_REMOTE_SHA="$(git -C "$ROOT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7)"
+_DEPLOY_TAG="${_REMOTE_SHA:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")}"
 _ecr_image_exists() {
   aws ecr describe-images --repository-name "ch-dash-app" --image-ids "imageTag=$1" \
     >/dev/null 2>&1
@@ -212,7 +213,12 @@ if ! _ecr_image_exists "$_DEPLOY_TAG"; then
   _ecr_elapsed=0
   until _ecr_image_exists "$_DEPLOY_TAG"; do
     if (( _ecr_elapsed >= 600 )); then
-      printf '  Timed out waiting for %s. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n' "$_DEPLOY_TAG"
+      printf '  Timed out: %s not found. Falling back to latest tag...\n' "$_DEPLOY_TAG"
+      if _ecr_image_exists "ch-dash-app" latest; then
+        _DEPLOY_TAG=latest
+        break
+      fi
+      printf '  No image found at all. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n'
       exit 1
     fi
     sleep 15; _ecr_elapsed=$(( _ecr_elapsed + 15 ))
@@ -223,9 +229,11 @@ printf '  Image %s found in ECR.\n' "$_DEPLOY_TAG"
 _MANIFEST=$(aws ecr batch-get-image --repository-name "ch-dash-app" \
   --image-ids "imageTag=${_DEPLOY_TAG}" --query 'images[0].imageManifest' \
   --output text 2>/dev/null)
-aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
-  --image-manifest "$_MANIFEST" >/dev/null 2>&1 \
-  && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
+if [[ "$_DEPLOY_TAG" != "latest" ]]; then
+  aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+    --image-manifest "$_MANIFEST" >/dev/null 2>&1 \
+    && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
+fi
 
 printf '[5/5] Deploying to App Runner...\n'
 cd "$INFRA_DIR"
