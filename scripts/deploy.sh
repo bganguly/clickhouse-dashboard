@@ -146,6 +146,22 @@ printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
 cd "$INFRA_DIR"
 terraform init -input=false -upgrade >/dev/null
 
+terraform state rm aws_codebuild_project.app                            2>/dev/null || true
+terraform state rm aws_iam_role_policy.codebuild                        2>/dev/null || true
+terraform state rm aws_iam_role.codebuild                               2>/dev/null || true
+terraform state rm aws_s3_bucket.codebuild_src                          2>/dev/null || true
+
+_STATE_FILE="$INFRA_DIR/terraform.tfstate"
+if [[ -f "$_STATE_FILE" ]]; then
+  python3 -c "
+import json
+with open('$_STATE_FILE') as f: s = json.load(f)
+for k in ('codebuild_source_bucket', 'codebuild_project_name'):
+    s.get('outputs', {}).pop(k, None)
+with open('$_STATE_FILE', 'w') as f: json.dump(s, f, indent=2)
+" 2>/dev/null || true
+fi
+
 ECR_IMAGE_EXISTS="$(aws ecr describe-images \
   --repository-name "ch-dash-app" \
   --image-ids imageTag=latest \
@@ -172,17 +188,31 @@ else
 fi
 
 printf '[4/5] Verifying image in ECR...\n'
-ECR_CHECK="$(aws ecr describe-images \
-  --repository-name "ch-dash-app" \
-  --image-ids imageTag=latest \
-  --query 'imageDetails[0].imageDigest' \
-  --output text 2>/dev/null || true)"
-if [[ -z "$ECR_CHECK" || "$ECR_CHECK" == "None" ]]; then
-  printf 'ERROR: ch-dash-app:latest not found in ECR.\n'
-  printf '  Push to main to trigger a GitHub Actions build, then re-run deploy.sh.\n'
-  exit 1
+_DEPLOY_TAG="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")"
+_ecr_image_exists() {
+  aws ecr describe-images --repository-name "ch-dash-app" --image-ids "imageTag=$1" \
+    >/dev/null 2>&1
+}
+printf '  Checking ECR for image %s...\n' "$_DEPLOY_TAG"
+if ! _ecr_image_exists "$_DEPLOY_TAG"; then
+  printf '  Image %s not in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n' "$_DEPLOY_TAG"
+  _ecr_elapsed=0
+  until _ecr_image_exists "$_DEPLOY_TAG"; do
+    if (( _ecr_elapsed >= 600 )); then
+      printf '  Timed out waiting for %s. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n' "$_DEPLOY_TAG"
+      exit 1
+    fi
+    sleep 15; _ecr_elapsed=$(( _ecr_elapsed + 15 ))
+    printf '  ...%ds\n' "$_ecr_elapsed"
+  done
 fi
-printf '  Image found.\n'
+printf '  Image %s found in ECR.\n' "$_DEPLOY_TAG"
+_MANIFEST=$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+  --image-ids "imageTag=${_DEPLOY_TAG}" --query 'images[0].imageManifest' \
+  --output text 2>/dev/null)
+aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+  --image-manifest "$_MANIFEST" >/dev/null 2>&1 \
+  && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
 
 printf '[5/5] Deploying to App Runner...\n'
 cd "$INFRA_DIR"
