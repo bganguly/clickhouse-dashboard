@@ -93,6 +93,16 @@ printf '[1/5] Checking AWS credentials...\n'
 aws sts get-caller-identity >/dev/null
 printf '  OK\n'
 
+_GH_REPO="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
+  | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
+if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+  printf '  Syncing AWS credentials to GitHub Actions secrets (%s)...\n' "$_GH_REPO"
+  _AWS_REGION="$(aws configure get region 2>/dev/null || echo "us-east-1")"
+  aws configure get aws_access_key_id     | gh secret set AWS_ACCESS_KEY_ID     --repo "$_GH_REPO"
+  aws configure get aws_secret_access_key | gh secret set AWS_SECRET_ACCESS_KEY --repo "$_GH_REPO"
+  printf '%s' "$_AWS_REGION"              | gh secret set AWS_REGION            --repo "$_GH_REPO"
+fi
+
 printf '[2/5] Resolving ClickHouse endpoint...\n'
 if [[ "$USE_CH_API" == "1" ]]; then
   CH_ORG_ID="${CLICKHOUSE_ORG_ID:-}"
