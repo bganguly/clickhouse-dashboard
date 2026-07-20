@@ -209,21 +209,22 @@ _ecr_image_exists() {
 }
 printf '  Checking ECR for image %s...\n' "$_DEPLOY_TAG"
 if ! _ecr_image_exists "$_DEPLOY_TAG"; then
-  printf '  Image %s not in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n' "$_DEPLOY_TAG"
-  _ecr_elapsed=0
-  until _ecr_image_exists "$_DEPLOY_TAG"; do
-    if (( _ecr_elapsed >= 600 )); then
-      printf '  Timed out: %s not found. Falling back to latest tag...\n' "$_DEPLOY_TAG"
-      if _ecr_image_exists "ch-dash-app" latest; then
-        _DEPLOY_TAG=latest
-        break
+  if _ecr_image_exists "latest"; then
+    printf '  SHA %s not in ECR (image unchanged) — using latest.\n' "$_DEPLOY_TAG"
+    _DEPLOY_TAG=latest
+  else
+    printf '  No image in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n'
+    _ecr_elapsed=0
+    until _ecr_image_exists "latest"; do
+      if (( _ecr_elapsed >= 600 )); then
+        printf '  Timed out. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n'
+        exit 1
       fi
-      printf '  No image found at all. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n'
-      exit 1
-    fi
-    sleep 15; _ecr_elapsed=$(( _ecr_elapsed + 15 ))
-    printf '  ...%ds\n' "$_ecr_elapsed"
-  done
+      sleep 15; _ecr_elapsed=$(( _ecr_elapsed + 15 ))
+      printf '  ...%ds\n' "$_ecr_elapsed"
+    done
+    _DEPLOY_TAG=latest
+  fi
 fi
 printf '  Image %s found in ECR.\n' "$_DEPLOY_TAG"
 _MANIFEST=$(aws ecr batch-get-image --repository-name "ch-dash-app" \
