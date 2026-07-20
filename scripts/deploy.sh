@@ -74,12 +74,14 @@ elif [[ -f "$CREDS_FILE" ]]; then
     unset CLICKHOUSE_CLOUD_KEY CLICKHOUSE_URL CLICKHOUSE_PASSWORD
     _prompt_creds
   elif [[ "$USE_CH_API" == "0" ]]; then
-    printf 'ClickHouse password: '
-    read -rs CLICKHOUSE_PASSWORD; printf '\n'
-    export CLICKHOUSE_PASSWORD
-    printf 'CLICKHOUSE_URL=%s\nCLICKHOUSE_USER=%s\nCLICKHOUSE_PASSWORD=%s\n' \
-      "$CLICKHOUSE_URL" "${CLICKHOUSE_USER:-default}" "$CLICKHOUSE_PASSWORD" > "$CREDS_FILE"
-    chmod 600 "$CREDS_FILE"
+    if [[ -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
+      printf 'ClickHouse password: '
+      read -rs CLICKHOUSE_PASSWORD; printf '\n'
+      export CLICKHOUSE_PASSWORD
+      printf 'CLICKHOUSE_URL=%s\nCLICKHOUSE_USER=%s\nCLICKHOUSE_PASSWORD=%s\n' \
+        "$CLICKHOUSE_URL" "${CLICKHOUSE_USER:-default}" "$CLICKHOUSE_PASSWORD" > "$CREDS_FILE"
+      chmod 600 "$CREDS_FILE"
+    fi
   fi
 else
   _prompt_creds
