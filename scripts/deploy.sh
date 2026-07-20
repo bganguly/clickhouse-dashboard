@@ -145,6 +145,7 @@ export TF_VAR_clickhouse_password="$CH_PASS"
 printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
 cd "$INFRA_DIR"
 terraform init -input=false -upgrade >/dev/null
+printf '  Pruning stale state...\n'
 
 terraform state rm aws_codebuild_project.app                            2>/dev/null || true
 terraform state rm aws_iam_role_policy.codebuild                        2>/dev/null || true
