@@ -270,6 +270,10 @@ while true; do
   printf '  %s...\n' "$SVC_STATUS"; sleep 20
 done
 
+printf '[post-deploy] Running data checks and backfills...\n'
+CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS" \
+  bash "$ROOT_DIR/scripts/post-deploy.sh"
+
 CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
 if [[ -n "$CF_DIST_ID" ]]; then
   printf '  Invalidating CloudFront cache...\n'
