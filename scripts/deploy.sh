@@ -263,6 +263,13 @@ while true; do
   printf '  %s...\n' "$SVC_STATUS"; sleep 20
 done
 
+CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
+if [[ -n "$CF_DIST_ID" ]]; then
+  printf '  Invalidating CloudFront cache...\n'
+  aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
+    --query 'Invalidation.Id' --output text
+fi
+
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n\n' "$ROOT_DIR"
 
