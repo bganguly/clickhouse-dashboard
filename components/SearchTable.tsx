@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   appendFilterParams,
   type OrderFilters,
@@ -107,7 +107,8 @@ interface ColumnDef {
   /** Sort key the backend accepts (placedAt | total | status | customer).
    *  Omitted for columns the backend can't sort (id, items, notes). */
   sortKey?: string;
-  render: (row: SearchRow) => string;
+  render: (row: SearchRow) => React.ReactNode;
+  tdClassName?: string;
 }
 
 const COLUMNS: ColumnDef[] = [
@@ -115,7 +116,11 @@ const COLUMNS: ColumnDef[] = [
   { key: "customer", label: "Customer", sortKey: "customer", render: renderCustomer },
   { key: "items", label: "Items", numeric: true, render: renderItems },
   { key: "total", label: "Total", numeric: true, sortKey: "total", render: renderTotal },
-  { key: "notes", label: "Notes", render: (r) => formatCell(r.notes) },
+  { key: "notes", label: "Notes", tdClassName: "max-w-[220px]", render: (r) => {
+    const text = formatCell(r.notes);
+    if (!text) return text;
+    return <span className="block truncate" title={text}>{text}</span>;
+  }},
   { key: "placedAt", label: "Placed", sortKey: "placedAt", render: renderDate },
 ];
 
@@ -690,6 +695,7 @@ export default function SearchTable({
                       className={cn(
                         "px-3 py-2 align-top",
                         col.numeric && "text-right tabular-nums",
+                        col.tdClassName,
                       )}
                     >
                       {col.render(row)}

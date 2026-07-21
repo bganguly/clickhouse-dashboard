@@ -369,6 +369,23 @@ if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
 fi
 
+printf '[deploy] Checking notes content...\n'
+_NOTES_FIX="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT if(notes LIKE 'order %', 1, 0) FROM orders WHERE notes IS NOT NULL LIMIT 1" \
+  2>/dev/null || echo 0)"
+if [[ "${_NOTES_FIX:-0}" -eq 1 ]]; then
+  printf '  Stale notes detected — updating notes and searchText...\n'
+  _NOTES_PHRASES="'please leave at front door ring bell twice','gift wrapping requested include birthday card','fragile items handle with extreme care','corporate bulk order for quarterly offsite event','express shipping required before the conference','leave with building concierge if not home','signature required upon delivery no exceptions','urgent replacement for previously damaged shipment','perishable contents keep refrigerated at all times','eco friendly packaging only no plastic wrap','annual office supply subscription renewal invoice','school supply order for upcoming fall semester','bridal shower gift please include congratulations card','rush order needed before saturday morning delivery','holiday promotional bundle seasonal discount applied','wholesale distributor recurring weekly standing order','loyalty rewards redemption free shipping included','priority processing customer complaint credit applied','temperature sensitive store below forty degrees fahrenheit','military veteran discount applied thank you for service'"
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+    --data-binary "ALTER TABLE orders UPDATE notes = if(cityHash64(orderId) % 10 < 7, arrayElement([${_NOTES_PHRASES}], toUInt32(cityHash64(orderId) % 20) + 1), NULL), searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), if(cityHash64(orderId) % 10 < 7, concat(' ', arrayElement([${_NOTES_PHRASES}], toUInt32(cityHash64(orderId) % 20) + 1)), ''), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE notes LIKE 'order %'" \
+    2>/dev/null || true
+  _poll_update_mutation
+  printf '  Re-baking S3 dump with updated notes...\n'
+  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS" \
+    bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
+fi
+
 printf '[deploy] Checking search index...\n'
 _IDX="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
