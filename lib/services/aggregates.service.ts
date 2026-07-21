@@ -1,4 +1,5 @@
 import { query } from "@/lib/clickhouse";
+import type { ClickHouseSettings } from "@clickhouse/client";
 import { AppError, mapDbError } from "@/lib/errors";
 import { aggCacheGet, aggCacheSet } from "@/lib/aggregates-cache";
 import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/lib/types";
@@ -13,6 +14,12 @@ import {
 
 const DEFAULT_TOP_CATEGORIES = 5;
 const OTHER_BUCKET = "Others";
+
+const AGG_CACHE: ClickHouseSettings = {
+  use_query_cache: 1,
+  query_cache_ttl: 60,
+  query_cache_share_between_users: 1,
+};
 
 interface AggRow {
   day: string;
@@ -132,6 +139,7 @@ async function fastPath(input: AggregateQueryInput): Promise<AggRow[]> {
      GROUP BY date, categoryName
      ORDER BY date ASC, categoryName ASC`,
     params,
+    AGG_CACHE,
   );
 }
 
@@ -159,6 +167,7 @@ async function filterSummaryPath(input: AggregateQueryInput): Promise<AggRow[] |
        GROUP BY date, categoryName
        ORDER BY date ASC, categoryName ASC`,
       params,
+      AGG_CACHE,
     );
   }
 
@@ -177,6 +186,7 @@ async function filterSummaryPath(input: AggregateQueryInput): Promise<AggRow[] |
      GROUP BY date, categoryName
      ORDER BY date ASC, categoryName ASC`,
     params,
+    AGG_CACHE,
   );
 }
 
@@ -207,6 +217,7 @@ async function factFilterPath(input: AggregateQueryInput): Promise<AggRow[] | nu
      GROUP BY date, categoryName
      ORDER BY date ASC, categoryName ASC`,
     params,
+    AGG_CACHE,
   );
 }
 
@@ -243,6 +254,7 @@ async function customerMultiTokenSummaryPath(input: AggregateQueryInput): Promis
      GROUP BY date, categoryName
      ORDER BY date ASC, categoryName ASC`,
     aggParams,
+    AGG_CACHE,
   );
 
   return rows.length > 0 ? rows : null;
