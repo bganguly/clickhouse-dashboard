@@ -485,14 +485,14 @@ if [[ "${_OCF_ST:-0}" -eq 0 && "${_FACTS:-0}" -gt 0 ]]; then
     --data-binary "SELECT count() FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' AND is_done=0" \
     2>/dev/null || echo 0)"
   if [[ "${_OCF_MUT_RUNNING:-0}" -gt 0 ]]; then
-    printf '  OCF searchText mutation already in-flight — waiting...\n'
+    printf '  OCF searchText mutation already in-flight — skipping submit, continuing deploy.\n'
   else
-    printf '  Backfilling order_category_facts.searchText from orders...\n'
+    printf '  Submitting order_category_facts.searchText backfill (runs in ClickHouse background)...\n'
     curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
       --data-binary "ALTER TABLE order_category_facts UPDATE searchText = (SELECT searchText FROM orders WHERE orders.orderId = order_category_facts.orderId LIMIT 1) WHERE searchText = '' SETTINGS max_execution_time=0" \
       2>/dev/null || true
+    printf '  Mutation submitted — will complete in background (1-2h). App uses slowPath until done.\n'
   fi
-  _poll_ocf_mutation
 fi
 
 printf '[deploy] Checking order_category_facts search index...\n'
@@ -503,10 +503,10 @@ _OCF_IDX="$(curl -sf -u "default:${CH_PASS}" \
 _OCF_IDX_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f1)"
 _OCF_TOT_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f2)"
 if [[ "${_OCF_TOT_PARTS:-0}" -gt 0 && "${_OCF_IDX_PARTS:-0}" -ne "${_OCF_TOT_PARTS}" ]]; then
-  printf '  %s / %s parts indexed — materializing idx_ocf_search...\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
+  printf '  %s / %s parts indexed — submitting MATERIALIZE INDEX idx_ocf_search (runs in background)...\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE order_category_facts MATERIALIZE INDEX idx_ocf_search" 2>/dev/null || true
-  _poll_ocf_idx
+  printf '  Index mutation queued — will run after any pending UPDATE mutations.\n'
 fi
 
 CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
