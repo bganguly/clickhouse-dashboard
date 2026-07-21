@@ -244,7 +244,7 @@ async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
   let pi = 0;
   for (const tok of tokens) {
     const k = `stok${pi++}`;
-    clauses.push(`hasToken(lower(o.searchText), {${k}: String})`);
+    clauses.push(`hasToken(o.searchText, {${k}: String})`);
     params[k] = tok.toLowerCase();
   }
   if (filters.statuses.length) { clauses.push(`o.status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
