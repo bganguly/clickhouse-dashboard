@@ -142,18 +142,32 @@ export default function Dashboard() {
   const handleChartLoading = useCallback((v: boolean) => setChartLoading(v), []);
   const handleTableLoading = useCallback((v: boolean) => setTableLoading(v), []);
 
+  const prevChartLoading = useRef(false);
+  const prevTableLoading = useRef(false);
+
   useEffect(() => {
-    const anyLoading = chartLoading || tableLoading;
-    if (anyLoading && !perfActive.current) {
-      perfActive.current = true;
+    const chartStarted = chartLoading && !prevChartLoading.current;
+    const tableStarted = tableLoading && !prevTableLoading.current;
+    prevChartLoading.current = chartLoading;
+    prevTableLoading.current = tableLoading;
+
+    if (chartStarted || tableStarted) {
+      // A new fetch was kicked off — reset the clock so the timer reflects this
+      // request's latency, not accumulated drag-frame time.
       perfStart.current = performance.now();
       setPerfSettled(false);
       if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
-      if (perfInterval.current) clearInterval(perfInterval.current);
-      perfInterval.current = setInterval(() => {
-        setPerfMs(Math.round(performance.now() - perfStart.current));
-      }, 16);
-    } else if (!anyLoading && perfActive.current) {
+      if (!perfActive.current) {
+        perfActive.current = true;
+        if (perfInterval.current) clearInterval(perfInterval.current);
+        perfInterval.current = setInterval(() => {
+          setPerfMs(Math.round(performance.now() - perfStart.current));
+        }, 16);
+      }
+    }
+
+    const anyLoading = chartLoading || tableLoading;
+    if (!anyLoading && perfActive.current) {
       perfActive.current = false;
       if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
