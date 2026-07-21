@@ -210,8 +210,8 @@ export const DDL_STATEMENTS = [
 
   `ALTER TABLE orders ADD COLUMN IF NOT EXISTS itemCount UInt32 DEFAULT 0`,
 
-  `ALTER TABLE orders DROP INDEX IF EXISTS idx_search_text`,
-  `ALTER TABLE orders DROP INDEX IF EXISTS idx_search_fulltext`,
+  `ALTER TABLE orders DROP INDEX IF EXISTS idx_search_text SETTINGS mutations_sync = 1`,
+  `ALTER TABLE orders DROP INDEX IF EXISTS idx_search_fulltext SETTINGS mutations_sync = 1`,
   `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_fulltext searchText TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 1`,
 ];
 
