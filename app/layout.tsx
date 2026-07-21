@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ClickHouse Dashboard — AWS",
+  title: "ClickHouse — AWS",
   description: "Live aggregates, search, and event stream.",
 };
 
