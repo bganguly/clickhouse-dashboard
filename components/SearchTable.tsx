@@ -56,6 +56,8 @@ interface SearchTableProps {
    *  parent can seed the chart's Total tile before the aggregates response
    *  arrives. */
   onCountChange?: (n: number) => void;
+  /** Fired whenever the internal fetch loading state changes. */
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 function cn(...classes: (string | false | undefined)[]): string {
@@ -159,6 +161,7 @@ export default function SearchTable({
   onRequestStateChange,
   externalTotal = null,
   onCountChange,
+  onLoadingChange,
 }: SearchTableProps) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -177,6 +180,8 @@ export default function SearchTable({
   const [flashId, setFlashId] = useState<string | number | null>(null);
   // First-row id that just changed (drives the `data-new` entry animation).
   const [newFirstId, setNewFirstId] = useState<string | number | null>(null);
+
+  useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
 
   const abortRef = useRef<AbortController | null>(null);
   const isControlled = onRequestStateChange != null;

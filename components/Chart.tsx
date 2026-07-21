@@ -151,6 +151,8 @@ interface ChartProps {
   /** Total from SearchTable's count request, used to seed the Total tile
    *  before the aggregates response arrives. */
   externalTotal?: number | null;
+  /** Fired whenever the internal fetch loading state changes. */
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 // Stable palette for stacked series. Cycled if there are more series than colors.
@@ -201,6 +203,7 @@ export default function Chart({
   onRangeChange,
   onTotalChange,
   externalTotal = null,
+  onLoadingChange,
 }: ChartProps) {
   const [rawData, setRawData] = useState<RawAggregate[]>([]);
   const [range, setRange] = useState(defaultRange);
@@ -215,6 +218,8 @@ export default function Chart({
   // order lands (Task 17) — the visible companion to the in-place patch above.
   const [flashSlug, setFlashSlug] = useState<string | null>(null);
   const [showOthers, setShowOthers] = useState(false);
+
+  useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
 
   // Abort in-flight requests so rapid drags don't race each other.
   const abortRef = useRef<AbortController | null>(null);

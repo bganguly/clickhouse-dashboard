@@ -1,6 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+
+function PerfTimer({ ms, settled }: { ms: number | null; settled: boolean }) {
+  if (ms === null) return null;
+  const label = settled ? `↓ ${ms} ms` : `⏱ ${ms} ms`;
+  const style = settled
+    ? { background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.28)", color: "#4ade80" }
+    : { background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.28)", color: "#fbbf24" };
+  return (
+    <span className="inline-flex items-center text-[11px] font-mono px-2 py-0.5 rounded-full tabular-nums" style={style}>
+      {label}
+    </span>
+  );
+}
 import Chart from "@/components/Chart";
 import SearchTable, { type SearchRow } from "@/components/SearchTable";
 import LiveFeed, { type LiveEvent } from "@/components/LiveFeed";
@@ -117,6 +130,39 @@ export default function Dashboard() {
   const [lastSseOrder, setLastSseOrder] = useState<{ categorySlug: string; placedAt: string } | null>(null);
   const [lastOrder, setLastOrder] = useState<{ id?: string | number; date?: string; seq: number } | null>(null);
 
+  const [chartLoading, setChartLoading] = useState(false);
+  const [tableLoading, setTableLoading] = useState(false);
+  const [perfMs, setPerfMs] = useState<number | null>(null);
+  const [perfSettled, setPerfSettled] = useState(false);
+  const perfStart = useRef<number>(0);
+  const perfInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const perfHide = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const perfActive = useRef(false);
+
+  const handleChartLoading = useCallback((v: boolean) => setChartLoading(v), []);
+  const handleTableLoading = useCallback((v: boolean) => setTableLoading(v), []);
+
+  useEffect(() => {
+    const anyLoading = chartLoading || tableLoading;
+    if (anyLoading && !perfActive.current) {
+      perfActive.current = true;
+      perfStart.current = performance.now();
+      setPerfSettled(false);
+      if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
+      if (perfInterval.current) clearInterval(perfInterval.current);
+      perfInterval.current = setInterval(() => {
+        setPerfMs(Math.round(performance.now() - perfStart.current));
+      }, 16);
+    } else if (!anyLoading && perfActive.current) {
+      perfActive.current = false;
+      if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
+      const ms = Math.round(performance.now() - perfStart.current);
+      setPerfMs(ms);
+      setPerfSettled(true);
+      perfHide.current = setTimeout(() => { setPerfMs(null); setPerfSettled(false); }, 3500);
+    }
+  }, [chartLoading, tableLoading]);
+
   const handleEvent = useCallback((event: LiveEvent) => {
     if (event.id == null) return;
     const id = event.id;
@@ -183,6 +229,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <PerfTimer ms={perfMs} settled={perfSettled} />
             <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
               <input
                 type="checkbox"
@@ -230,6 +277,7 @@ export default function Dashboard() {
                   onRangeChange={(range) => setFilters((f) => ({ ...f, from: range.from, to: range.to }))}
                   onTotalChange={setChartTotal}
                   externalTotal={chartTotal}
+                  onLoadingChange={handleChartLoading}
                 />
                 <SearchTable
                   refreshSignal={refreshSignal}
@@ -240,6 +288,7 @@ export default function Dashboard() {
                   highlightKey={lastOrder?.seq}
                   externalTotal={chartTotal}
                   onCountChange={(n) => setChartTotal((c) => c ?? n)}
+                  onLoadingChange={handleTableLoading}
                 />
               </div>
               {liveEnabled && (
