@@ -416,6 +416,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       categoryName: c.categoryName,
       totalItems: c.totalItems,
       totalRevenue: c.totalRevenue,
+      searchText,
     }));
     await insert("order_category_facts", factRows);
 

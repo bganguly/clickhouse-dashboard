@@ -353,6 +353,69 @@ _poll_materialize_idx() {
   done
 }
 
+_poll_ocf_mutation() {
+  local t0 elapsed row is_done left failed
+  t0=$(date +%s)
+  for _w in $(seq 1 12); do
+    sleep 5
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    [[ -n "$row" ]] && break
+    printf '\r  waiting for OCF UPDATE mutation to register (%ds)...' $(( _w * 5 ))
+  done
+  printf '\n'
+  while true; do
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    is_done="$(printf '%s' "$row" | cut -f1)"
+    left="$(printf '%s' "$row" | cut -f2)"
+    failed="$(printf '%s' "$row" | cut -f3)"
+    if [[ "$is_done" == "1" ]]; then
+      [[ -n "$failed" ]] && { printf '\n  ERROR: OCF mutation failed on part: %s\n' "$failed"; return 1; }
+      printf '\r  done — order_category_facts.searchText backfill complete.\n'; return 0
+    fi
+    elapsed=$(( $(date +%s) - t0 ))
+    printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
+    sleep 10
+  done
+}
+
+_poll_ocf_idx() {
+  local t0 elapsed total left row is_done failed
+  t0=$(date +%s); total=0
+  for _w in $(seq 1 12); do
+    sleep 5
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%MATERIALIZE INDEX%idx_ocf_search%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    [[ -n "$row" ]] && break
+    printf '\r  waiting for idx_ocf_search mutation to register (%ds)...' $(( _w * 5 ))
+  done
+  printf '\n'
+  while true; do
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%MATERIALIZE INDEX%idx_ocf_search%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    is_done="$(printf '%s' "$row" | cut -f1)"
+    left="$(printf '%s' "$row" | cut -f2)"
+    failed="$(printf '%s' "$row" | cut -f3)"
+    if [[ "$is_done" == "1" ]]; then
+      [[ -n "$failed" ]] && { printf '\n  ERROR: OCF index mutation failed on part: %s\n' "$failed"; return 1; }
+      printf '\r  done — idx_ocf_search materialized.\n'; return 0
+    fi
+    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
+    elapsed=$(( $(date +%s) - t0 ))
+    printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
+    sleep 10
+  done
+}
+
 printf '[deploy] Checking searchText case...\n'
 _SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
@@ -409,6 +472,33 @@ if [[ "${_FACTS:-0}" -eq 0 ]]; then
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, i.categoryId, i.categoryName, i.quantity, toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2) FROM orders AS o INNER JOIN order_items AS i ON i.orderId = o.orderId" \
     2>/dev/null || true
+fi
+
+printf '[deploy] Checking order_category_facts.searchText backfill...\n'
+_OCF_ST="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT if(count() > 0, 1, 0) FROM (SELECT 1 FROM order_category_facts WHERE searchText != '' LIMIT 1)" \
+  2>/dev/null || echo 0)"
+if [[ "${_OCF_ST:-0}" -eq 0 && "${_FACTS:-0}" -gt 0 ]]; then
+  printf '  Backfilling order_category_facts.searchText from orders...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+    --data-binary "ALTER TABLE order_category_facts UPDATE searchText = (SELECT searchText FROM orders WHERE orders.orderId = order_category_facts.orderId) WHERE searchText = ''" \
+    2>/dev/null || true
+  _poll_ocf_mutation
+fi
+
+printf '[deploy] Checking order_category_facts search index...\n'
+_OCF_IDX="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT countIf(has(skip_indices, 'idx_ocf_search')), count() FROM system.parts WHERE table='order_category_facts' AND active=1" \
+  2>/dev/null || echo '0	1')"
+_OCF_IDX_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f1)"
+_OCF_TOT_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f2)"
+if [[ "${_OCF_TOT_PARTS:-0}" -gt 0 && "${_OCF_IDX_PARTS:-0}" -ne "${_OCF_TOT_PARTS}" ]]; then
+  printf '  %s / %s parts indexed — materializing idx_ocf_search...\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+    --data-binary "ALTER TABLE order_category_facts MATERIALIZE INDEX idx_ocf_search" 2>/dev/null || true
+  _poll_ocf_idx
 fi
 
 CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"

@@ -82,7 +82,11 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
         else {
           const r3 = await factFilterPath(query_in);
           if (r3) { aggPath = "factFilter"; rows = r3; }
-          else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+          else {
+            const r4 = await searchFactPath(query_in);
+            if (r4) { aggPath = "searchFact"; rows = r4; }
+            else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+          }
         }
       }
     }
@@ -258,6 +262,44 @@ async function customerMultiTokenSummaryPath(input: AggregateQueryInput): Promis
   );
 
   return rows.length > 0 ? rows : null;
+}
+
+async function searchFactPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
+  const q = input.q?.trim();
+  if (!q) return null;
+
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const clauses = [`date >= {from: Date}`, `date <= {to: Date}`];
+  const params: Record<string, unknown> = { from: input.from, to: input.to };
+
+  let pi = 0;
+  for (const tok of tokens) {
+    const k = `stok${pi++}`;
+    clauses.push(`hasToken(searchText, {${k}: String})`);
+    params[k] = tok.toLowerCase();
+  }
+
+  const statuses = normalizeStatusList(input.status);
+  const regionCodes = parseCsv(input.regionCode);
+  if (statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = statuses; }
+  if (regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = regionCodes; }
+  if (input.minTotal != null) { clauses.push(`orderTotal >= {minTotal: Float64}`); params["minTotal"] = input.minTotal; }
+  if (input.maxTotal != null) { clauses.push(`orderTotal <= {maxTotal: Float64}`); params["maxTotal"] = input.maxTotal; }
+
+  return query<AggRow>(
+    `SELECT
+       toString(date)    AS day,
+       categoryName      AS category,
+       count()           AS total_orders,
+       sum(totalItems)   AS total_items,
+       sum(totalRevenue) AS total_revenue
+     FROM order_category_facts
+     WHERE ${clauses.join(" AND ")}
+     GROUP BY date, categoryName
+     ORDER BY date ASC, categoryName ASC`,
+    params,
+    AGG_CACHE,
+  );
 }
 
 async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {

@@ -211,6 +211,10 @@ export const DDL_STATEMENTS = [
   `ALTER TABLE orders ADD COLUMN IF NOT EXISTS itemCount UInt32 DEFAULT 0`,
 
   `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_fulltext searchText TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 1`,
+
+  `ALTER TABLE order_category_facts ADD COLUMN IF NOT EXISTS searchText String DEFAULT ''`,
+
+  `ALTER TABLE order_category_facts ADD INDEX IF NOT EXISTS idx_ocf_search searchText TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 1`,
 ];
 
 export async function runMigrations(): Promise<void> {
