@@ -148,7 +148,7 @@ _ch <<SQL
 INSERT INTO orders
   (orderId, customerId, regionId, regionCode,
    customerFirstName, customerLastName, customerEmail,
-   status, total, currency, notes, searchText, placedAt)
+   status, total, currency, notes, searchText, placedAt, itemCount)
 SELECT
   number + 1                                                                                       AS orderId,
   cust_id,
@@ -163,7 +163,7 @@ SELECT
   'USD'                                                                                            AS currency,
   concat('order ', toString(number + 1))                                                           AS notes,
   concat(
-    customerFirstName, ' ', customerLastName, ' ', toString(orderId),
+    lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId),
     ' ', notes,
     if(length(customerFirstName) > 3,
       concat(' ', arrayStringConcat(
@@ -186,7 +186,8 @@ SELECT
       ''
     )
   )                                                                                                AS searchText,
-  toDateTime64(now64() - toIntervalSecond(toUInt64(rand()) % toUInt64(${DAYS_BACK} * 86400)), 3, 'UTC') AS placedAt
+  toDateTime64(now64() - toIntervalSecond(toUInt64(rand()) % toUInt64(${DAYS_BACK} * 86400)), 3, 'UTC') AS placedAt,
+  toUInt32(1)                                                                                           AS itemCount
 FROM (
   SELECT
     number,

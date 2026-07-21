@@ -116,7 +116,7 @@ function buildWhereParts(
   let pi = 0;
   for (const tok of searchTokens) {
     const k = `stok${pi++}`;
-    clauses.push(`hasToken(lower(searchText), {${k}: String})`);
+    clauses.push(`hasToken(searchText, {${k}: String})`);
     params[k] = tok.toLowerCase();
   }
   if (f.statuses.length) {
@@ -150,6 +150,37 @@ function whereSQL(clauses: string[]): string {
   return clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 }
 
+type OrderRow = {
+  orderId: string; status: string; total: string; currency: string; notes: string | null;
+  placedAt: string; customerId: string; regionId: string; regionCode: string;
+  customerFirstName: string; customerLastName: string; customerEmail: string;
+  itemCount: string;
+};
+
+function rowToDTO(r: OrderRow): OrderDTO {
+  return {
+    id: Number(r.orderId),
+    status: r.status as OrderStatus,
+    total: Number(r.total),
+    currency: r.currency,
+    notes: r.notes,
+    placedAt: new Date(r.placedAt).toISOString(),
+    customer: {
+      id: Number(r.customerId),
+      email: r.customerEmail,
+      firstName: r.customerFirstName,
+      lastName: r.customerLastName,
+    },
+    region: { id: Number(r.regionId), code: r.regionCode, name: r.regionCode },
+    items: new Array(Number(r.itemCount)) as unknown as OrderItemDTO[],
+  };
+}
+
+const ORDER_SELECT = `SELECT orderId, status, total, currency, notes, placedAt,
+  customerId, regionId, regionCode,
+  customerFirstName, customerLastName, customerEmail, itemCount
+FROM orders`;
+
 export async function listOrders(input: OrderListInput): Promise<OrderListResult> {
   const page = Math.max(Math.trunc(input.page ?? 1) || 1, 1);
   const pageSize = Math.min(
@@ -172,14 +203,13 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     const sortCol = SORT_COL[sort];
     const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
-    const idRows = await query<{ orderId: string }>(
-      `SELECT orderId FROM orders ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+    const orderRows = await query<OrderRow>(
+      `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
       { ...params, lim: pageSize, off: offset },
       SEARCH_CACHE,
     );
 
-    const ids = idRows.map((r) => Number(r.orderId));
-    const data = await hydrateOrders(ids);
+    const data = orderRows.map(rowToDTO);
     const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
     if (input.facets) result.facets = await computeFacets(where, params);
     searchCacheSet(cacheKey, result);
@@ -214,15 +244,13 @@ export async function listOrdersByCursor(
     const where = whereSQL(allClauses);
     const dirSQL = isNext ? "DESC" : "ASC";
 
-    const pageRows = await query<{ orderId: string }>(
-      `SELECT orderId FROM orders ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
+    const pageRows = await query<OrderRow>(
+      `${ORDER_SELECT} ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
       { ...allParams, lim: pageSize },
       SEARCH_CACHE,
     );
 
-    const idRows = isNext ? pageRows : pageRows.reverse();
-    const ids = idRows.map((r) => Number(r.orderId));
-    const data = await hydrateOrders(ids);
+    const data = (isNext ? pageRows : pageRows.reverse()).map(rowToDTO);
     const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
     if (input.facets) result.facets = await computeFacets(whereSQL(baseClauses), baseParams);
     return result;
@@ -231,63 +259,6 @@ export async function listOrdersByCursor(
   }
 }
 
-async function hydrateOrders(ids: number[]): Promise<OrderDTO[]> {
-  if (ids.length === 0) return [];
-  const idList = ids.join(",");
-
-  const [orderRows, itemRows] = await Promise.all([
-    query<{
-      orderId: string; status: string; total: string; currency: string; notes: string | null;
-      placedAt: string; customerId: string; regionId: string; regionCode: string;
-      customerFirstName: string; customerLastName: string; customerEmail: string;
-    }>(`SELECT orderId, status, total, currency, notes, placedAt,
-              customerId, regionId, regionCode,
-              customerFirstName, customerLastName, customerEmail
-       FROM orders WHERE orderId IN (${idList})`),
-    query<{
-      orderId: string; itemId: string; productId: string; productName: string;
-      productSku: string; quantity: string; unitPrice: string; discount: string;
-    }>(`SELECT orderId, itemId, productId, productName, productSku,
-              quantity, unitPrice, discount
-       FROM order_items WHERE orderId IN (${idList}) ORDER BY orderId, itemId`),
-  ]);
-
-  const itemsByOrder = new Map<number, OrderItemDTO[]>();
-  for (const r of itemRows) {
-    const oid = Number(r.orderId);
-    if (!itemsByOrder.has(oid)) itemsByOrder.set(oid, []);
-    itemsByOrder.get(oid)!.push({
-      id: Number(r.itemId),
-      productId: Number(r.productId),
-      quantity: Number(r.quantity),
-      unitPrice: Number(r.unitPrice),
-      discount: Number(r.discount),
-      product: { id: Number(r.productId), sku: r.productSku, name: r.productName },
-    });
-  }
-
-  const orderMap = new Map(orderRows.map((r) => [Number(r.orderId), r]));
-  return ids.flatMap((id) => {
-    const r = orderMap.get(id);
-    if (!r) return [];
-    return [{
-      id,
-      status: r.status as OrderStatus,
-      total: Number(r.total),
-      currency: r.currency,
-      notes: r.notes,
-      placedAt: new Date(r.placedAt).toISOString(),
-      customer: {
-        id: Number(r.customerId),
-        email: r.customerEmail,
-        firstName: r.customerFirstName,
-        lastName: r.customerLastName,
-      },
-      region: { id: Number(r.regionId), code: r.regionCode, name: r.regionCode },
-      items: itemsByOrder.get(id) ?? [],
-    }];
-  });
-}
 
 async function computeFacets(
   where: string,
@@ -319,9 +290,9 @@ function genId(): number {
 }
 
 function prefixTokens(word: string, minLen = 3): string {
-  if (word.length <= minLen) return "";
+  if (word.length < minLen) return "";
   const out: string[] = [];
-  for (let i = minLen; i < word.length; i++) {
+  for (let i = minLen; i <= word.length; i++) {
     out.push(word.slice(0, i).toLowerCase());
   }
   return out.join(" ");
@@ -333,7 +304,7 @@ function buildSearchText(
   orderId: number,
   notes?: string | null,
 ): string {
-  const parts = [firstName, lastName, String(orderId)];
+  const parts = [firstName.toLowerCase(), lastName.toLowerCase(), String(orderId)];
   if (notes) parts.push(notes);
   const prefs = [prefixTokens(firstName), prefixTokens(lastName)].filter(Boolean);
   if (prefs.length) parts.push(...prefs);
@@ -398,6 +369,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       notes: input.notes ?? null,
       searchText,
       placedAt,
+      itemCount: input.items.length,
     }]);
 
     const itemRows = input.items.map((it) => {
