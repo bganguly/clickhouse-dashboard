@@ -6,6 +6,37 @@ set -euo pipefail
 CH_PASS="$CLICKHOUSE_PASSWORD"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+_poll_update_mutation() {
+  local t0 elapsed row is_done left failed
+  t0=$(date +%s)
+  for _w in $(seq 1 12); do
+    sleep 5
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    [[ -n "$row" ]] && break
+    printf '\r  waiting for UPDATE mutation to register (%ds)...' $(( _w * 5 ))
+  done
+  printf '\n'
+  while true; do
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    is_done="$(printf '%s' "$row" | cut -f1)"
+    left="$(printf '%s' "$row" | cut -f2)"
+    failed="$(printf '%s' "$row" | cut -f3)"
+    if [[ "$is_done" == "1" ]]; then
+      [[ -n "$failed" ]] && { printf '\n  ERROR: UPDATE mutation failed on part: %s\n' "$failed"; return 1; }
+      printf '\r  done — searchText backfill complete.\n'; return 0
+    fi
+    elapsed=$(( $(date +%s) - t0 ))
+    printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
+    sleep 10
+  done
+}
+
 _poll_materialize_idx() {
   local t0 elapsed total left done_parts pct eta row is_done failed
   t0=$(date +%s); total=0
@@ -101,16 +132,17 @@ if [[ "${_NAME_UNIQ:-0}" -lt 50 ]]; then
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
 fi
 
-printf '[post-deploy] Checking searchText format...\n'
+printf '[post-deploy] Checking searchText case...\n'
 _SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT if(positionCaseInsensitive(searchText, '@') > 0, 1, 0) FROM orders LIMIT 1" \
+  --data-binary "SELECT if(lower(customerLastName) != customerLastName, 1, 0) FROM orders LIMIT 1" \
   2>/dev/null || echo 0)"
 if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
-  printf '  Legacy email format — submitting UPDATE...\n'
+  printf '  Mixed-case names detected — submitting searchText UPDATE...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
-    --data-binary "ALTER TABLE orders UPDATE searchText = concat(customerFirstName, ' ', customerLastName, ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE positionCaseInsensitive(searchText, '@') > 0" \
+    --data-binary "ALTER TABLE orders UPDATE searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE lower(customerLastName) != customerLastName" \
     2>/dev/null || true
+  _poll_update_mutation
 fi
 
 printf '[post-deploy] Checking search index...\n'
