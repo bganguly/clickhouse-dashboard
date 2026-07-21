@@ -61,12 +61,25 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
   if (cached) return cached;
 
   try {
-    const rows = canUseDailySummary(query_in)
-      ? await fastPath(query_in)
-      : (await customerMultiTokenSummaryPath(query_in)) ??
-        (await filterSummaryPath(query_in)) ??
-        (await factFilterPath(query_in)) ??
-        (await slowPath(query_in));
+    const t0 = Date.now();
+    let aggPath = "fastPath";
+    let rows: AggRow[];
+    if (canUseDailySummary(query_in)) {
+      rows = await fastPath(query_in);
+    } else {
+      const r1 = await customerMultiTokenSummaryPath(query_in);
+      if (r1) { aggPath = "customerMultiToken"; rows = r1; }
+      else {
+        const r2 = await filterSummaryPath(query_in);
+        if (r2) { aggPath = "filterSummary"; rows = r2; }
+        else {
+          const r3 = await factFilterPath(query_in);
+          if (r3) { aggPath = "factFilter"; rows = r3; }
+          else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+        }
+      }
+    }
+    console.log(`[agg] path=${aggPath} ms=${Date.now() - t0} from=${query_in.from} to=${query_in.to} q=${query_in.q ?? ""}`);
 
     const result = rowsToDailyAggregates(rows, topN);
     await aggCacheSet(cacheKey, result);

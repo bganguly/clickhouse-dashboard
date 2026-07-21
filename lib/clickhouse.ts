@@ -24,8 +24,13 @@ export async function query<T = Record<string, unknown>>(
   params?: Record<string, unknown>,
   settings?: ClickHouseSettings,
 ): Promise<T[]> {
+  const t0 = Date.now();
   const rs = await ch.query({ query: sql, format: "JSONEachRow", query_params: params, clickhouse_settings: settings });
-  return rs.json<T>();
+  const rows = await rs.json<T>();
+  const ms = Date.now() - t0;
+  const label = sql.trim().replace(/\s+/g, " ").slice(0, 120);
+  console.log(`[ch] ${ms}ms | ${label}`);
+  return rows;
 }
 
 export async function execute(sql: string, params?: Record<string, unknown>): Promise<void> {

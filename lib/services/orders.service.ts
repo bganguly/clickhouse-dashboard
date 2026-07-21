@@ -197,6 +197,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   if (cached) return cached;
 
   try {
+    const t0 = Date.now();
     const filters = await resolveFilters(input);
     const { clauses, params } = buildWhereParts(tokens, filters);
     const where = whereSQL(clauses);
@@ -208,6 +209,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       { ...params, lim: pageSize, off: offset },
       SEARCH_CACHE,
     );
+    console.log(`[orders] listOrders ms=${Date.now() - t0} from=${input.from ?? ""} to=${input.to ?? ""} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
     const data = orderRows.map(rowToDTO);
     const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
