@@ -480,10 +480,18 @@ _OCF_ST="$(curl -sf -u "default:${CH_PASS}" \
   --data-binary "SELECT if(count() > 0, 1, 0) FROM (SELECT 1 FROM order_category_facts WHERE searchText != '' LIMIT 1)" \
   2>/dev/null || echo 0)"
 if [[ "${_OCF_ST:-0}" -eq 0 && "${_FACTS:-0}" -gt 0 ]]; then
-  printf '  Backfilling order_category_facts.searchText from orders...\n'
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
-    --data-binary "ALTER TABLE order_category_facts UPDATE searchText = (SELECT searchText FROM orders WHERE orders.orderId = order_category_facts.orderId) WHERE searchText = ''" \
-    2>/dev/null || true
+  _OCF_MUT_RUNNING="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT count() FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' AND is_done=0" \
+    2>/dev/null || echo 0)"
+  if [[ "${_OCF_MUT_RUNNING:-0}" -gt 0 ]]; then
+    printf '  OCF searchText mutation already in-flight — waiting...\n'
+  else
+    printf '  Backfilling order_category_facts.searchText from orders...\n'
+    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+      --data-binary "ALTER TABLE order_category_facts UPDATE searchText = (SELECT searchText FROM orders WHERE orders.orderId = order_category_facts.orderId LIMIT 1) WHERE searchText = '' SETTINGS max_execution_time=0" \
+      2>/dev/null || true
+  fi
   _poll_ocf_mutation
 fi
 

@@ -286,7 +286,7 @@ async function searchFactPath(input: AggregateQueryInput): Promise<AggRow[] | nu
   if (input.minTotal != null) { clauses.push(`orderTotal >= {minTotal: Float64}`); params["minTotal"] = input.minTotal; }
   if (input.maxTotal != null) { clauses.push(`orderTotal <= {maxTotal: Float64}`); params["maxTotal"] = input.maxTotal; }
 
-  return query<AggRow>(
+  const rows = await query<AggRow>(
     `SELECT
        toString(date)    AS day,
        categoryName      AS category,
@@ -300,6 +300,7 @@ async function searchFactPath(input: AggregateQueryInput): Promise<AggRow[] | nu
     params,
     AGG_CACHE,
   );
+  return rows.length > 0 ? rows : null;
 }
 
 async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
