@@ -154,13 +154,14 @@ printf '  Endpoint: %s\n' "$CLICKHOUSE_URL"
 export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
 export TF_VAR_clickhouse_password="$CH_PASS"
 
-printf '[3/6] Running ClickHouse migrations...\n'
-cd "$ROOT_DIR"
-npm install --prefer-offline --silent 2>/dev/null || npm install --silent
-CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS" \
-  npx tsx -e "import { runMigrations } from './lib/schema.ts'; runMigrations().then(() => { console.log('  Migrations applied.'); process.exit(0); }).catch(e => { console.error('  Migration error:', e.message); process.exit(1); })"
+if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+  printf '  Syncing ClickHouse credentials to GitHub Actions secrets...\n'
+  printf '%s' "$CLICKHOUSE_URL"             | gh secret set CLICKHOUSE_URL      --repo "$_GH_REPO"
+  printf '%s' "${CLICKHOUSE_USER:-default}" | gh secret set CLICKHOUSE_USER     --repo "$_GH_REPO"
+  printf '%s' "$CH_PASS"                    | gh secret set CLICKHOUSE_PASSWORD --repo "$_GH_REPO"
+fi
 
-printf '[4/6] Provisioning infrastructure (terraform apply)...\n'
+printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
 cd "$INFRA_DIR"
 terraform init -input=false -upgrade >/dev/null
 printf '  Pruning stale state...\n'
@@ -206,7 +207,7 @@ else
   FIRST_DEPLOY=0
 fi
 
-printf '[5/6] Verifying image in ECR...\n'
+printf '[4/5] Verifying image in ECR...\n'
 _REMOTE_SHA="$(git -C "$ROOT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7)"
 _DEPLOY_TAG="${_REMOTE_SHA:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")}"
 _ecr_image_exists() {
@@ -242,7 +243,7 @@ if [[ "$_DEPLOY_TAG" != "latest" ]]; then
     && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
 fi
 
-printf '[6/6] Deploying to App Runner...\n'
+printf '[5/5] Deploying to App Runner...\n'
 cd "$INFRA_DIR"
 _AR_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
 if [[ -n "$_AR_ARN" ]]; then

@@ -31,3 +31,12 @@ jobs:
           docker build -t "$REGISTRY/$REPOSITORY:latest" -t "$REGISTRY/$REPOSITORY:$SHORT_SHA" .
           docker push "$REGISTRY/$REPOSITORY:latest"
           docker push "$REGISTRY/$REPOSITORY:$SHORT_SHA"
+
+      - name: Run ClickHouse migrations
+        env:
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+        run: |
+          npm install --prefer-offline || npm install
+          npx tsx -e "import { runMigrations } from './lib/schema.ts'; runMigrations().then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })"
