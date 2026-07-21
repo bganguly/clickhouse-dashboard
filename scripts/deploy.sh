@@ -336,12 +336,12 @@ _poll_materialize_idx() {
 printf '[deploy] Checking searchText case...\n'
 _SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT if(lower(customerLastName) != customerLastName, 1, 0) FROM orders LIMIT 1" \
+  --data-binary "SELECT if(lower(customerFirstName) != substring(searchText, 1, length(customerFirstName)), 1, 0) FROM orders LIMIT 1" \
   2>/dev/null || echo 0)"
 if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
-  printf '  Mixed-case names detected — submitting searchText UPDATE...\n'
+  printf '  Mixed-case searchText detected — submitting UPDATE...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
-    --data-binary "ALTER TABLE orders UPDATE searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE lower(customerLastName) != customerLastName" \
+    --data-binary "ALTER TABLE orders UPDATE searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE lower(customerFirstName) != substring(searchText, 1, length(customerFirstName))" \
     2>/dev/null || true
   _poll_update_mutation
   printf '  Re-baking S3 dump with corrected data...\n'
