@@ -168,7 +168,7 @@ export default function Dashboard() {
       <main className="w-full px-5 py-8">
         <header className="mb-6 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">ClickHouse Dashboard</h1>
             <p className="text-sm text-gray-500">
               Live aggregates, search, and event stream.
             </p>

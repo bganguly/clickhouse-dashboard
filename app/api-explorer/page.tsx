@@ -726,10 +726,10 @@ export default function ApiExplorer() {
             Portfolio
           </a>
           <div className="flex items-center gap-3">
-            <span className="text-xs" style={{ color:"#3f3f46" }}>Next.js Dashboard</span>
+            <span className="text-xs" style={{ color:"#3f3f46" }}>ClickHouse Dashboard</span>
             <span className="text-[11px] px-2 py-0.5 rounded-full font-medium"
               style={{ background:"rgba(99,102,241,0.12)", border:"1px solid rgba(99,102,241,0.3)", color:"#a5b4fc" }}>
-              Next.js 16 · Prisma · AWS
+              Next.js 16 · ClickHouse Cloud · AWS
             </span>
           </div>
         </div>
@@ -738,9 +738,9 @@ export default function ApiExplorer() {
       {/* Hero */}
       <section className="pt-28 pb-10 px-6 max-w-5xl mx-auto">
         <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color:"#818cf8" }}>API Explorer</p>
-        <h1 className="text-2xl font-bold mb-2" style={{ color:"#f4f4f5" }}>Live API — Next.js Dashboard</h1>
+        <h1 className="text-2xl font-bold mb-2" style={{ color:"#f4f4f5" }}>Live API — ClickHouse Dashboard</h1>
         <p className="text-sm max-w-xl" style={{ color:"#71717a" }}>
-          Run real requests against the Next.js 16 API routes backed by Prisma and PostgreSQL 16 on AWS RDS.
+          Run real requests against the Next.js 16 API routes backed by ClickHouse Cloud on AWS.
         </p>
         <div className="flex items-center gap-2 mt-4">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono"
