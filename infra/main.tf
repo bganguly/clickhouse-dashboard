@@ -68,6 +68,7 @@ resource "aws_apprunner_service" "app" {
           CLICKHOUSE_URL      = var.clickhouse_url
           CLICKHOUSE_USER     = "default"
           CLICKHOUSE_PASSWORD = var.clickhouse_password
+          REDIS_URL           = var.redis_url
         }
       }
     }
@@ -182,10 +183,10 @@ resource "aws_cloudfront_distribution" "app" {
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
     default_ttl            = 0
-    max_ttl                = 0
+    max_ttl                = 300
     forwarded_values {
       query_string = true
-      headers      = ["*"]
+      headers      = ["Authorization", "Content-Type", "Origin", "X-Forwarded-For", "Accept"]
       cookies { forward = "all" }
     }
   }
@@ -200,7 +201,7 @@ resource "aws_cloudfront_distribution" "app" {
     max_ttl                = 0
     forwarded_values {
       query_string = true
-      headers      = ["*"]
+      headers      = ["Accept", "Accept-Language", "Origin"]
       cookies { forward = "all" }
     }
   }

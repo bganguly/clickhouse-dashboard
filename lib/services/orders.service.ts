@@ -193,7 +193,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const offset = (page - 1) * pageSize;
 
   const cacheKey = `rows:${JSON.stringify({ q: input.q, page, pageSize, sort, dir, status: input.status, regionCode: input.regionCode, from: input.from, to: input.to, minTotal: input.minTotal, maxTotal: input.maxTotal })}`;
-  const cached = searchCacheGet<OrderListResult>(cacheKey);
+  const cached = await searchCacheGet<OrderListResult>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -212,7 +212,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     const data = orderRows.map(rowToDTO);
     const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
     if (input.facets) result.facets = await computeFacets(where, params);
-    searchCacheSet(cacheKey, result);
+    await searchCacheSet(cacheKey, result);
     return result;
   } catch (err) {
     mapDbError(err, "listOrders");
@@ -426,8 +426,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       categorySlug: firstCategorySlug,
     }).catch(() => {});
 
-    invalidateAggregatesCache();
-    invalidateSearchCache();
+    await Promise.all([invalidateAggregatesCache(), invalidateSearchCache()]);
 
     return { id: orderId, status: "PENDING", total, placedAt: new Date(placedAt).toISOString() };
   } catch (err) {
@@ -445,12 +444,18 @@ export function isPureDateRangeQuery(q: string | undefined, filters: ResolvedFil
   );
 }
 
+void (process.env.CLICKHOUSE_URL && (async () => {
+  try {
+    await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
+  } catch {}
+})());
+
 export async function getOrderCount(
   q: string | undefined,
   filters: ResolvedFilters,
 ): Promise<number> {
   const cacheKey = `count:${JSON.stringify({ q, ...filters })}`;
-  const cached = searchCacheGet<number>(cacheKey);
+  const cached = await searchCacheGet<number>(cacheKey);
   if (cached != null) return cached;
 
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);
@@ -462,6 +467,6 @@ export async function getOrderCount(
     SEARCH_CACHE,
   );
   const total = Number(rows[0]?.n ?? 0);
-  searchCacheSet(cacheKey, total);
+  await searchCacheSet(cacheKey, total);
   return total;
 }

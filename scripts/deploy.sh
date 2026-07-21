@@ -161,6 +161,26 @@ if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
   printf '%s' "$CH_PASS"                    | gh secret set CLICKHOUSE_PASSWORD --repo "$_GH_REPO"
 fi
 
+REDIS_CREDS_FILE="$ROOT_DIR/.redis-creds"
+if [[ -n "${REDIS_URL:-}" ]]; then
+  printf '  Using REDIS_URL from environment.\n'
+elif [[ -f "$REDIS_CREDS_FILE" ]]; then
+  source "$REDIS_CREDS_FILE"
+  printf '  Loaded Redis URL from .redis-creds.\n'
+else
+  printf 'Redis URL (rediss://default:TOKEN@host:6380, or press Enter to skip): '
+  read -rs REDIS_URL; printf '\n'
+  if [[ -n "$REDIS_URL" ]]; then
+    printf 'REDIS_URL=%s\n' "$REDIS_URL" > "$REDIS_CREDS_FILE"
+    chmod 600 "$REDIS_CREDS_FILE"
+    printf '  Saved to .redis-creds\n'
+  fi
+fi
+export TF_VAR_redis_url="${REDIS_URL:-}"
+if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${REDIS_URL:-}" ]]; then
+  printf '%s' "$REDIS_URL" | gh secret set REDIS_URL --repo "$_GH_REPO"
+fi
+
 printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
 cd "$INFRA_DIR"
 terraform init -input=false -upgrade >/dev/null

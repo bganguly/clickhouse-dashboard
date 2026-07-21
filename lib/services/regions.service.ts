@@ -12,3 +12,7 @@ export async function listRegions(): Promise<RegionOption[]> {
     mapDbError(err, "listRegions");
   }
 }
+
+void (process.env.CLICKHOUSE_URL && (async () => {
+  try { await listRegions(); } catch {}
+})());

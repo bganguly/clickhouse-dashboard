@@ -21,3 +21,10 @@ variable "clickhouse_password" {
   type        = string
   sensitive   = true
 }
+
+variable "redis_url" {
+  description = "Redis connection URL (rediss://default:TOKEN@host:6380). Leave empty to use in-process cache."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

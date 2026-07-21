@@ -53,7 +53,9 @@ export async function GET(req: NextRequest) {
           cursorDir: cursorDir!,
         })
       : await listOrders(baseInput);
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
+    });
   } catch (err) {
     return toErrorResponse(err);
   }

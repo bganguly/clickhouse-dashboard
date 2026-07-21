@@ -57,7 +57,7 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
       : DEFAULT_TOP_CATEGORIES;
 
   const cacheKey = `data:${JSON.stringify(query_in)}`;
-  const cached = aggCacheGet<DailyAggregate[]>(cacheKey);
+  const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
   if (cached) return cached;
 
   try {
@@ -69,7 +69,7 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
         (await slowPath(query_in));
 
     const result = rowsToDailyAggregates(rows, topN);
-    aggCacheSet(cacheKey, result);
+    await aggCacheSet(cacheKey, result);
     return result;
   } catch (err) {
     mapDbError(err, "getDailyAggregates");
@@ -83,13 +83,13 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
   };
 
   const inProcKey = `total:${JSON.stringify(query_in)}`;
-  const cachedTotal = aggCacheGet<number>(inProcKey);
+  const cachedTotal = await aggCacheGet<number>(inProcKey);
   if (cachedTotal != null) return cachedTotal;
 
   try {
     const filters = await resolveFilters(query_in);
     const total = await getOrderCount(query_in.q ?? undefined, filters);
-    aggCacheSet(inProcKey, total);
+    await aggCacheSet(inProcKey, total);
     return total;
   } catch (err) {
     mapDbError(err, "getExactAggregateTotal");

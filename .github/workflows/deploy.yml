@@ -37,6 +37,7 @@ jobs:
           CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
           CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
         run: |
           npm install --prefer-offline || npm install
           npx tsx -e "import { runMigrations } from './lib/schema.ts'; runMigrations().then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })"

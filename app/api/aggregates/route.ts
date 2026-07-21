@@ -36,6 +36,8 @@ export async function GET(req: NextRequest) {
       data,
       totalOrders: approximate ? 10_000 : totalOrders,
       ...(approximate ? { totalOrdersApproximate: true } : {}),
+    }, {
+      headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
     });
   } catch (err) {
     if (isAppError(err)) {
