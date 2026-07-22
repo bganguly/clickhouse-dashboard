@@ -312,28 +312,28 @@ async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
   let pi = 0;
   for (const tok of tokens) {
     const k = `stok${pi++}`;
-    clauses.push(`(hasToken(o.searchText, {${k}: String}) OR lower(o.notes) LIKE {${k}like: String})`);
+    clauses.push(`(hasToken(searchText, {${k}: String}) OR lower(notes) LIKE {${k}like: String})`);
     params[k] = tok.toLowerCase();
     params[`${k}like`] = `%${tok.toLowerCase()}%`;
   }
-  if (filters.statuses.length) { clauses.push(`o.status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
-  if (filters.regionCodes.length) { clauses.push(`o.regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
-  if (filters.from) { clauses.push(`o.placedAt >= {from: DateTime64(3)}`); params["from"] = filters.from; }
-  if (filters.to) { clauses.push(`o.placedAt <= {to: DateTime64(3)}`); params["to"] = filters.to; }
-  if (filters.minTotal !== null) { clauses.push(`o.total >= {minTotal: Float64}`); params["minTotal"] = filters.minTotal; }
-  if (filters.maxTotal !== null) { clauses.push(`o.total <= {maxTotal: Float64}`); params["maxTotal"] = filters.maxTotal; }
+  if (filters.statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
+  if (filters.regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
+  if (filters.from) { clauses.push(`placedAt >= {from: DateTime64(3)}`); params["from"] = filters.from; }
+  if (filters.to) { clauses.push(`placedAt <= {to: DateTime64(3)}`); params["to"] = filters.to; }
+  if (filters.minTotal !== null) { clauses.push(`total >= {minTotal: Float64}`); params["minTotal"] = filters.minTotal; }
+  if (filters.maxTotal !== null) { clauses.push(`total <= {maxTotal: Float64}`); params["maxTotal"] = filters.maxTotal; }
 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 
   return query<AggRow>(
     `SELECT
-       toString(toDate(o.placedAt))                              AS day,
-       oi.categoryName                                           AS category,
-       count(DISTINCT o.orderId)                                 AS total_orders,
-       sum(oi.quantity * oi.unitPrice * (1 - oi.discount))      AS total_revenue,
-       sum(oi.quantity)                                          AS total_items
-     FROM orders o
-     JOIN order_items oi ON oi.orderId = o.orderId
+       toString(toDate(placedAt))                                AS day,
+       item.categoryName                                         AS category,
+       count()                                                   AS total_orders,
+       sum(item.unitPrice * item.quantity * (1 - item.discount)) AS total_revenue,
+       sum(item.quantity)                                        AS total_items
+     FROM orders
+     ARRAY JOIN items AS item
      ${where}
      GROUP BY day, category
      ORDER BY day ASC, category ASC`,

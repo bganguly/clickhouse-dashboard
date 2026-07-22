@@ -217,6 +217,22 @@ export const DDL_STATEMENTS = [
   `ALTER TABLE order_category_facts ADD INDEX IF NOT EXISTS idx_ocf_search searchText TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 1`,
 
   `ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_notes_ngram notes TYPE text(tokenizer = ngrams(3)) GRANULARITY 1`,
+
+  `ALTER TABLE orders ADD COLUMN IF NOT EXISTS items Array(Tuple(
+    categoryId   UInt32,
+    categoryName LowCardinality(String),
+    productId    UInt32,
+    productName  String,
+    productSku   LowCardinality(String),
+    quantity     UInt32,
+    unitPrice    Float64,
+    discount     Float64
+  )) DEFAULT []`,
+
+  `CREATE TABLE IF NOT EXISTS search_vocabulary (
+    token    LowCardinality(String),
+    doc_freq UInt64
+  ) ENGINE = MergeTree ORDER BY token`,
 ];
 
 export async function runMigrations(): Promise<void> {

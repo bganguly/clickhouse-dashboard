@@ -525,6 +525,68 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 ]]; then
   printf '  order_category_facts populated with searchText.\n'
 fi
 
+printf '[deploy] Checking items column on orders...\n'
+_ITEMS_POPULATED="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=60" \
+  --data-binary "SELECT countIf(notEmpty(items)) FROM (SELECT items FROM orders LIMIT 1000000)" \
+  2>/dev/null || echo 0)"
+if [[ "${_ITEMS_POPULATED:-0}" -eq 0 ]]; then
+  printf '  items column empty — running migration...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary "ALTER TABLE orders ADD COLUMN IF NOT EXISTS items Array(Tuple(categoryId UInt32, categoryName LowCardinality(String), productId UInt32, productName String, productSku LowCardinality(String), quantity UInt32, unitPrice Float64, discount Float64)) DEFAULT []" \
+    2>/dev/null || true
+  printf '  submitting UPDATE mutation (deterministic from orderId)...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0&max_execution_time=30" \
+    --data-binary "ALTER TABLE orders UPDATE items = [tuple(toUInt32(intHash32(toUInt32(orderId) * 3) % 200) + 1, concat('Category ', toString(toUInt32(intHash32(toUInt32(orderId) * 3) % 200) + 1)), toUInt32(intHash32(toUInt32(orderId) * 7) % 5000) + 1, concat('Product ', toString(toUInt32(intHash32(toUInt32(orderId) * 7) % 5000) + 1)), concat('SKU-', toString(toUInt32(intHash32(toUInt32(orderId) * 7) % 5000) + 1)), toUInt32(intHash32(toUInt32(orderId) * 11) % 3) + 1, 5.0 + toFloat64(intHash32(toUInt32(orderId) * 13)) / 4294967295.0 * 100.0, toFloat64(0))] WHERE empty(items)" \
+    2>/dev/null || true
+
+  _poll_items_mutation() {
+    local t0 elapsed row is_done left failed
+    t0=$(date +%s)
+    for _w in $(seq 1 12); do
+      sleep 5
+      row="$(curl -sf -u "default:${CH_PASS}" \
+        "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+        --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE items%' ORDER BY create_time DESC LIMIT 1" \
+        2>/dev/null || echo '')"
+      [[ -n "$row" ]] && break
+      printf '\r  waiting for items mutation to register (%ds)...' $(( _w * 5 ))
+    done
+    printf '\n'
+    while true; do
+      row="$(curl -sf -u "default:${CH_PASS}" \
+        "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+        --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE items%' ORDER BY create_time DESC LIMIT 1" \
+        2>/dev/null || echo '')"
+      is_done="$(printf '%s' "$row" | cut -f1)"
+      left="$(printf '%s' "$row" | cut -f2)"
+      failed="$(printf '%s' "$row" | cut -f3)"
+      if [[ "$is_done" == "1" ]]; then
+        [[ -n "$failed" ]] && { printf '\n  ERROR: items mutation failed on part: %s\n' "$failed"; return 1; }
+        printf '\r  done — orders.items backfill complete.\n'; return 0
+      fi
+      elapsed=$(( $(date +%s) - t0 ))
+      printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
+      sleep 10
+    done
+  }
+  _poll_items_mutation
+fi
+
+printf '[deploy] Checking search_vocabulary...\n'
+_VOCAB_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT count() FROM search_vocabulary" \
+  2>/dev/null || echo 0)"
+if [[ "${_VOCAB_COUNT:-0}" -eq 0 ]]; then
+  printf '  Populating search_vocabulary from orders.searchText...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
+    --data-binary "INSERT INTO search_vocabulary (token, doc_freq) SELECT token, count() AS doc_freq FROM (SELECT arrayJoin(splitByNonAlpha(lower(searchText))) AS token FROM orders) WHERE length(token) >= 2 AND NOT match(token, '^[0-9]+\$') GROUP BY token HAVING doc_freq >= 10" \
+    2>/dev/null || true
+  printf '  search_vocabulary populated: %s tokens\n' \
+    "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT count() FROM search_vocabulary" 2>/dev/null || echo '?')"
+fi
+
 CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
 if [[ -n "$CF_DIST_ID" ]]; then
   printf '  Invalidating CloudFront cache...\n'

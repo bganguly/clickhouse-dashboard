@@ -148,7 +148,7 @@ _ch <<SQL
 INSERT INTO orders
   (orderId, customerId, regionId, regionCode,
    customerFirstName, customerLastName, customerEmail,
-   status, total, currency, notes, searchText, placedAt, itemCount)
+   status, total, currency, notes, searchText, placedAt, itemCount, items)
 SELECT
   number + 1                                                                                       AS orderId,
   cust_id,
@@ -229,7 +229,17 @@ SELECT
     )
   )                                                                                                AS searchText,
   toDateTime64(now64() - toIntervalSecond(toUInt64(rand()) % toUInt64(${DAYS_BACK} * 86400)), 3, 'UTC') AS placedAt,
-  toUInt32(1)                                                                                           AS itemCount
+  toUInt32(1)                                                                                           AS itemCount,
+  [tuple(
+    toUInt32(intHash32(toUInt32(number + 1) * 3) % ${CATEGORIES}) + 1,
+    concat('Category ', toString(toUInt32(intHash32(toUInt32(number + 1) * 3) % ${CATEGORIES}) + 1)),
+    toUInt32(intHash32(toUInt32(number + 1) * 7) % ${PRODUCTS}) + 1,
+    concat('Product ', toString(toUInt32(intHash32(toUInt32(number + 1) * 7) % ${PRODUCTS}) + 1)),
+    concat('SKU-', toString(toUInt32(intHash32(toUInt32(number + 1) * 7) % ${PRODUCTS}) + 1)),
+    toUInt32(intHash32(toUInt32(number + 1) * 11) % 3) + 1,
+    5.0 + toFloat64(intHash32(toUInt32(number + 1) * 13)) / 4294967295.0 * 100.0,
+    toFloat64(0)
+  )]                                                                                                    AS items
 FROM (
   SELECT
     number,
@@ -286,8 +296,22 @@ FROM orders AS o
 INNER JOIN order_items AS i ON i.orderId = o.orderId
 SQL
 
+printf '  search_vocabulary...\n'
+_ch <<SQL
+INSERT INTO search_vocabulary (token, doc_freq)
+SELECT token, count() AS doc_freq
+FROM (
+  SELECT arrayJoin(splitByNonAlpha(lower(searchText))) AS token
+  FROM orders
+)
+WHERE length(token) >= 2 AND NOT match(token, '^[0-9]+\$')
+GROUP BY token
+HAVING doc_freq >= 10
+SQL
+
 printf '\nSeed complete:\n'
 printf '  orders:               %s\n' "$(_count orders)"
 printf '  order_items:          %s\n' "$(_count order_items)"
 printf '  order_category_facts: %s\n' "$(_count order_category_facts)"
 printf '  daily_summary:        %s\n' "$(_count daily_summary)"
+printf '  search_vocabulary:    %s\n' "$(_count search_vocabulary)"
