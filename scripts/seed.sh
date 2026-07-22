@@ -280,20 +280,21 @@ INSERT INTO order_category_facts
    status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText)
 SELECT
   o.orderId,
-  toDate(o.placedAt)                                                  AS date,
+  toDate(o.placedAt)                                                                    AS date,
   o.placedAt,
   o.customerId,
   o.regionId,
   o.regionCode,
   o.status,
-  o.total                                                             AS orderTotal,
-  i.categoryId,
-  i.categoryName,
-  i.quantity                                                          AS totalItems,
-  toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2)     AS totalRevenue,
+  o.total                                                                               AS orderTotal,
+  item.categoryId,
+  item.categoryName,
+  item.quantity                                                                         AS totalItems,
+  toDecimal64(toFloat64(item.quantity) * toFloat64(item.unitPrice), 2)                 AS totalRevenue,
   o.searchText
 FROM orders AS o
-INNER JOIN order_items AS i ON i.orderId = o.orderId
+ARRAY JOIN o.items AS item
+WHERE notEmpty(o.items)
 SQL
 
 printf '  search_vocabulary...\n'

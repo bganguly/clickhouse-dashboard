@@ -515,14 +515,27 @@ _FACTS_NOTES_OK="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
   --data-binary "SELECT countIf(hasToken(searchText, 'conference')) FROM (SELECT searchText FROM order_category_facts LIMIT 500000)" \
   2>/dev/null || echo 0)"
-if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 ]]; then
-  printf '  Truncating and re-inserting order_category_facts (includes searchText)...\n'
+_OCF_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT count() FROM order_category_facts" \
+  2>/dev/null || echo 0)"
+_ORDERS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT count() FROM orders" \
+  2>/dev/null || echo 0)"
+_FACTS_OVERSIZED="$(awk "BEGIN{print (${_OCF_COUNT:-0}+0 > (${_ORDERS_COUNT:-1}+0) * 1.2) ? 1 : 0}")"
+if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVERSIZED:-0}" -eq 1 ]]; then
+  if [[ "${_FACTS_OVERSIZED:-0}" -eq 1 ]]; then
+    printf '  order_category_facts has %s rows vs %s orders — rebuilding from items array...\n' "${_OCF_COUNT}" "${_ORDERS_COUNT}"
+  else
+    printf '  Truncating and re-inserting order_category_facts (includes searchText)...\n'
+  fi
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
     --data-binary "TRUNCATE TABLE order_category_facts" 2>/dev/null || true
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
-    --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, i.categoryId, i.categoryName, i.quantity, toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2), o.searchText FROM orders AS o INNER JOIN order_items AS i ON i.orderId = o.orderId SETTINGS max_execution_time=7200" \
+    --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, item.categoryId, item.categoryName, item.quantity, toDecimal64(toFloat64(item.quantity) * toFloat64(item.unitPrice), 2), o.searchText FROM orders AS o ARRAY JOIN o.items AS item WHERE notEmpty(o.items) SETTINGS max_execution_time=7200" \
     2>/dev/null || true
-  printf '  order_category_facts populated with searchText.\n'
+  printf '  order_category_facts rebuilt from items array (1 row per order).\n'
 fi
 
 _ITEMS_MIGRATION_PENDING=0
