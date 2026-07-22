@@ -143,8 +143,9 @@ function buildWhereParts(
   let pi = 0;
   for (const tok of searchTokens) {
     const k = `stok${pi++}`;
-    clauses.push(`hasToken(searchText, {${k}: String})`);
+    clauses.push(`(hasToken(searchText, {${k}: String}) OR lower(notes) LIKE {${k}like: String})`);
     params[k] = tok.toLowerCase();
+    params[`${k}like`] = `%${tok.toLowerCase()}%`;
   }
   if (f.statuses.length) {
     clauses.push(`status IN ({statuses: Array(String)})`);

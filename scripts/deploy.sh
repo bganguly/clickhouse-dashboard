@@ -384,6 +384,38 @@ _poll_ocf_mutation() {
   done
 }
 
+_poll_notes_ngram_idx() {
+  local t0 elapsed total left row is_done failed
+  t0=$(date +%s); total=0
+  for _w in $(seq 1 12); do
+    sleep 5
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_notes_ngram%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    [[ -n "$row" ]] && break
+    printf '\r  waiting for idx_notes_ngram mutation to register (%ds)...' $(( _w * 5 ))
+  done
+  printf '\n'
+  while true; do
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_notes_ngram%' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    is_done="$(printf '%s' "$row" | cut -f1)"
+    left="$(printf '%s' "$row" | cut -f2)"
+    failed="$(printf '%s' "$row" | cut -f3)"
+    if [[ "$is_done" == "1" ]]; then
+      [[ -n "$failed" ]] && { printf '\n  ERROR: idx_notes_ngram mutation failed on part: %s\n' "$failed"; return 1; }
+      printf '\r  done — idx_notes_ngram materialized.\n'; return 0
+    fi
+    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
+    elapsed=$(( $(date +%s) - t0 ))
+    printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
+    sleep 10
+  done
+}
+
 _poll_ocf_idx() {
   local t0 elapsed total left row is_done failed
   t0=$(date +%s); total=0
@@ -458,6 +490,20 @@ if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -ne "${_TOT_PARTS}" ]]; the
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" 2>/dev/null || true
   _poll_materialize_idx
+fi
+
+printf '[deploy] Checking notes ngram index...\n'
+_NGRAM_IDX="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT countIf(has(skip_indices, 'idx_notes_ngram')), count() FROM system.parts WHERE table='orders' AND active=1" \
+  2>/dev/null || echo '0	1')"
+_NGRAM_PARTS="$(printf '%s' "$_NGRAM_IDX" | cut -f1)"
+_NGRAM_TOT="$(printf '%s' "$_NGRAM_IDX" | cut -f2)"
+if [[ "${_NGRAM_TOT:-0}" -gt 0 && "${_NGRAM_PARTS:-0}" -ne "${_NGRAM_TOT}" ]]; then
+  printf '  %s / %s parts indexed — materializing idx_notes_ngram...\n' "${_NGRAM_PARTS:-0}" "${_NGRAM_TOT:-?}"
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+    --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_notes_ngram" 2>/dev/null || true
+  _poll_notes_ngram_idx
 fi
 
 printf '[deploy] Checking order_category_facts...\n'
