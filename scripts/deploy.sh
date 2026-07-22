@@ -531,6 +531,11 @@ fi
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n\n' "$ROOT_DIR"
 
+if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+  printf '%s' "$CDN_URL" | gh secret set APP_URL --repo "$_GH_REPO"
+  printf '  [keepalive] APP_URL secret updated → %s\n' "$CDN_URL"
+fi
+
 if [[ -f "$ROOT_DIR/README.md" ]]; then
   python3 - "$CDN_URL" "$ROOT_DIR/README.md" <<'PYEOF'
 import re, sys
