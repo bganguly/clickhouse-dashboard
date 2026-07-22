@@ -524,6 +524,7 @@ _ORDERS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
   --data-binary "SELECT count() FROM orders" \
   2>/dev/null || echo 0)"
 _FACTS_OVERSIZED="$(awk "BEGIN{print (${_OCF_COUNT:-0}+0 > (${_ORDERS_COUNT:-1}+0) * 1.2) ? 1 : 0}")"
+_OCF_REBUILT=0
 if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVERSIZED:-0}" -eq 1 ]]; then
   if [[ "${_FACTS_OVERSIZED:-0}" -eq 1 ]]; then
     printf '  order_category_facts has %s rows vs %s orders — rebuilding from items array...\n' "${_OCF_COUNT}" "${_ORDERS_COUNT}"
@@ -536,6 +537,7 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
     --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, item.categoryId, item.categoryName, item.quantity, toDecimal64(toFloat64(item.quantity) * toFloat64(item.unitPrice), 2), o.searchText FROM orders AS o ARRAY JOIN o.items AS item WHERE notEmpty(o.items) SETTINGS max_execution_time=7200" \
     2>/dev/null || true
   printf '  order_category_facts rebuilt from items array (1 row per order).\n'
+  _OCF_REBUILT=1
 fi
 
 _ITEMS_MIGRATION_PENDING=0
@@ -579,6 +581,21 @@ fi
 
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
+
+if [[ "$_OCF_REBUILT" -eq 1 ]]; then
+  printf '\n  ── OCF rebuilt from items array ──────────────────────────────────────\n'
+  printf '  order_category_facts now has 1 row per order (~50 M). Verify:\n\n'
+  printf '    SELECT count() FROM order_category_facts;\n'
+  printf '    -- Expected: ~50 M  (was ~150 M when built from order_items)\n\n'
+  printf '    SELECT count(), categoryName\n'
+  printf '    FROM order_category_facts\n'
+  printf '    WHERE hasToken(searchText, '"'"'exceptions'"'"')\n'
+  printf '    GROUP BY categoryName\n'
+  printf '    ORDER BY count() DESC\n'
+  printf '    LIMIT 5;\n'
+  printf '    -- Should return results in < 2 s (was ~5 s before rebuild).\n'
+  printf '  ──────────────────────────────────────────────────────────────────────\n'
+fi
 
 if [[ "$_ITEMS_MIGRATION_PENDING" -eq 1 ]]; then
   printf '\n  ── Background migration in progress ──────────────────────────────────\n'
