@@ -161,8 +161,7 @@ SELECT
                toUInt32((rand() % 7) + 1))                                                        AS status,
   toDecimal64(round(10.0 + (rand() / 4294967295.0) * 500.0, 2), 2)                               AS total,
   'USD'                                                                                            AS currency,
-  if(intHash32(number + 1) % 10 < 7,
-    arrayElement([
+  arrayElement([
       'please leave at front door ring bell twice',
       'gift wrapping requested include birthday card',
       'fragile items handle with extreme care',
@@ -183,9 +182,7 @@ SELECT
       'priority processing customer complaint credit applied',
       'temperature sensitive store below forty degrees fahrenheit',
       'military veteran discount applied thank you for service'
-    ], toUInt32(intHash32(number + 1) % 20) + 1),
-    NULL
-  )                                                                                                AS notes,
+    ], toUInt32(intHash32(number + 1) % 20) + 1)                                                 AS notes,
   concat(
     lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId),
     if(intHash32(number + 1) % 10 < 7, concat(' ', arrayElement([
@@ -270,7 +267,7 @@ printf '  order_category_facts + aggregate MVs...\n'
 _ch <<SQL
 INSERT INTO order_category_facts
   (orderId, date, placedAt, customerId, regionId, regionCode,
-   status, orderTotal, categoryId, categoryName, totalItems, totalRevenue)
+   status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText)
 SELECT
   o.orderId,
   toDate(o.placedAt)                                                  AS date,
@@ -283,7 +280,8 @@ SELECT
   i.categoryId,
   i.categoryName,
   i.quantity                                                          AS totalItems,
-  toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2)     AS totalRevenue
+  toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2)     AS totalRevenue,
+  o.searchText
 FROM orders AS o
 INNER JOIN order_items AS i ON i.orderId = o.orderId
 SQL
