@@ -20,7 +20,7 @@ import type {
 
 const SEARCH_CACHE = {
   use_query_cache: 1 as const,
-  query_cache_ttl: 60,
+  query_cache_ttl: 300,
   query_cache_share_between_users: 1 as const,
 };
 

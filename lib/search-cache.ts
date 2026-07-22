@@ -1,7 +1,7 @@
 import { redis } from "./redis";
 
 const PREFIX = "search:";
-const TTL_S = 60;
+const TTL_S = 300;
 const MAX_ENTRIES = 200;
 
 const store = new Map<string, { value: unknown; ts: number }>();
