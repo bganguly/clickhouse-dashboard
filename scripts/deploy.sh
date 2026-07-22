@@ -464,49 +464,18 @@ if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -ne "${_TOT_PARTS}" ]]; the
 fi
 
 printf '[deploy] Checking order_category_facts...\n'
-_FACTS="$(curl -sf -u "default:${CH_PASS}" \
+_FACTS_OK="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary 'SELECT count() FROM order_category_facts' 2>/dev/null || echo 0)"
-if [[ "${_FACTS:-0}" -eq 0 ]]; then
-  printf '  Backfilling order_category_facts...\n'
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
-    --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, i.categoryId, i.categoryName, i.quantity, toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2) FROM orders AS o INNER JOIN order_items AS i ON i.orderId = o.orderId" \
-    2>/dev/null || true
-fi
-
-printf '[deploy] Checking order_category_facts.searchText backfill...\n'
-_OCF_ST="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT if(count() > 0, 1, 0) FROM (SELECT 1 FROM order_category_facts WHERE searchText != '' LIMIT 1)" \
+  --data-binary "SELECT if(countIf(searchText != '') > 0, 1, 0) FROM order_category_facts" \
   2>/dev/null || echo 0)"
-if [[ "${_OCF_ST:-0}" -eq 0 && "${_FACTS:-0}" -gt 0 ]]; then
-  _OCF_MUT_RUNNING="$(curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-    --data-binary "SELECT count() FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' AND is_done=0" \
-    2>/dev/null || echo 0)"
-  if [[ "${_OCF_MUT_RUNNING:-0}" -gt 0 ]]; then
-    printf '  OCF searchText mutation already in-flight — skipping submit, continuing deploy.\n'
-  else
-    printf '  Submitting order_category_facts.searchText backfill (runs in ClickHouse background)...\n'
-    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
-      --data-binary "ALTER TABLE order_category_facts UPDATE searchText = (SELECT searchText FROM orders WHERE orders.orderId = order_category_facts.orderId LIMIT 1) WHERE searchText = '' SETTINGS max_execution_time=0" \
-      2>/dev/null || true
-    printf '  Mutation submitted — will complete in background (1-2h). App uses slowPath until done.\n'
-  fi
-fi
-
-printf '[deploy] Checking order_category_facts search index...\n'
-_OCF_IDX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT countIf(has(skip_indices, 'idx_ocf_search')), count() FROM system.parts WHERE table='order_category_facts' AND active=1" \
-  2>/dev/null || echo '0	1')"
-_OCF_IDX_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f1)"
-_OCF_TOT_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f2)"
-if [[ "${_OCF_TOT_PARTS:-0}" -gt 0 && "${_OCF_IDX_PARTS:-0}" -ne "${_OCF_TOT_PARTS}" ]]; then
-  printf '  %s / %s parts indexed — submitting MATERIALIZE INDEX idx_ocf_search (runs in background)...\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
-    --data-binary "ALTER TABLE order_category_facts MATERIALIZE INDEX idx_ocf_search" 2>/dev/null || true
-  printf '  Index mutation queued — will run after any pending UPDATE mutations.\n'
+if [[ "${_FACTS_OK:-0}" -eq 0 ]]; then
+  printf '  Truncating and re-inserting order_category_facts (includes searchText)...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
+    --data-binary "TRUNCATE TABLE order_category_facts" 2>/dev/null || true
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
+    --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, i.categoryId, i.categoryName, i.quantity, toDecimal64(toFloat64(i.quantity) * toFloat64(i.unitPrice), 2), o.searchText FROM orders AS o INNER JOIN order_items AS i ON i.orderId = o.orderId SETTINGS max_execution_time=7200" \
+    2>/dev/null || true
+  printf '  order_category_facts populated with searchText.\n'
 fi
 
 CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
