@@ -142,32 +142,18 @@ export default function Dashboard() {
   const handleChartLoading = useCallback((v: boolean) => setChartLoading(v), []);
   const handleTableLoading = useCallback((v: boolean) => setTableLoading(v), []);
 
-  const prevChartLoading = useRef(false);
-  const prevTableLoading = useRef(false);
-
   useEffect(() => {
-    const chartStarted = chartLoading && !prevChartLoading.current;
-    const tableStarted = tableLoading && !prevTableLoading.current;
-    prevChartLoading.current = chartLoading;
-    prevTableLoading.current = tableLoading;
-
-    if (chartStarted || tableStarted) {
-      // A new fetch was kicked off — reset the clock so the timer reflects this
-      // request's latency, not accumulated drag-frame time.
+    const anyLoading = chartLoading || tableLoading;
+    if (anyLoading && !perfActive.current) {
+      perfActive.current = true;
       perfStart.current = performance.now();
       setPerfSettled(false);
       if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
-      if (!perfActive.current) {
-        perfActive.current = true;
-        if (perfInterval.current) clearInterval(perfInterval.current);
-        perfInterval.current = setInterval(() => {
-          setPerfMs(Math.round(performance.now() - perfStart.current));
-        }, 16);
-      }
-    }
-
-    const anyLoading = chartLoading || tableLoading;
-    if (!anyLoading && perfActive.current) {
+      if (perfInterval.current) clearInterval(perfInterval.current);
+      perfInterval.current = setInterval(() => {
+        setPerfMs(Math.round(performance.now() - perfStart.current));
+      }, 16);
+    } else if (!anyLoading && perfActive.current) {
       perfActive.current = false;
       if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
@@ -244,6 +230,7 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-3">
             <PerfTimer ms={perfMs} settled={perfSettled} />
+            {/* Live checkbox — re-enable when websockets-quickorder is running alongside
             <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
               <input
                 type="checkbox"
@@ -270,6 +257,7 @@ export default function Dashboard() {
                 Quick Order offline
               </span>
             )}
+            */}
             <ThemeToggle />
           </div>
         </header>
@@ -278,8 +266,8 @@ export default function Dashboard() {
           <FilterSidebar value={filters} onChange={setFilters} regionOptions={regionOptions} />
 
           <div className="min-w-0 flex-1">
-            <div className={`grid grid-cols-1 gap-6${liveEnabled ? " lg:grid-cols-3" : ""}`}>
-              <div className={`space-y-6${liveEnabled ? " lg:col-span-2" : ""}`}>
+            <div className="grid grid-cols-1 gap-6">
+              <div className="space-y-6">
                 <Chart
                   refreshSignal={refreshSignal}
                   filters={filters}
@@ -305,11 +293,13 @@ export default function Dashboard() {
                   onLoadingChange={handleTableLoading}
                 />
               </div>
+              {/* LiveFeed — re-enable with liveEnabled when websockets-quickorder is running
               {liveEnabled && (
                 <div className="lg:col-span-1">
                   <LiveFeed onEvent={handleEvent} />
                 </div>
               )}
+              */}
             </div>
           </div>
         </div>
