@@ -50,6 +50,33 @@ function normalizeDir(dir: string | null | undefined): SortDir {
   return dir === "asc" || dir === "desc" ? dir : DEFAULT_DIR;
 }
 
+const NOTES_POOL = [
+  "please leave at front door ring bell twice",
+  "gift wrapping requested include birthday card",
+  "fragile items handle with extreme care",
+  "corporate bulk order for quarterly offsite event",
+  "express shipping required before the conference",
+  "leave with building concierge if not home",
+  "signature required upon delivery no exceptions",
+  "urgent replacement for previously damaged shipment",
+  "perishable contents keep refrigerated at all times",
+  "eco friendly packaging only no plastic wrap",
+  "annual office supply subscription renewal invoice",
+  "school supply order for upcoming fall semester",
+  "bridal shower gift please include congratulations card",
+  "rush order needed before saturday morning delivery",
+  "holiday promotional bundle seasonal discount applied",
+  "wholesale distributor recurring weekly standing order",
+  "loyalty rewards redemption free shipping included",
+  "priority processing customer complaint credit applied",
+  "temperature sensitive store below forty degrees fahrenheit",
+  "military veteran discount applied thank you for service",
+] as const;
+
+function pickNote(): string {
+  return NOTES_POOL[Math.floor(Math.random() * NOTES_POOL.length)];
+}
+
 export function escapeLike(input: string): string {
   return input.replace(/'/g, "''");
 }
@@ -355,7 +382,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     const orderId = genId();
     const placedAt = new Date().toISOString().replace("T", " ").replace("Z", "");
     const date = placedAt.slice(0, 10);
-    const searchText = buildSearchText(customer.firstName, customer.lastName, orderId, input.notes);
+    const resolvedNotes = input.notes ?? pickNote();
+    const searchText = buildSearchText(customer.firstName, customer.lastName, orderId, resolvedNotes);
 
     await insert("orders", [{
       orderId,
@@ -368,7 +396,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       status: "PENDING",
       total,
       currency: input.currency ?? "USD",
-      notes: input.notes ?? null,
+      notes: resolvedNotes,
       searchText,
       placedAt,
       itemCount: input.items.length,

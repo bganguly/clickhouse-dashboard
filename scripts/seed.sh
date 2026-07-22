@@ -185,7 +185,7 @@ SELECT
     ], toUInt32(intHash32(number + 1) % 20) + 1)                                                 AS notes,
   concat(
     lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId),
-    if(intHash32(number + 1) % 10 < 7, concat(' ', arrayElement([
+    concat(' ', arrayElement([
       'please leave at front door ring bell twice',
       'gift wrapping requested include birthday card',
       'fragile items handle with extreme care',
@@ -206,7 +206,7 @@ SELECT
       'priority processing customer complaint credit applied',
       'temperature sensitive store below forty degrees fahrenheit',
       'military veteran discount applied thank you for service'
-    ], toUInt32(intHash32(number + 1) % 20) + 1)), ''),
+    ], toUInt32(intHash32(number + 1) % 20) + 1)),
     if(length(customerFirstName) > 3,
       concat(' ', arrayStringConcat(
         arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName),
