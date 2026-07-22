@@ -525,52 +525,22 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 ]]; then
   printf '  order_category_facts populated with searchText.\n'
 fi
 
+_ITEMS_MIGRATION_PENDING=0
 printf '[deploy] Checking items column on orders...\n'
 _ITEMS_POPULATED="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=60" \
   --data-binary "SELECT countIf(notEmpty(items)) FROM (SELECT items FROM orders LIMIT 1000000)" \
   2>/dev/null || echo 0)"
 if [[ "${_ITEMS_POPULATED:-0}" -eq 0 ]]; then
-  printf '  items column empty — running migration...\n'
+  printf '  items column empty — submitting background migration (~2 h for 50M rows)...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
     --data-binary "ALTER TABLE orders ADD COLUMN IF NOT EXISTS items Array(Tuple(categoryId UInt32, categoryName LowCardinality(String), productId UInt32, productName String, productSku LowCardinality(String), quantity UInt32, unitPrice Float64, discount Float64)) DEFAULT []" \
     2>/dev/null || true
-  printf '  submitting UPDATE mutation (deterministic from orderId)...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0&max_execution_time=30" \
     --data-binary "ALTER TABLE orders UPDATE items = [tuple(toUInt32(intHash32(toUInt32(orderId) * 3) % 200) + 1, concat('Category ', toString(toUInt32(intHash32(toUInt32(orderId) * 3) % 200) + 1)), toUInt32(intHash32(toUInt32(orderId) * 7) % 5000) + 1, concat('Product ', toString(toUInt32(intHash32(toUInt32(orderId) * 7) % 5000) + 1)), concat('SKU-', toString(toUInt32(intHash32(toUInt32(orderId) * 7) % 5000) + 1)), toUInt32(intHash32(toUInt32(orderId) * 11) % 3) + 1, 5.0 + toFloat64(intHash32(toUInt32(orderId) * 13)) / 4294967295.0 * 100.0, toFloat64(0))] WHERE empty(items)" \
     2>/dev/null || true
-
-  _poll_items_mutation() {
-    local t0 elapsed row is_done left failed
-    t0=$(date +%s)
-    for _w in $(seq 1 12); do
-      sleep 5
-      row="$(curl -sf -u "default:${CH_PASS}" \
-        "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-        --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE items%' ORDER BY create_time DESC LIMIT 1" \
-        2>/dev/null || echo '')"
-      [[ -n "$row" ]] && break
-      printf '\r  waiting for items mutation to register (%ds)...' $(( _w * 5 ))
-    done
-    printf '\n'
-    while true; do
-      row="$(curl -sf -u "default:${CH_PASS}" \
-        "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-        --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE items%' ORDER BY create_time DESC LIMIT 1" \
-        2>/dev/null || echo '')"
-      is_done="$(printf '%s' "$row" | cut -f1)"
-      left="$(printf '%s' "$row" | cut -f2)"
-      failed="$(printf '%s' "$row" | cut -f3)"
-      if [[ "$is_done" == "1" ]]; then
-        [[ -n "$failed" ]] && { printf '\n  ERROR: items mutation failed on part: %s\n' "$failed"; return 1; }
-        printf '\r  done — orders.items backfill complete.\n'; return 0
-      fi
-      elapsed=$(( $(date +%s) - t0 ))
-      printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
-      sleep 10
-    done
-  }
-  _poll_items_mutation
+  printf '  mutation submitted (non-blocking).\n'
+  _ITEMS_MIGRATION_PENDING=1
 fi
 
 printf '[deploy] Checking search_vocabulary...\n'
@@ -595,7 +565,25 @@ if [[ -n "$CF_DIST_ID" ]]; then
 fi
 
 printf '\n  Dashboard: %s\n' "$CDN_URL"
-printf '  Tear down: %s/scripts/infra-down.sh\n\n' "$ROOT_DIR"
+printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
+
+if [[ "$_ITEMS_MIGRATION_PENDING" -eq 1 ]]; then
+  printf '\n  ── Background migration in progress ──────────────────────────────────\n'
+  printf '  orders.items backfill is running (~2 h). Run this SQL to monitor:\n\n'
+  printf '    SELECT is_done,\n'
+  printf '           parts_to_do          AS parts_left,\n'
+  printf '           latest_fail_reason   AS last_error\n'
+  printf '    FROM system.mutations\n'
+  printf '    WHERE table = '"'"'orders'"'"'\n'
+  printf '      AND command LIKE '"'"'%%UPDATE items%%'"'"'\n'
+  printf '    ORDER BY create_time DESC\n'
+  printf '    LIMIT 1;\n\n'
+  printf '  Chart queries for partial-match terms (except, conferenc) will return\n'
+  printf '  empty until is_done = 1. Whole-token searches (cassin, etc.) are\n'
+  printf '  unaffected — they hit OCF directly.\n'
+  printf '  ──────────────────────────────────────────────────────────────────────\n'
+fi
+printf '\n'
 
 if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
   printf '%s' "$CDN_URL" | gh secret set APP_URL --repo "$_GH_REPO"
