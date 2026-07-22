@@ -511,7 +511,11 @@ _FACTS_OK="$(curl -sf -u "default:${CH_PASS}" \
   "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
   --data-binary "SELECT if(countIf(searchText != '') > 0, 1, 0) FROM order_category_facts" \
   2>/dev/null || echo 0)"
-if [[ "${_FACTS_OK:-0}" -eq 0 ]]; then
+_FACTS_NOTES_OK="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT countIf(hasToken(searchText, 'conference')) FROM (SELECT searchText FROM order_category_facts LIMIT 500000)" \
+  2>/dev/null || echo 0)"
+if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 ]]; then
   printf '  Truncating and re-inserting order_category_facts (includes searchText)...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
     --data-binary "TRUNCATE TABLE order_category_facts" 2>/dev/null || true
