@@ -490,6 +490,30 @@ export async function getOrderCount(
   if (cached != null) return cached;
 
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);
+
+  if (
+    tokens.length === 1 &&
+    !filters.statuses.length &&
+    !filters.regionCodes.length &&
+    filters.minTotal === null &&
+    filters.maxTotal === null
+  ) {
+    const clauses = [`token = {tok: String}`];
+    const params: Record<string, unknown> = { tok: tokens[0].toLowerCase() };
+    if (filters.from) { clauses.push(`date >= {from: Date}`); params["from"] = filters.from.slice(0, 10); }
+    if (filters.to)   { clauses.push(`date <= {to: Date}`);   params["to"]   = filters.to.slice(0, 10); }
+    const summaryRows = await query<{ n: string }>(
+      `SELECT sum(orderCount) AS n FROM daily_search_token_summary WHERE ${clauses.join(" AND ")}`,
+      params,
+      SEARCH_CACHE,
+    );
+    const fastTotal = Number(summaryRows[0]?.n ?? 0);
+    if (fastTotal > 0) {
+      await searchCacheSet(cacheKey, fastTotal);
+      return fastTotal;
+    }
+  }
+
   const { clauses, params } = buildWhereParts(tokens, filters);
   const where = whereSQL(clauses);
   const rows = await query<{ n: string }>(

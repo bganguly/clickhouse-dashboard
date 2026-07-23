@@ -540,6 +540,27 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
   _OCF_REBUILT=1
 fi
 
+printf '[deploy] Checking daily_search_token_summary...\n'
+curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+  --data-binary "CREATE TABLE IF NOT EXISTS daily_search_token_summary (token LowCardinality(String), date Date, categoryName LowCardinality(String), orderCount UInt32, orderTotal Float64) ENGINE = MergeTree() ORDER BY (token, date, categoryName)" \
+  2>/dev/null || true
+_DSTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT count() FROM daily_search_token_summary" \
+  2>/dev/null || echo 0)"
+if [[ "${_DSTS_COUNT:-0}" -eq 0 || "${_OCF_REBUILT:-0}" -eq 1 ]]; then
+  printf '  Populating daily_search_token_summary from order_category_facts...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
+    --data-binary "TRUNCATE TABLE daily_search_token_summary" 2>/dev/null || true
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
+    --data-binary "INSERT INTO daily_search_token_summary (token, date, categoryName, orderCount, orderTotal) SELECT tok AS token, date, categoryName, count() AS orderCount, sum(toFloat64(totalRevenue)) AS orderTotal FROM order_category_facts ARRAY JOIN splitByNonAlpha(lower(searchText)) AS tok WHERE length(tok) >= 2 GROUP BY tok, date, categoryName SETTINGS max_execution_time=7200" \
+    2>/dev/null || true
+  printf '  daily_search_token_summary populated: %s rows\n' \
+    "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT count() FROM daily_search_token_summary" 2>/dev/null || echo '?')"
+else
+  printf '  daily_search_token_summary has %s rows — skipping.\n' "${_DSTS_COUNT}"
+fi
+
 _ITEMS_MIGRATION_PENDING=0
 printf '[deploy] Checking items column on orders...\n'
 _ITEMS_POPULATED="$(curl -sf -u "default:${CH_PASS}" \

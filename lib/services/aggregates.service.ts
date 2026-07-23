@@ -83,9 +83,13 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
           const r3 = await factFilterPath(query_in);
           if (r3) { aggPath = "factFilter"; rows = r3; }
           else {
-            const r4 = await searchFactPath(query_in);
-            if (r4) { aggPath = "searchFact"; rows = r4; }
-            else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+            const r4 = await tokenSummaryPath(query_in);
+            if (r4) { aggPath = "tokenSummary"; rows = r4; }
+            else {
+              const r5 = await searchFactPath(query_in);
+              if (r5) { aggPath = "searchFact"; rows = r5; }
+              else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+            }
           }
         }
       }
@@ -264,6 +268,34 @@ async function customerMultiTokenSummaryPath(input: AggregateQueryInput): Promis
   return rows.length > 0 ? rows : null;
 }
 
+async function tokenSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
+  const q = input.q?.trim();
+  if (!q) return null;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  if (tokens.length !== 1) return null;
+  if (input.minTotal != null || input.maxTotal != null) return null;
+  if (normalizeStatusList(input.status).length) return null;
+  if (parseCsv(input.regionCode).length) return null;
+
+  const rows = await query<AggRow>(
+    `SELECT
+       toString(date)   AS day,
+       categoryName     AS category,
+       sum(orderCount)  AS total_orders,
+       0                AS total_items,
+       sum(orderTotal)  AS total_revenue
+     FROM daily_search_token_summary
+     WHERE token = {tok: String}
+       AND date >= {from: Date}
+       AND date <= {to: Date}
+     GROUP BY date, categoryName
+     ORDER BY date ASC, categoryName ASC`,
+    { tok: tokens[0].toLowerCase(), from: input.from, to: input.to },
+    AGG_CACHE,
+  );
+  return rows.length > 0 ? rows : null;
+}
+
 async function searchFactPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
   const q = input.q?.trim();
   if (!q) return null;
@@ -312,9 +344,8 @@ async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
   let pi = 0;
   for (const tok of tokens) {
     const k = `stok${pi++}`;
-    clauses.push(`(hasToken(searchText, {${k}: String}) OR lower(notes) LIKE {${k}like: String})`);
+    clauses.push(`hasToken(searchText, {${k}: String})`);
     params[k] = tok.toLowerCase();
-    params[`${k}like`] = `%${tok.toLowerCase()}%`;
   }
   if (filters.statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
   if (filters.regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
