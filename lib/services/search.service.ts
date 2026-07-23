@@ -1,5 +1,6 @@
 import { query } from "@/lib/clickhouse";
 import { AppError, mapDbError } from "@/lib/errors";
+import { escapeLike } from "@/lib/services/orders.service";
 import type { SearchInput, SearchResult, SearchResultItem } from "@/lib/types";
 
 const DEFAULT_LIMIT = 20;
@@ -13,7 +14,7 @@ export async function search(input: SearchInput): Promise<SearchResult> {
   const limit = Math.min(Math.max(input.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 
   try {
-    const [orderRows, productRows, customerRows] = await Promise.all([
+    const [rawOrderRows, productRows, customerRows] = await Promise.all([
       (!input.entityType || input.entityType === "order")
         ? query<{ orderId: string; searchText: string }>(
             `SELECT orderId, searchText FROM orders
@@ -39,6 +40,16 @@ export async function search(input: SearchInput): Promise<SearchResult> {
           )
         : Promise.resolve([]),
     ]);
+
+    const orderRows =
+      rawOrderRows.length === 0 && (!input.entityType || input.entityType === "order")
+        ? await query<{ orderId: string; searchText: string }>(
+            `SELECT orderId, searchText FROM orders
+             WHERE lower(searchText) LIKE {q: String}
+             ORDER BY placedAt DESC LIMIT {lim: UInt32}`,
+            { q: `%${escapeLike(qLower)}%`, lim: limit },
+          )
+        : rawOrderRows;
 
     const results: SearchResultItem[] = [
       ...orderRows.map((r) => ({ entityType: "order", entityId: Number(r.orderId), content: r.searchText })),

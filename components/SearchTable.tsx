@@ -248,7 +248,6 @@ export default function SearchTable({
       const controller = new AbortController();
       abortRef.current = controller;
 
-      setPendingSearch(false);
       setLoading(true);
       setSearchLoading(showSearchIndicator);
       setError(null);
@@ -288,15 +287,19 @@ export default function SearchTable({
             .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
             .then((cj: { total: number }) => {
               if (abortRef.current !== controller) return;
+              setPendingSearch(false);
               setTotal(cj.total ?? 0);
               setTotalPages(Math.max(1, Math.ceil((cj.total ?? 0) / pageSize)));
               onCountChange?.(cj.total ?? 0);
               setCountSettled(true);
               setTimeout(() => setCountSettled(false), 600);
             })
-            .catch(() => {})
+            .catch(() => {
+              if (abortRef.current === controller) setPendingSearch(false);
+            })
             .finally(() => { if (abortRef.current === controller) setCountLoading(false); });
         } else {
+          setPendingSearch(false);
           setTotal(json.total ?? 0);
           setTotalPages(Math.max(1, json.totalPages ?? 1));
         }
@@ -812,7 +815,9 @@ export default function SearchTable({
             : displayTotalPages}{" "}·{" "}
           <span data-testid="search-total" data-total={displayTotal}>
             {footerLoading || (externalTotal == null && countStillLoading)
-              ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+              ? pendingSearch
+                ? <span>0</span>
+                : <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
               : <span className={countSettled ? "count-settle" : undefined}>{pendingSearch ? "0" : displayTotal.toLocaleString()}</span>}
           </span>{" "}
           {footerLoading || (externalTotal == null && countStillLoading)

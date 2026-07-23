@@ -136,6 +136,7 @@ export async function resolveFilters(input: OrderFilterInput): Promise<ResolvedF
 function buildWhereParts(
   searchTokens: string[],
   f: ResolvedFilters,
+  useLike = false,
 ): { clauses: string[]; params: Record<string, unknown> } {
   const clauses: string[] = [];
   const params: Record<string, unknown> = {};
@@ -143,8 +144,13 @@ function buildWhereParts(
   let pi = 0;
   for (const tok of searchTokens) {
     const k = `stok${pi++}`;
-    clauses.push(`hasToken(searchText, {${k}: String})`);
-    params[k] = tok.toLowerCase();
+    if (useLike) {
+      clauses.push(`lower(searchText) LIKE {${k}: String}`);
+      params[k] = `%${escapeLike(tok.toLowerCase())}%`;
+    } else {
+      clauses.push(`hasToken(searchText, {${k}: String})`);
+      params[k] = tok.toLowerCase();
+    }
   }
   if (f.statuses.length) {
     clauses.push(`status IN ({statuses: Array(String)})`);
@@ -226,16 +232,27 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   try {
     const t0 = Date.now();
     const filters = await resolveFilters(input);
-    const { clauses, params } = buildWhereParts(tokens, filters);
-    const where = whereSQL(clauses);
+    let { clauses, params } = buildWhereParts(tokens, filters);
+    let where = whereSQL(clauses);
     const sortCol = SORT_COL[sort];
     const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
-    const orderRows = await query<OrderRow>(
+    let orderRows = await query<OrderRow>(
       `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
       { ...params, lim: pageSize, off: offset },
       SEARCH_CACHE,
     );
+
+    if (orderRows.length === 0 && tokens.length > 0) {
+      ({ clauses, params } = buildWhereParts(tokens, filters, true));
+      where = whereSQL(clauses);
+      orderRows = await query<OrderRow>(
+        `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+        { ...params, lim: pageSize, off: offset },
+        SEARCH_CACHE,
+      );
+    }
+
     console.log(`[orders] listOrders ms=${Date.now() - t0} from=${input.from ?? ""} to=${input.to ?? ""} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
     const data = orderRows.map(rowToDTO);
@@ -514,14 +531,26 @@ export async function getOrderCount(
     }
   }
 
-  const { clauses, params } = buildWhereParts(tokens, filters);
-  const where = whereSQL(clauses);
-  const rows = await query<{ n: string }>(
+  let { clauses, params } = buildWhereParts(tokens, filters);
+  let where = whereSQL(clauses);
+  let rows = await query<{ n: string }>(
     `SELECT count() AS n FROM orders ${where}`,
     params,
     SEARCH_CACHE,
   );
-  const total = Number(rows[0]?.n ?? 0);
+  let total = Number(rows[0]?.n ?? 0);
+
+  if (total === 0 && tokens.length > 0) {
+    ({ clauses, params } = buildWhereParts(tokens, filters, true));
+    where = whereSQL(clauses);
+    rows = await query<{ n: string }>(
+      `SELECT count() AS n FROM orders ${where}`,
+      params,
+      SEARCH_CACHE,
+    );
+    total = Number(rows[0]?.n ?? 0);
+  }
+
   await searchCacheSet(cacheKey, total);
   return total;
 }
