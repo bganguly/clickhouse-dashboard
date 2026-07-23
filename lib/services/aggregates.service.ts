@@ -339,25 +339,30 @@ async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
   const tokens = (input.q?.trim() ?? "").split(/\s+/).filter(Boolean);
   const filters = await resolveFilters(input);
 
-  const clauses: string[] = [];
-  const params: Record<string, unknown> = {};
-  let pi = 0;
-  for (const tok of tokens) {
-    const k = `stok${pi++}`;
-    clauses.push(`hasToken(searchText, {${k}: String})`);
-    params[k] = tok.toLowerCase();
+  function buildSlowClauses(useLike: boolean) {
+    const clauses: string[] = [];
+    const params: Record<string, unknown> = {};
+    let pi = 0;
+    for (const tok of tokens) {
+      const k = `stok${pi++}`;
+      if (useLike) {
+        clauses.push(`lower(searchText) LIKE {${k}: String}`);
+        params[k] = `%${escapeLike(tok.toLowerCase())}%`;
+      } else {
+        clauses.push(`hasToken(searchText, {${k}: String})`);
+        params[k] = tok.toLowerCase();
+      }
+    }
+    if (filters.statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
+    if (filters.regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
+    if (filters.from) { clauses.push(`placedAt >= {from: DateTime64(3)}`); params["from"] = filters.from; }
+    if (filters.to) { clauses.push(`placedAt <= {to: DateTime64(3)}`); params["to"] = filters.to; }
+    if (filters.minTotal !== null) { clauses.push(`total >= {minTotal: Float64}`); params["minTotal"] = filters.minTotal; }
+    if (filters.maxTotal !== null) { clauses.push(`total <= {maxTotal: Float64}`); params["maxTotal"] = filters.maxTotal; }
+    return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params };
   }
-  if (filters.statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
-  if (filters.regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
-  if (filters.from) { clauses.push(`placedAt >= {from: DateTime64(3)}`); params["from"] = filters.from; }
-  if (filters.to) { clauses.push(`placedAt <= {to: DateTime64(3)}`); params["to"] = filters.to; }
-  if (filters.minTotal !== null) { clauses.push(`total >= {minTotal: Float64}`); params["minTotal"] = filters.minTotal; }
-  if (filters.maxTotal !== null) { clauses.push(`total <= {maxTotal: Float64}`); params["maxTotal"] = filters.maxTotal; }
 
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-
-  return query<AggRow>(
-    `SELECT
+  const SQL = (where: string) => `SELECT
        toString(toDate(placedAt))                                AS day,
        item.categoryName                                         AS category,
        count()                                                   AS total_orders,
@@ -367,9 +372,14 @@ async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
      ARRAY JOIN items AS item
      ${where}
      GROUP BY day, category
-     ORDER BY day ASC, category ASC`,
-    params,
-  );
+     ORDER BY day ASC, category ASC`;
+
+  const { where, params } = buildSlowClauses(false);
+  const rows = await query<AggRow>(SQL(where), params);
+  if (rows.length > 0 || tokens.length === 0) return rows;
+
+  const { where: whereLike, params: paramsLike } = buildSlowClauses(true);
+  return query<AggRow>(SQL(whereLike), paramsLike);
 }
 
 function rowsToDailyAggregates(rows: AggRow[], topN: number): DailyAggregate[] {
