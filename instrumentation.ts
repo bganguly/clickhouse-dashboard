@@ -2,15 +2,15 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   if (!process.env.CLICKHOUSE_URL) return;
 
-  const { query } = await import("@/lib/clickhouse");
+  const { listOrders } = await import("@/lib/services/orders.service");
 
   const ping = async () => {
     try {
-      await query("SELECT 1");
+      await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
     } catch {
       // best-effort keep-alive; swallow errors silently
     }
   };
 
-  setInterval(ping, 20 * 60 * 1000);
+  setInterval(ping, 4 * 60 * 1000);
 }

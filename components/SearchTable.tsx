@@ -176,6 +176,7 @@ export default function SearchTable({
   const [total, setTotal] = useState(0);
   const [sort, setSort] = useState<string>("placedAt");
   const [dir, setDir] = useState<SortDir>("desc");
+  const [pendingSearch, setPendingSearch] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [countLoading, setCountLoading] = useState(false);
@@ -247,6 +248,7 @@ export default function SearchTable({
       const controller = new AbortController();
       abortRef.current = controller;
 
+      setPendingSearch(false);
       setLoading(true);
       setSearchLoading(showSearchIndicator);
       setError(null);
@@ -587,9 +589,9 @@ export default function SearchTable({
     <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
       <header className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">Search</h2>
-        {(isControlled ? controlledLoading : loading) && (
+        {(pendingSearch || (isControlled ? controlledLoading : loading)) && (
           <span className="text-xs text-indigo-500" aria-live="polite">
-            {searchLoading ? "searching…" : "updating…"}
+            {(pendingSearch || searchLoading) ? "searching…" : "updating…"}
           </span>
         )}
       </header>
@@ -620,11 +622,13 @@ export default function SearchTable({
             } else if (e.key === "Enter") {
               if (activeSuggestion >= 0 && suggestions[activeSuggestion]) {
                 const tok = suggestions[activeSuggestion].token;
+                setPendingSearch(true);
                 setQuery(tok);
                 setDebouncedQuery(tok);
                 setPage(1);
                 setShowSuggestions(false);
               } else {
+                setPendingSearch(true);
                 setDebouncedQuery(query);
                 setPage(1);
                 setShowSuggestions(false);
@@ -650,6 +654,7 @@ export default function SearchTable({
                 aria-selected={idx === activeSuggestion}
                 onMouseDown={(e) => {
                   e.preventDefault();
+                  setPendingSearch(true);
                   setQuery(s.token);
                   setDebouncedQuery(s.token);
                   setPage(1);
@@ -808,7 +813,7 @@ export default function SearchTable({
           <span data-testid="search-total" data-total={displayTotal}>
             {footerLoading || (externalTotal == null && countStillLoading)
               ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
-              : <span className={countSettled ? "count-settle" : undefined}>{displayTotal.toLocaleString()}</span>}
+              : <span className={countSettled ? "count-settle" : undefined}>{pendingSearch ? "0" : displayTotal.toLocaleString()}</span>}
           </span>{" "}
           {footerLoading || (externalTotal == null && countStillLoading)
             ? <span className="inline-block h-3 w-10 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />

@@ -167,7 +167,7 @@ const COLORS = [
 ];
 
 const STACK_ID = "aggregates";
-const DRAG_DEBOUNCE_MS = 250;
+
 
 function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -223,7 +223,10 @@ export default function Chart({
 
   // Abort in-flight requests so rapid drags don't race each other.
   const abortRef = useRef<AbortController | null>(null);
-  const dragTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDragRef = useRef<{ from: string; to: string } | null>(null);
+  const chartRef = useRef<HTMLElement | null>(null);
+  const onRangeChangeRef = useRef(onRangeChange);
+  useEffect(() => { onRangeChangeRef.current = onRangeChange; });
   // onRangeChange is an independent side-channel (e.g. syncing the brushed
   // window into the shared filters so the list narrows too) — it does NOT
   // imply controlled mode. Only supplying controlledData does.
@@ -337,11 +340,26 @@ export default function Chart({
   }, [controlledError, isControlled]);
 
   useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-      if (dragTimer.current) clearTimeout(dragTimer.current);
-    };
+    return () => { abortRef.current?.abort(); };
   }, []);
+
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return;
+    const handleRelease = () => {
+      const pending = pendingDragRef.current;
+      if (!pending) return;
+      pendingDragRef.current = null;
+      if (!isControlled) fetchAggregates(pending.from, pending.to);
+      onRangeChangeRef.current?.({ from: pending.from, to: pending.to });
+    };
+    el.addEventListener("mouseup", handleRelease);
+    el.addEventListener("touchend", handleRelease);
+    return () => {
+      el.removeEventListener("mouseup", handleRelease);
+      el.removeEventListener("touchend", handleRelease);
+    };
+  }, [fetchAggregates, isControlled]);
 
   // Incremental patch for SSE orders (Task 16): bump the matching day's category
   // count in place instead of refetching. Keeps every bar mounted (no FOUC) and
@@ -534,7 +552,9 @@ export default function Chart({
     return tops;
   }, [seriesRanked]);
 
-  // Dragging the Brush selects a date window; debounce then refetch that window.
+  // Dragging the Brush updates the visual range immediately; the actual query
+  // fires on mouseup/touchend so every intermediate drag tick doesn't issue a
+  // request (each tick is a unique date range that will always miss cache).
   const handleBrushChange = useCallback(
     (next: { startIndex?: number; endIndex?: number }) => {
       const { startIndex, endIndex } = next;
@@ -550,29 +570,15 @@ export default function Chart({
       const from = String(buckets[startIndex].date);
       const to = String(buckets[endIndex].date);
       if (from === range.from && to === range.to) return;
-
       setRange({ from, to });
-      if (dragTimer.current) clearTimeout(dragTimer.current);
-      dragTimer.current = setTimeout(() => {
-        if (!isControlled) fetchAggregates(from, to);
-        // Notify the parent regardless of controlled/uncontrolled mode, so it
-        // can sync the brushed window into shared filters (e.g. so the list
-        // narrows to the same range the chart is now showing).
-        onRangeChange?.({ from, to });
-      }, DRAG_DEBOUNCE_MS);
+      pendingDragRef.current = { from, to };
     },
-    [
-      buckets,
-      range.from,
-      range.to,
-      fetchAggregates,
-      isControlled,
-      onRangeChange,
-    ],
+    [buckets, range.from, range.to],
   );
 
   return (
     <section
+      ref={chartRef}
       data-testid="chart"
       // `data-loading` mirrors the internal fetch state so wt3 can assert the
       // refetch window; `relative overflow-hidden` clips the ::before sweep bar.
