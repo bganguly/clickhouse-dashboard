@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import BackToPortfolio from '../components/BackToPortfolio';
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -28,6 +29,7 @@ export default function RootLayout({
       className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <BackToPortfolio />
         {children}
       </body>
     </html>
