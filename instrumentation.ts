@@ -2,6 +2,9 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   if (!process.env.CLICKHOUSE_URL) return;
 
+  const { ensureCollection } = await import("@/lib/typesense");
+  await ensureCollection().catch(() => {});
+
   const { listOrders } = await import("@/lib/services/orders.service");
 
   const ping = async () => {

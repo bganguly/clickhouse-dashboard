@@ -181,6 +181,35 @@ if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${REDIS_URL:-}" ]];
   printf '%s' "$REDIS_URL" | gh secret set REDIS_URL --repo "$_GH_REPO"
 fi
 
+TS_CREDS_FILE="$ROOT_DIR/.typesense-creds"
+if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
+  printf '  Using Typesense credentials from environment.\n'
+elif [[ -f "$TS_CREDS_FILE" ]]; then
+  source "$TS_CREDS_FILE"
+  printf '  Loaded Typesense URL from .typesense-creds: %s. Use it? [Y/n]: ' "${TYPESENSE_URL:-}"
+  read -r USE_TS_SAVED; USE_TS_SAVED="${USE_TS_SAVED:-Y}"
+  if [[ ! "$USE_TS_SAVED" =~ ^[Yy] ]]; then
+    unset TYPESENSE_URL TYPESENSE_API_KEY
+  fi
+fi
+if [[ -z "${TYPESENSE_URL:-}" ]]; then
+  printf 'Typesense URL (e.g. https://xxx.a1.typesense.net, or press Enter to skip): '
+  read -r TYPESENSE_URL; printf '\n'
+  if [[ -n "$TYPESENSE_URL" ]]; then
+    printf 'Typesense Admin API Key: '
+    read -rs TYPESENSE_API_KEY; printf '\n'
+    printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
+    chmod 600 "$TS_CREDS_FILE"
+    printf '  Saved to .typesense-creds\n'
+  fi
+fi
+export TYPESENSE_URL="${TYPESENSE_URL:-}"
+export TYPESENSE_API_KEY="${TYPESENSE_API_KEY:-}"
+if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${TYPESENSE_URL:-}" ]]; then
+  printf '%s' "$TYPESENSE_URL"     | gh secret set TYPESENSE_URL     --repo "$_GH_REPO"
+  printf '%s' "$TYPESENSE_API_KEY" | gh secret set TYPESENSE_API_KEY --repo "$_GH_REPO"
+fi
+
 printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
 cd "$INFRA_DIR"
 terraform init -input=false -upgrade >/dev/null
@@ -591,6 +620,45 @@ if [[ "${_VOCAB_COUNT:-0}" -eq 0 ]]; then
     2>/dev/null || true
   printf '  search_vocabulary populated: %s tokens\n' \
     "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT count() FROM search_vocabulary" 2>/dev/null || echo '?')"
+fi
+
+if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
+  printf '[deploy] Checking Typesense collection...\n'
+  _TS_COL="$(curl -sf -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
+    "${TYPESENSE_URL}/collections/orders" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('num_documents',0))" 2>/dev/null || echo '')"
+  if [[ -z "$_TS_COL" ]]; then
+    printf '  Creating orders collection...\n'
+    curl -sf -X POST "${TYPESENSE_URL}/collections" \
+      -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{"name":"orders","fields":[{"name":"id","type":"string"},{"name":"searchText","type":"string"}]}' \
+      >/dev/null 2>&1 || true
+    _TS_COL=0
+  fi
+  printf '  Typesense orders collection: %s documents\n' "${_TS_COL:-0}"
+  _TS_SEED_NEEDED=0
+  if [[ "${_TS_COL:-0}" -lt 10000 ]]; then
+    _TS_SEED_NEEDED=1
+  fi
+  if [[ "$_TS_SEED_NEEDED" -eq 1 ]]; then
+    printf '  Seeding Typesense with latest 100k orders from ClickHouse...\n'
+    _SEED_FILE="${ROOT_DIR}/.ts_seed.jsonl"
+    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
+      --data-binary "SELECT toString(orderId) AS id, searchText FROM orders ORDER BY placedAt DESC LIMIT 100000 FORMAT JSONEachRow" \
+      > "$_SEED_FILE" 2>/dev/null || true
+    if [[ -s "$_SEED_FILE" ]]; then
+      _TS_IMPORT_RESP="$(curl -sf -X POST "${TYPESENSE_URL}/collections/orders/documents/import?action=upsert" \
+        -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
+        -H "Content-Type: text/plain" \
+        --data-binary "@${_SEED_FILE}" 2>/dev/null | tail -1 || echo '')"
+      printf '  Seeding complete (last batch: %s)\n' "${_TS_IMPORT_RESP:0:80}"
+    else
+      printf '  Seed skipped (ClickHouse export empty).\n'
+    fi
+    rm -f "$_SEED_FILE"
+  else
+    printf '  Typesense already seeded — skipping.\n'
+  fi
 fi
 
 CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
