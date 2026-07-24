@@ -198,9 +198,13 @@ if [[ -z "${TYPESENSE_URL:-}" ]]; then
   if [[ -n "$TYPESENSE_URL" ]]; then
     printf 'Typesense Admin API Key: '
     read -rs TYPESENSE_API_KEY; printf '\n'
-    printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
-    chmod 600 "$TS_CREDS_FILE"
-    printf '  Saved to .typesense-creds\n'
+    printf 'Save credentials? [Y/n]: '
+    read -r SAVE_TS_CREDS; SAVE_TS_CREDS="${SAVE_TS_CREDS:-Y}"
+    if [[ "$SAVE_TS_CREDS" =~ ^[Yy] ]]; then
+      printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
+      chmod 600 "$TS_CREDS_FILE"
+      printf '  Saved to .typesense-creds\n'
+    fi
   fi
 fi
 export TYPESENSE_URL="${TYPESENSE_URL:-}"
