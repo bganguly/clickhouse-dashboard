@@ -228,26 +228,11 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
     const t0 = Date.now();
     const filters = await resolveFilters(input);
 
-    let clauses: string[];
-    let params: Record<string, unknown>;
+    const searchTokens = tokens.length > 0 && typesense.isEnabled()
+      ? await Promise.all(tokens.map((t) => typesense.expandPrefix(t)))
+      : tokens;
 
-    if (tokens.length > 0 && typesense.isEnabled()) {
-      const tsIds = await typesense.searchOrderIds(tokens.join(" "));
-      if (tsIds.length === 0) {
-        const empty: OrderListResult = { data: [], page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: false };
-        await searchCacheSet(cacheKey, empty);
-        return empty;
-      }
-      const filterResult = buildWhereParts([], filters);
-      filterResult.clauses.unshift(`orderId IN (${tsIds.join(",")})`);
-      clauses = filterResult.clauses;
-      params = filterResult.params;
-    } else {
-      const result = buildWhereParts(tokens, filters);
-      clauses = result.clauses;
-      params = result.params;
-    }
-
+    const { clauses, params } = buildWhereParts(searchTokens, filters);
     const where = whereSQL(clauses);
     const sortCol = SORT_COL[sort];
     const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
@@ -257,7 +242,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       { ...params, lim: pageSize, off: offset },
       SEARCH_CACHE,
     );
-    console.log(`[orders] listOrders ms=${Date.now() - t0} via=${tokens.length > 0 && typesense.isEnabled() ? "typesense" : "clickhouse"} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
+    console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
     const data = orderRows.map(rowToDTO);
     const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
@@ -478,7 +463,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       categorySlug: firstCategorySlug,
     }).catch(() => {});
 
-    typesense.indexOrder(orderId, searchText).catch(() => {});
+    const newTokens = searchText.split(/\s+/).filter((t) => t.length >= 2 && !/^\d+$/.test(t));
+    typesense.indexTokens(newTokens.map((t) => ({ token: t }))).catch(() => {});
     await Promise.all([invalidateAggregatesCache(), invalidateSearchCache()]);
 
     return { id: orderId, status: "PENDING", total, placedAt: new Date(placedAt).toISOString() };
@@ -536,22 +522,11 @@ export async function getOrderCount(
     }
   }
 
-  if (tokens.length > 0 && typesense.isEnabled()) {
-    const tsIds = await typesense.searchOrderIds(tokens.join(" "));
-    if (tsIds.length === 0) {
-      await searchCacheSet(cacheKey, 0);
-      return 0;
-    }
-    const { clauses: fc, params: fp } = buildWhereParts([], filters);
-    fc.unshift(`orderId IN (${tsIds.join(",")})`);
-    const where = whereSQL(fc);
-    const rows = await query<{ n: string }>(`SELECT count() AS n FROM orders ${where}`, fp, SEARCH_CACHE);
-    const total = Number(rows[0]?.n ?? 0);
-    await searchCacheSet(cacheKey, total);
-    return total;
-  }
+  const searchTokens = tokens.length > 0 && typesense.isEnabled()
+    ? await Promise.all(tokens.map((t) => typesense.expandPrefix(t)))
+    : tokens;
 
-  const { clauses, params } = buildWhereParts(tokens, filters);
+  const { clauses, params } = buildWhereParts(searchTokens, filters);
   const where = whereSQL(clauses);
   const rows = await query<{ n: string }>(
     `SELECT count() AS n FROM orders ${where}`,

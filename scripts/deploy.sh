@@ -629,39 +629,41 @@ fi
 if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
   printf '[deploy] Checking Typesense collection...\n'
   _TS_COL="$(curl -sf -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
-    "${TYPESENSE_URL}/collections/orders" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('num_documents',0))" 2>/dev/null || echo '')"
+    "${TYPESENSE_URL}/collections/vocabulary" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('num_documents',0))" 2>/dev/null || echo '')"
   if [[ -z "$_TS_COL" ]]; then
-    printf '  Creating orders collection...\n'
+    printf '  Creating vocabulary collection...\n'
     curl -sf -X POST "${TYPESENSE_URL}/collections" \
       -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
       -H "Content-Type: application/json" \
-      -d '{"name":"orders","fields":[{"name":"id","type":"string"},{"name":"searchText","type":"string"}]}' \
+      -d '{"name":"vocabulary","fields":[{"name":"id","type":"string"},{"name":"token","type":"string"},{"name":"doc_freq","type":"int32"}]}' \
       >/dev/null 2>&1 || true
     _TS_COL=0
   fi
-  printf '  Typesense orders collection: %s documents\n' "${_TS_COL:-0}"
+  printf '  Typesense vocabulary collection: %s tokens\n' "${_TS_COL:-0}"
   _TS_SEED_NEEDED=0
-  if [[ "${_TS_COL:-0}" -lt 10000 ]]; then
+  if [[ "${_TS_COL:-0}" -lt 1000 ]]; then
     _TS_SEED_NEEDED=1
   fi
   if [[ "$_TS_SEED_NEEDED" -eq 1 ]]; then
-    printf '  Seeding Typesense with latest 100k orders from ClickHouse...\n'
+    printf '  Seeding Typesense vocabulary from search_vocabulary...\n'
     _SEED_FILE="${ROOT_DIR}/.ts_seed.jsonl"
     curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
-      --data-binary "SELECT toString(orderId) AS id, searchText FROM orders ORDER BY placedAt DESC LIMIT 100000 FORMAT JSONEachRow" \
+      --data-binary "SELECT token AS id, token, toInt32(doc_freq) AS doc_freq FROM search_vocabulary FORMAT JSONEachRow" \
       > "$_SEED_FILE" 2>/dev/null || true
     if [[ -s "$_SEED_FILE" ]]; then
-      _TS_IMPORT_RESP="$(curl -sf -X POST "${TYPESENSE_URL}/collections/orders/documents/import?action=upsert" \
+      _TS_IMPORT_RESP="$(curl -sf -X POST "${TYPESENSE_URL}/collections/vocabulary/documents/import?action=upsert" \
         -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
         -H "Content-Type: text/plain" \
         --data-binary "@${_SEED_FILE}" 2>/dev/null | tail -1 || echo '')"
-      printf '  Seeding complete (last batch: %s)\n' "${_TS_IMPORT_RESP:0:80}"
+      _TS_COUNT="$(curl -sf -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
+        "${TYPESENSE_URL}/collections/vocabulary" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('num_documents',0))" 2>/dev/null || echo '?')"
+      printf '  Seeding complete — %s tokens indexed\n' "${_TS_COUNT}"
     else
-      printf '  Seed skipped (ClickHouse export empty).\n'
+      printf '  Seed skipped (search_vocabulary empty — run deploy again after vocab is populated).\n'
     fi
     rm -f "$_SEED_FILE"
   else
-    printf '  Typesense already seeded — skipping.\n'
+    printf '  Typesense vocabulary already seeded — skipping.\n'
   fi
 fi
 
