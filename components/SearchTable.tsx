@@ -248,7 +248,6 @@ export default function SearchTable({
       const controller = new AbortController();
       abortRef.current = controller;
 
-      setPendingSearch(false);
       setLoading(true);
       setSearchLoading(showSearchIndicator);
       setError(null);
@@ -270,6 +269,7 @@ export default function SearchTable({
         const json: SearchResponse = await res.json();
         if (abortRef.current !== controller) return;
         const data = Array.isArray(json.data) ? json.data : [];
+        setPendingSearch(false);
         setRows(data);
         setCountSettled(false);
         onRowsRef.current?.(data);
@@ -384,6 +384,7 @@ export default function SearchTable({
       : [];
     // Controlled data is supplied by the parent after one combined dashboard fetch.
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPendingSearch(false);
     setRows(data);
     setTotalPages(Math.max(1, controlledResponse.totalPages ?? 1));
     setTotal(controlledResponse.total ?? 0);

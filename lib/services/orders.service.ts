@@ -219,7 +219,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const tokens = (input.q?.trim() ?? "").split(/\s+/).filter(Boolean);
   const offset = (page - 1) * pageSize;
 
-  const cacheKey = `rows:${JSON.stringify({ q: input.q, page, pageSize, sort, dir, status: input.status, regionCode: input.regionCode, from: input.from, to: input.to, minTotal: input.minTotal, maxTotal: input.maxTotal })}`;
+  const cacheKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
   const cached = await searchCacheGet<OrderListResult>(cacheKey);
   if (cached) return cached;
 
@@ -485,7 +485,7 @@ export async function getOrderCount(
   q: string | undefined,
   filters: ResolvedFilters,
 ): Promise<number> {
-  const cacheKey = `count:${JSON.stringify({ q, ...filters })}`;
+  const cacheKey = `count:${JSON.stringify({ q: q || null, ...filters })}`;
   const cached = await searchCacheGet<number>(cacheKey);
   if (cached != null) return cached;
 
