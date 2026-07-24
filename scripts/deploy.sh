@@ -564,24 +564,67 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
   else
     printf '  Truncating and re-inserting order_category_facts (includes searchText)...\n'
   fi
-  printf '  Truncating chart summary tables (MV will repopulate from the fresh OCF insert)...\n'
+
+  printf '  [%s] Truncating chart summary tables...\n' "$(date +'%H:%M:%S')"
   for _SUMMARY_TABLE in daily_summary daily_status_category_summary daily_filter_category_summary daily_customer_category_summary; do
+    printf '    %s...' "${_SUMMARY_TABLE}"
     curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
       --data-binary "TRUNCATE TABLE IF EXISTS ${_SUMMARY_TABLE}" 2>/dev/null || true
+    printf ' done\n'
   done
+
+  printf '  [%s] Truncating order_category_facts...\n' "$(date +'%H:%M:%S')"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
     --data-binary "TRUNCATE TABLE order_category_facts" 2>/dev/null || true
+  printf '  OCF rows after TRUNCATE: %s\n' \
+    "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
+
+  printf '  [%s] Starting OCF INSERT from orders ARRAY JOIN items (~2 h) — progress every 30 s...\n' "$(date +'%H:%M:%S')"
+  (
+    _CH_URL="${CLICKHOUSE_URL}"
+    _CH_PASS="${CH_PASS}"
+    while true; do
+      sleep 30
+      _OCF_NOW="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
+        --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
+      _PROC="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
+        --data-binary "SELECT round(elapsed,0), read_rows, written_rows FROM system.processes WHERE query LIKE 'INSERT INTO order_category_facts%' LIMIT 1" 2>/dev/null || echo '')"
+      if [[ -n "${_PROC}" ]]; then
+        printf '  [%s] INSERT running — elapsed=%ss  read=%s  written=%s  |  OCF so far: %s rows\n' \
+          "$(date +'%H:%M:%S')" \
+          "$(printf '%s' "${_PROC}" | cut -f1)" \
+          "$(printf '%s' "${_PROC}" | cut -f2)" \
+          "$(printf '%s' "${_PROC}" | cut -f3)" \
+          "${_OCF_NOW}"
+      else
+        printf '  [%s] INSERT no longer in system.processes  |  OCF: %s rows\n' "$(date +'%H:%M:%S')" "${_OCF_NOW}"
+      fi
+    done
+  ) &
+  _OCF_PROG_PID=$!
+
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, item.categoryId, item.categoryName, item.quantity, toDecimal64(toFloat64(item.quantity) * toFloat64(item.unitPrice), 2), o.searchText FROM orders AS o ARRAY JOIN o.items AS item WHERE notEmpty(o.items) SETTINGS max_execution_time=7200" \
     2>/dev/null || true
-  printf '  order_category_facts rebuilt from items array (1 row per order).\n'
-  printf '  Forcing merge of chart summary tables (OPTIMIZE FINAL)...\n'
+
+  kill "${_OCF_PROG_PID}" 2>/dev/null || true
+  wait "${_OCF_PROG_PID}" 2>/dev/null || true
+
+  _OCF_FINAL="$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
+  printf '  [%s] OCF INSERT complete — %s rows\n' "$(date +'%H:%M:%S')" "${_OCF_FINAL}"
+
+  printf '  [%s] Forcing merge of chart summary tables (OPTIMIZE FINAL)...\n' "$(date +'%H:%M:%S')"
   for _SUMMARY_TABLE in daily_summary daily_status_category_summary daily_filter_category_summary daily_customer_category_summary; do
-    printf '    %s...\n' "${_SUMMARY_TABLE}"
+    printf '    [%s] %s...' "$(date +'%H:%M:%S')" "${_SUMMARY_TABLE}"
     curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=300" --max-time 360 \
       --data-binary "OPTIMIZE TABLE IF EXISTS ${_SUMMARY_TABLE} FINAL" 2>/dev/null || true
+    _SROW="$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT count() FROM ${_SUMMARY_TABLE}" 2>/dev/null || echo '?')"
+    printf ' done (%s rows)\n' "${_SROW}"
   done
-  printf '  Summary tables merged — fastPath chart queries should now be <100 ms.\n'
+  printf '  [%s] Summary tables merged — fastPath chart queries should now be <100 ms.\n' "$(date +'%H:%M:%S')"
   _OCF_REBUILT=1
 fi
 
@@ -594,13 +637,40 @@ _DSTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
   --data-binary "SELECT count() FROM daily_search_token_summary" \
   2>/dev/null || echo 0)"
 if [[ "${_DSTS_COUNT:-0}" -eq 0 || "${_OCF_REBUILT:-0}" -eq 1 ]]; then
-  printf '  Populating daily_search_token_summary from order_category_facts...\n'
+  printf '  [%s] Populating daily_search_token_summary from order_category_facts (~30 min)...\n' "$(date +'%H:%M:%S')"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
     --data-binary "TRUNCATE TABLE daily_search_token_summary" 2>/dev/null || true
+  (
+    _CH_URL="${CLICKHOUSE_URL}"
+    _CH_PASS="${CH_PASS}"
+    while true; do
+      sleep 30
+      _DSTS_NOW="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
+        --data-binary "SELECT count() FROM daily_search_token_summary" 2>/dev/null || echo '?')"
+      _PROC="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
+        --data-binary "SELECT round(elapsed,0), read_rows, written_rows FROM system.processes WHERE query LIKE 'INSERT INTO daily_search_token_summary%' LIMIT 1" 2>/dev/null || echo '')"
+      if [[ -n "${_PROC}" ]]; then
+        printf '  [%s] token INSERT running — elapsed=%ss  read=%s  written=%s  |  rows so far: %s\n' \
+          "$(date +'%H:%M:%S')" \
+          "$(printf '%s' "${_PROC}" | cut -f1)" \
+          "$(printf '%s' "${_PROC}" | cut -f2)" \
+          "$(printf '%s' "${_PROC}" | cut -f3)" \
+          "${_DSTS_NOW}"
+      else
+        printf '  [%s] token INSERT no longer in system.processes  |  rows: %s\n' "$(date +'%H:%M:%S')" "${_DSTS_NOW}"
+      fi
+    done
+  ) &
+  _DSTS_PROG_PID=$!
+
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "INSERT INTO daily_search_token_summary (token, date, categoryName, orderCount, orderTotal) SELECT tok AS token, date, categoryName, count() AS orderCount, sum(toFloat64(totalRevenue)) AS orderTotal FROM order_category_facts ARRAY JOIN splitByNonAlpha(lower(searchText)) AS tok WHERE length(tok) >= 2 GROUP BY tok, date, categoryName SETTINGS max_execution_time=7200" \
     2>/dev/null || true
-  printf '  daily_search_token_summary populated: %s rows\n' \
+
+  kill "${_DSTS_PROG_PID}" 2>/dev/null || true
+  wait "${_DSTS_PROG_PID}" 2>/dev/null || true
+
+  printf '  [%s] daily_search_token_summary populated: %s rows\n' "$(date +'%H:%M:%S')" \
     "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT count() FROM daily_search_token_summary" 2>/dev/null || echo '?')"
 else
   printf '  daily_search_token_summary has %s rows — skipping.\n' "${_DSTS_COUNT}"
