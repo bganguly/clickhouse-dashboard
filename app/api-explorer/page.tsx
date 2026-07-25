@@ -337,10 +337,10 @@ function SearchCard() {
       : `showing ${rows.length} result${rows.length !== 1 ? "s" : ""} for "${q}"`;
 
   return (
-    <Card path="/api/orders?q=…" subtitle="Full-text search via GIN trigram index">
+    <Card path="/api/orders?q=…" subtitle="Full-text search — Typesense prefix expansion + ClickHouse hasToken">
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
         <div className="flex items-center gap-3">
-          <DarkInput value={q} onChange={setQ} placeholder="e.g. gupta, sara frank, east…"
+          <DarkInput value={q} onChange={setQ} placeholder="e.g. murphy, saturday, fragile…"
             onEnter={run} style={{ width:220 }} />
           {mono("pageSize","10")}
         </div>
