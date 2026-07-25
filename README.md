@@ -6,7 +6,7 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 
 ## Live Service
 
-| | |
+| Endpoint | URL |
 |---|---|
 | **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
 | **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
@@ -24,7 +24,7 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 
 ---
 
-| | |
+| Area | Stack / Detail |
 |---|---|
 | **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
 | **ClickHouse Cloud — columnar analytics** | Development tier (auto-pause); ARRAY JOIN denormalization; 5 Materialized Views feeding SummingMergeTree aggregate tables; `hasToken` full-text search; 60 s query cache |
@@ -175,7 +175,7 @@ MVs fire on INSERT into `order_category_facts`. The `daily_summary` fast path �
 
 ## Reference
 
-| | |
+| Document | Description |
 |---|---|
 | **[ClickHouse at 50 M rows](https://claude.ai/code/artifact/079e248c-2e53-4b02-ac1c-b4f3356ecb5f)** | Cost and performance brief |
 | **[Performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4)** | 8-step plan — all steps complete · chart 6–14 s → 180 ms, search 5–8 s → <0.5 s |
