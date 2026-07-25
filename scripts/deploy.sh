@@ -190,6 +190,16 @@ elif [[ -f "$TS_CREDS_FILE" ]]; then
   read -r USE_TS_SAVED; USE_TS_SAVED="${USE_TS_SAVED:-Y}"
   if [[ ! "$USE_TS_SAVED" =~ ^[Yy] ]]; then
     unset TYPESENSE_URL TYPESENSE_API_KEY
+  else
+    printf '  Use saved API key? [Y/n]: '
+    read -r USE_TS_KEY; USE_TS_KEY="${USE_TS_KEY:-Y}"
+    if [[ ! "$USE_TS_KEY" =~ ^[Yy] ]]; then
+      printf 'Typesense Admin API Key: '
+      read -rs TYPESENSE_API_KEY; printf '\n'
+      printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
+      chmod 600 "$TS_CREDS_FILE"
+      printf '  Saved to .typesense-creds\n'
+    fi
   fi
 fi
 if [[ -z "${TYPESENSE_URL:-}" ]]; then
