@@ -66,10 +66,6 @@ MVs fire on INSERT into `order_category_facts` (written by `createOrder`).
 Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
                                  scale-to-zero                                  (Development tier · HTTPS :8443)
                                  Terraform-managed
-
-createOrder()
-  ├─ INSERT orders (with items ARRAY)
-  └─ INSERT order_category_facts  ──► 4 Materialized Views update aggregate tables
 ```
 
 ---
