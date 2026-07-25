@@ -301,6 +301,7 @@ fi
 printf '[5/5] Deploying to App Runner...\n'
 cd "$INFRA_DIR"
 _AR_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
+_TAINTED=0
 if [[ -n "$_AR_ARN" ]]; then
   _AR_REGION="$(printf '%s' "$_AR_ARN" | cut -d: -f4)"
   _AR_STATUS="$(aws apprunner describe-service --service-arn "$_AR_ARN" \
@@ -308,9 +309,12 @@ if [[ -n "$_AR_ARN" ]]; then
   if [[ "$_AR_STATUS" == "CREATE_FAILED" ]]; then
     printf '  App Runner in CREATE_FAILED — tainting for recreation...\n'
     terraform taint aws_apprunner_service.app
+    _TAINTED=1
   fi
 fi
-terraform apply -auto-approve -input=false
+if [[ "$_TAINTED" -eq 1 ]]; then
+  terraform apply -auto-approve -input=false
+fi
 printf '  Reading Terraform outputs...\n'
 APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
 CDN_URL="$(terraform output -raw cdn_url)"
