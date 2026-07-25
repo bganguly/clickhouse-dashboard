@@ -30,8 +30,8 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 
 ```
 Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
-                                 scale-to-zero                                  (Development tier · HTTPS :8443)
-                                 Terraform-managed
+                                 scale-to-zero          └──typesense client──► Typesense Cloud
+                                 Terraform-managed                               (prefix expansion)
 ```
 
 ---
@@ -52,6 +52,7 @@ Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path
 | **App Runner** | Scale-to-zero — ~$0 when idle; ~$0.064/vCPU-hr + $0.007/GB-hr when active |
 | **CloudFront** | Negligible at demo traffic levels |
 | **ClickHouse Cloud Development tier** | Auto-pauses after idle; ~$0 when paused |
+| **Typesense Cloud** | Free tier covers demo scale (~200 k vocabulary tokens) |
 
 ---
 
@@ -88,17 +89,25 @@ curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
 │   │  • /api/aggregates (chart — reads SummingMergeTree tables)        │   │
 │   │  • instrumentation.ts keepalive (setInterval 4 min)               │   │
 │   │  • @clickhouse/client over HTTPS :8443                            │   │
-│   └──────────────────────────┬────────────────────────────────────────┘   │
-│                              │ @clickhouse/client                         │
-│   ┌───────────────────────────▼────────────────────────────────────────┐  │
-│   │  ClickHouse Cloud (external · Development tier)                    │  │
-│   │  • orders (50 M rows) + order_category_facts (50 M rows)          │  │
-│   │  • categories / regions / customers / products                     │  │
-│   │  • 5 Materialized Views → SummingMergeTree aggregate tables        │  │
-│   │  • daily_search_token_summary — drives <100 ms token search        │  │
-│   │  • hasToken full-text search on denormalized searchText column     │  │
-│   │  • query_cache TTL 60 s on all analytics queries                   │  │
-│   └────────────────────────────────────────────────────────────────────┘  │
+│   │  • typesense client — expandPrefix() on every search query        │   │
+│   └──────────────────┬──────────────────────┬─────────────────────────┘   │
+│                      │ @clickhouse/client    │ typesense client            │
+│   ┌───────────────────▼──────────────────┐  │                             │
+│   │  ClickHouse Cloud (external)          │  │                             │
+│   │  • orders (50 M rows)                 │  │                             │
+│   │  • order_category_facts (50 M rows)   │  │                             │
+│   │  • 5 MVs → SummingMergeTree tables    │  │                             │
+│   │  • hasToken on searchText column      │  │                             │
+│   │  • query_cache TTL 60 s               │  │                             │
+│   │  • search_vocabulary (token index)    │  │                             │
+│   └───────────────────────────────────────┘  │                             │
+│                                              │                             │
+│   ┌───────────────────────────────────────────▼─────────────────────────┐ │
+│   │  Typesense Cloud (external)                                          │ │
+│   │  • vocabulary collection — ~50–200 k tokens, doc_freq weighted      │ │
+│   │  • expandPrefix("mur") → "murphy"; "satur" → "saturday"             │ │
+│   │  • seeded from ClickHouse search_vocabulary at deploy time           │ │
+│   └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                           │
 │   ECR — ch-dash-app:latest / ch-dash-app:<sha>                            │
 │   GitHub Actions builds + pushes on every push to main                   │
@@ -108,9 +117,11 @@ Deploy flow
 ───────────
 local machine
   └─ deploy.sh
-       ├─ terraform apply        → App Runner + CloudFront (first run)
+       ├─ terraform apply        → App Runner + CloudFront (injects TYPESENSE_URL/KEY)
        ├─ npx tsx migrations/    → ClickHouse schema (idempotent)
        ├─ scripts/seed.ts        → populate 50 M orders + OCF ARRAY JOIN (~2 hr)
+       ├─ populate search_vocabulary → extract tokens from orders.searchText
+       ├─ seed Typesense          → bulk-import search_vocabulary → vocabulary collection
        └─ docker build + push    → ECR :latest (App Runner auto-deploys)
 
 GitHub Actions (.github/workflows/deploy.yml)
