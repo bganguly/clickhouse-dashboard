@@ -3,7 +3,6 @@
 Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard delivering sub-second search
 and chart responses across 50 M orders: full-text search via Typesense prefix expansion + ClickHouse
 `hasToken`, pre-aggregated analytics via Materialized Views + SummingMergeTree, and Terraform IaC on AWS.
-[→ Portfolio demo](https://bganguly.github.io/?open=clickhouse)
 
 ## Live Service
 
@@ -11,6 +10,7 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 |---|---|
 | **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
 | **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
+| **Portfolio demo** | https://bganguly.github.io/?open=clickhouse |
 
 > App Runner scales to zero when idle; the first request may take ~5–10 s to wake.
 
