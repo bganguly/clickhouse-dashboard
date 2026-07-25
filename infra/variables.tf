@@ -28,3 +28,17 @@ variable "redis_url" {
   sensitive   = true
   default     = ""
 }
+
+variable "typesense_url" {
+  description = "Typesense HTTPS endpoint, e.g. https://xxx.a1.typesense.net. Leave empty to disable prefix search."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "typesense_api_key" {
+  description = "Typesense API key (admin or search-only)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

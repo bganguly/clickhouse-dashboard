@@ -209,6 +209,8 @@ if [[ -z "${TYPESENSE_URL:-}" ]]; then
 fi
 export TYPESENSE_URL="${TYPESENSE_URL:-}"
 export TYPESENSE_API_KEY="${TYPESENSE_API_KEY:-}"
+export TF_VAR_typesense_url="${TYPESENSE_URL:-}"
+export TF_VAR_typesense_api_key="${TYPESENSE_API_KEY:-}"
 if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${TYPESENSE_URL:-}" ]]; then
   printf '%s' "$TYPESENSE_URL"     | gh secret set TYPESENSE_URL     --repo "$_GH_REPO"
   printf '%s' "$TYPESENSE_API_KEY" | gh secret set TYPESENSE_API_KEY --repo "$_GH_REPO"

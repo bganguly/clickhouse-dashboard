@@ -63,12 +63,14 @@ resource "aws_apprunner_service" "app" {
       image_configuration {
         port = "3000"
         runtime_environment_variables = {
-          NODE_ENV            = "production"
-          HOSTNAME            = "0.0.0.0"
-          CLICKHOUSE_URL      = var.clickhouse_url
-          CLICKHOUSE_USER     = "default"
-          CLICKHOUSE_PASSWORD = var.clickhouse_password
-          REDIS_URL           = var.redis_url
+          NODE_ENV              = "production"
+          HOSTNAME              = "0.0.0.0"
+          CLICKHOUSE_URL        = var.clickhouse_url
+          CLICKHOUSE_USER       = "default"
+          CLICKHOUSE_PASSWORD   = var.clickhouse_password
+          REDIS_URL             = var.redis_url
+          TYPESENSE_URL         = var.typesense_url
+          TYPESENSE_API_KEY     = var.typesense_api_key
         }
       }
     }
