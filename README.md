@@ -3,8 +3,25 @@
 Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard delivering sub-second search
 and chart responses across 50 M orders: full-text search via Typesense prefix expansion + ClickHouse
 `hasToken`, pre-aggregated analytics via Materialized Views + SummingMergeTree, and Terraform IaC on AWS.
+[→ Portfolio demo](https://bganguly.github.io/?open=clickhouse)
 
-**[→ Portfolio demo](https://bganguly.github.io/?open=clickhouse)**
+## Live Service
+
+| | |
+|---|---|
+| **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
+| **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
+
+> App Runner scales to zero when idle; the first request may take ~5–10 s to wake.
+
+```bash
+BASE=https://d1n8zhx1j8oymk.cloudfront.net
+curl "$BASE/api/orders?page=1&pageSize=3" | jq .total
+curl "$BASE/api/orders?q=murphy&page=1&pageSize=3" | jq '.data[].customer'
+curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
+```
+
+---
 
 ## Using the App
 
@@ -53,24 +70,6 @@ Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path
 | **CloudFront** | Negligible at demo traffic levels |
 | **ClickHouse Cloud Development tier** | Auto-pauses after idle; ~$0 when paused |
 | **Typesense Cloud** | Free tier covers demo scale (~200 k vocabulary tokens) |
-
----
-
-## Live Service
-
-> App Runner scales to zero when idle. First request after a cold start wakes the container (~5–10 s); subsequent requests are warm. A server-side keepalive in `instrumentation.ts` fires every 4 minutes to keep ClickHouse page cache warm while the container is running.
-
-| | |
-|---|---|
-| **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
-| **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
-
-```bash
-BASE=https://d1n8zhx1j8oymk.cloudfront.net
-curl "$BASE/api/orders?page=1&pageSize=3" | jq .total
-curl "$BASE/api/orders?q=sara&page=1&pageSize=3" | jq '.data[].customer'
-curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
-```
 
 ---
 
