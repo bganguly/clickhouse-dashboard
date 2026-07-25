@@ -14,13 +14,6 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 
 > App Runner scales to zero when idle; the first request may take ~5–10 s to wake.
 
-```bash
-BASE=https://d1n8zhx1j8oymk.cloudfront.net
-curl "$BASE/api/orders?page=1&pageSize=3" | jq .total
-curl "$BASE/api/orders?q=murphy&page=1&pageSize=3" | jq '.data[].customer'
-curl "$BASE/api/aggregates?from=2024-01-01&to=2024-12-31" | jq 'length'
-```
-
 ---
 
 ## Using the App
