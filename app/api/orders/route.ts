@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
         })
       : await listOrders(baseInput);
     return NextResponse.json(result, {
-      headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
+      headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120" },
     });
   } catch (err) {
     return toErrorResponse(err);

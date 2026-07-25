@@ -18,7 +18,7 @@ const OTHER_BUCKET = "Others";
 
 const AGG_CACHE: ClickHouseSettings = {
   use_query_cache: 1,
-  query_cache_ttl: 60,
+  query_cache_ttl: 600,
   query_cache_share_between_users: 1,
 };
 
@@ -64,7 +64,7 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
       ? Math.trunc(query_in.topCategories)
       : DEFAULT_TOP_CATEGORIES;
 
-  const cacheKey = `data:${JSON.stringify(query_in)}`;
+  const cacheKey = `data:${JSON.stringify({ ...query_in, topCategories: topN })}`;
   const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
   if (cached) return cached;
 
@@ -113,7 +113,11 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
     to: input.to || (input.from ? todayDateString() : input.to),
   };
 
-  const inProcKey = `total:${JSON.stringify(query_in)}`;
+  const resolvedTopN =
+    query_in.topCategories != null && query_in.topCategories > 0
+      ? Math.trunc(query_in.topCategories)
+      : DEFAULT_TOP_CATEGORIES;
+  const inProcKey = `total:${JSON.stringify({ ...query_in, topCategories: resolvedTopN })}`;
   const cachedTotal = await aggCacheGet<number>(inProcKey);
   if (cachedTotal != null) return cachedTotal;
 
@@ -435,7 +439,7 @@ void (process.env.CLICKHOUSE_URL && (async () => {
   try {
     const today = todayDateString();
     await Promise.all([
-      getDailyAggregates({ from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: DEFAULT_TOP_CATEGORIES }),
+      getDailyAggregates({ from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
       getExactAggregateTotal({ from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: DEFAULT_TOP_CATEGORIES }),
     ]);
   } catch {}

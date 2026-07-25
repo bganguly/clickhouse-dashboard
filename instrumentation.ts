@@ -14,7 +14,7 @@ export async function register() {
     try {
       await Promise.all([
         listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-        getDailyAggregates({ from: "2020-01-01", to: today(), q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 5 }),
+        getDailyAggregates({ from: "2020-01-01", to: today(), q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
       ]);
     } catch {
       // best-effort keep-alive; swallow errors silently
