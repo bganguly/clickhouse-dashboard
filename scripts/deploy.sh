@@ -644,6 +644,32 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
   _OCF_REBUILT=1
 fi
 
+printf '[deploy] Checking daily_order_count...\n'
+curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+  --data-binary "CREATE TABLE IF NOT EXISTS daily_order_count (date Date, regionId UInt32, regionCode LowCardinality(String), orderCount UInt64) ENGINE = SummingMergeTree(orderCount) ORDER BY (date, regionId)" \
+  2>/dev/null || true
+curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+  --data-binary "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_order_count TO daily_order_count AS SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders" \
+  2>/dev/null || true
+_DOC_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+  --data-binary "SELECT sum(orderCount) FROM daily_order_count" \
+  2>/dev/null || echo 0)"
+if [[ "${_DOC_COUNT:-0}" -eq 0 || "${_OCF_REBUILT:-0}" -eq 1 ]]; then
+  printf '  [%s] Backfilling daily_order_count from orders (~30s)...\n' "$(date +'%H:%M:%S')"
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
+    --data-binary "TRUNCATE TABLE daily_order_count" 2>/dev/null || true
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=600" --max-time 660 \
+    --data-binary "INSERT INTO daily_order_count (date, regionId, regionCode, orderCount) SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders SETTINGS max_execution_time=600" \
+    2>/dev/null || true
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
+    --data-binary "OPTIMIZE TABLE daily_order_count FINAL" 2>/dev/null || true
+  printf '  [%s] daily_order_count ready: %s orders\n' "$(date +'%H:%M:%S')" \
+    "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT sum(orderCount) FROM daily_order_count" 2>/dev/null || echo '?')"
+else
+  printf '  daily_order_count has %s orders — skipping.\n' "${_DOC_COUNT}"
+fi
+
 printf '[deploy] Checking daily_search_token_summary...\n'
 curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
   --data-binary "CREATE TABLE IF NOT EXISTS daily_search_token_summary (token LowCardinality(String), date Date, categoryName LowCardinality(String), orderCount UInt32, orderTotal Float64) ENGINE = MergeTree() ORDER BY (token, date, categoryName)" \

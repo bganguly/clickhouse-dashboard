@@ -500,6 +500,30 @@ export async function getOrderCount(
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);
 
   if (
+    tokens.length === 0 &&
+    !filters.statuses.length &&
+    filters.minTotal === null &&
+    filters.maxTotal === null
+  ) {
+    const clauses: string[] = [];
+    const params: Record<string, unknown> = {};
+    if (filters.from) { clauses.push(`date >= {from: Date}`); params["from"] = filters.from.slice(0, 10); }
+    if (filters.to)   { clauses.push(`date <= {to: Date}`);   params["to"]   = filters.to.slice(0, 10); }
+    if (filters.regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const countRows = await query<{ n: string }>(
+      `SELECT sum(orderCount) AS n FROM daily_order_count ${where}`,
+      params,
+      SEARCH_CACHE,
+    );
+    const fastTotal = Number(countRows[0]?.n ?? 0);
+    if (fastTotal > 0) {
+      await searchCacheSet(cacheKey, fastTotal);
+      return fastTotal;
+    }
+  }
+
+  if (
     tokens.length === 1 &&
     !filters.statuses.length &&
     !filters.regionCodes.length &&

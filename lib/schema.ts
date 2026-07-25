@@ -233,6 +233,23 @@ export const DDL_STATEMENTS = [
     token    LowCardinality(String),
     doc_freq UInt64
   ) ENGINE = MergeTree ORDER BY token`,
+
+  `CREATE TABLE IF NOT EXISTS daily_order_count (
+    date       Date,
+    regionId   UInt32,
+    regionCode LowCardinality(String),
+    orderCount UInt64
+  ) ENGINE = SummingMergeTree(orderCount)
+  ORDER BY (date, regionId)`,
+
+  `CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_order_count
+  TO daily_order_count AS
+  SELECT
+    toDate(placedAt) AS date,
+    regionId,
+    regionCode,
+    toUInt64(1)      AS orderCount
+  FROM orders`,
 ];
 
 export async function runMigrations(): Promise<void> {
