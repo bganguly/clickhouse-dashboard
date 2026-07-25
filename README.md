@@ -1,6 +1,6 @@
 # clickhouse-dashboard — Next.js + ClickHouse Cloud
 
-Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickHouse Cloud** (Development tier, auto-pause). Sub-second full-text search and chart aggregates maintained by ClickHouse Materialized Views — no Prisma, no Postgres, no aggregates worker.
+**Next.js 16 / TypeScript** orders dashboard backed by **ClickHouse Cloud**. Sub-second full-text search and chart aggregates via ClickHouse Materialized Views.
 
 **[→ Portfolio demo](https://bganguly.github.io/?open=clickhouse)**
 
@@ -29,8 +29,8 @@ Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickH
 | **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
 | **Database** | ClickHouse Cloud (Development tier · auto-pause) via `@clickhouse/client` |
 | **Search** | Typesense vocabulary index for prefix expansion → ClickHouse `hasToken` on denormalized `searchText` |
-| **Aggregates** | ClickHouse Materialized Views + SummingMergeTree — maintained at INSERT time, no worker process |
-| **IaC** | Terraform — App Runner + CloudFront (no EC2, no RDS) |
+| **Aggregates** | ClickHouse Materialized Views + SummingMergeTree — maintained at INSERT time |
+| **IaC** | Terraform — App Runner + CloudFront |
 | **Deploy** | `./scripts/deploy.sh` — single entry point for infra + code |
 
 ---
@@ -41,7 +41,7 @@ Raw tables (MergeTree):
 
 ```
 orders            — denormalized: customerFirstName/LastName/Email, regionCode, searchText
-                    items: Array(Tuple(...)) — embedded, no join needed
+                    items: Array(Tuple(...)) — embedded
 order_category_facts  — one row per orderId × categoryId (ARRAY JOIN o.items); source for all MVs
 categories / regions / customers / products
 ```
@@ -56,7 +56,7 @@ daily_customer_category_summary
 daily_search_token_summary      — per-token aggregation; drives <100 ms token search
 ```
 
-MVs fire on INSERT into `order_category_facts` (written by `createOrder`). No background worker needed.
+MVs fire on INSERT into `order_category_facts` (written by `createOrder`).
 
 ---
 
@@ -120,8 +120,8 @@ Pauses the ClickHouse Cloud service (data preserved) and runs `terraform destroy
 
 | Concern | Approach |
 |---|---|
-| **Aggregates** | ClickHouse Materialized Views on `order_category_facts` → SummingMergeTree aggregate tables. No worker process, no outbox, no dual-write gap. |
-| **Search** | Typesense holds vocabulary tokens (~50–200 k unique words). `expandPrefix()` maps partial input to the best full token; ClickHouse `hasToken` on the denormalized `searchText` column filters all 50 M orders correctly. No full-table LIKE scan. |
+| **Aggregates** | ClickHouse Materialized Views on `order_category_facts` → SummingMergeTree aggregate tables. Updated synchronously at INSERT time. |
+| **Search** | Typesense holds vocabulary tokens (~50–200 k unique words). `expandPrefix()` maps partial input to the best full token; ClickHouse `hasToken` on the denormalized `searchText` column filters all 50 M orders correctly. |
 | **Pagination** | Keyset cursor `(placedAt, orderId)` for efficient deep pagination. |
 | **IDs** | Monotonic in-app counter (seeded from `Date.now()`) — safe for single App Runner instance. |
 | **Keepalive** | `instrumentation.ts` fires `listOrders` + `getDailyAggregates` every 4 minutes via `setInterval`, keeping ClickHouse page cache warm between user requests. |
