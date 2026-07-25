@@ -72,7 +72,7 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
     let aggPath = "fastPath";
     let rows: AggRow[];
     if (canUseDailySummary(query_in)) {
-      rows = await fastPath(query_in);
+      rows = await fastPath(query_in, topN);
     } else {
       const r1 = await customerMultiTokenSummaryPath(query_in);
       if (r1) { aggPath = "customerMultiToken"; rows = r1; }
@@ -124,28 +124,41 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
   }
 }
 
-async function fastPath(input: AggregateQueryInput): Promise<AggRow[]> {
+async function fastPath(input: AggregateQueryInput, topN: number): Promise<AggRow[]> {
   const clauses = [
     `date >= {from: Date}`,
     `date <= {to: Date}`,
   ];
-  const params: Record<string, unknown> = { from: input.from, to: input.to };
+  const params: Record<string, unknown> = { from: input.from, to: input.to, topN };
   const regionCodes = parseCsv(input.regionCode);
   if (regionCodes.length) {
     clauses.push(`regionCode IN ({regionCodes: Array(String)})`);
     params["regionCodes"] = regionCodes;
   }
+  const where = clauses.join(" AND ");
   return query<AggRow>(
-    `SELECT
-       toString(date)       AS day,
-       categoryName         AS category,
-       sum(totalOrders)     AS total_orders,
-       sum(totalItems)      AS total_items,
-       sum(totalRevenue)    AS total_revenue
-     FROM daily_summary
-     WHERE ${clauses.join(" AND ")}
-     GROUP BY date, categoryName
-     ORDER BY date ASC, categoryName ASC`,
+    `SELECT day, category,
+       sum(total_orders)   AS total_orders,
+       sum(total_items)    AS total_items,
+       sum(total_revenue)  AS total_revenue
+     FROM (
+       SELECT
+         toString(date) AS day,
+         if(row_number() OVER (PARTITION BY date ORDER BY total_revenue DESC) <= {topN: UInt32},
+            categoryName, 'Others') AS category,
+         total_orders, total_items, total_revenue
+       FROM (
+         SELECT date, categoryName,
+           sum(totalOrders)  AS total_orders,
+           sum(totalItems)   AS total_items,
+           sum(totalRevenue) AS total_revenue
+         FROM daily_summary
+         WHERE ${where}
+         GROUP BY date, categoryName
+       )
+     )
+     GROUP BY day, category
+     ORDER BY day ASC`,
     params,
     AGG_CACHE,
   );
