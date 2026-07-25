@@ -2,6 +2,7 @@ import { query } from "@/lib/clickhouse";
 import type { ClickHouseSettings } from "@clickhouse/client";
 import { AppError, mapDbError } from "@/lib/errors";
 import { aggCacheGet, aggCacheSet } from "@/lib/aggregates-cache";
+import { singleFlight } from "@/lib/single-flight";
 import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/lib/types";
 import {
   escapeLike,
@@ -67,41 +68,43 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
   const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
   if (cached) return cached;
 
-  try {
-    const t0 = Date.now();
-    let aggPath = "fastPath";
-    let rows: AggRow[];
-    if (canUseDailySummary(query_in)) {
-      rows = await fastPath(query_in, topN);
-    } else {
-      const r1 = await customerMultiTokenSummaryPath(query_in);
-      if (r1) { aggPath = "customerMultiToken"; rows = r1; }
-      else {
-        const r2 = await filterSummaryPath(query_in);
-        if (r2) { aggPath = "filterSummary"; rows = r2; }
+  return singleFlight(cacheKey, async () => {
+    try {
+      const t0 = Date.now();
+      let aggPath = "fastPath";
+      let rows: AggRow[];
+      if (canUseDailySummary(query_in)) {
+        rows = await fastPath(query_in, topN);
+      } else {
+        const r1 = await customerMultiTokenSummaryPath(query_in);
+        if (r1) { aggPath = "customerMultiToken"; rows = r1; }
         else {
-          const r3 = await factFilterPath(query_in);
-          if (r3) { aggPath = "factFilter"; rows = r3; }
+          const r2 = await filterSummaryPath(query_in);
+          if (r2) { aggPath = "filterSummary"; rows = r2; }
           else {
-            const r4 = await tokenSummaryPath(query_in);
-            if (r4) { aggPath = "tokenSummary"; rows = r4; }
+            const r3 = await factFilterPath(query_in);
+            if (r3) { aggPath = "factFilter"; rows = r3; }
             else {
-              const r5 = await searchFactPath(query_in);
-              if (r5) { aggPath = "searchFact"; rows = r5; }
-              else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+              const r4 = await tokenSummaryPath(query_in);
+              if (r4) { aggPath = "tokenSummary"; rows = r4; }
+              else {
+                const r5 = await searchFactPath(query_in);
+                if (r5) { aggPath = "searchFact"; rows = r5; }
+                else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+              }
             }
           }
         }
       }
-    }
-    console.log(`[agg] path=${aggPath} ms=${Date.now() - t0} from=${query_in.from} to=${query_in.to} q=${query_in.q ?? ""}`);
+      console.log(`[agg] path=${aggPath} ms=${Date.now() - t0} from=${query_in.from} to=${query_in.to} q=${query_in.q ?? ""}`);
 
-    const result = rowsToDailyAggregates(rows, topN);
-    await aggCacheSet(cacheKey, result);
-    return result;
-  } catch (err) {
-    mapDbError(err, "getDailyAggregates");
-  }
+      const result = rowsToDailyAggregates(rows, topN);
+      await aggCacheSet(cacheKey, result);
+      return result;
+    } catch (err) {
+      mapDbError(err, "getDailyAggregates");
+    }
+  });
 }
 
 export async function getExactAggregateTotal(input: AggregateQueryInput): Promise<number> {
@@ -114,14 +117,16 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
   const cachedTotal = await aggCacheGet<number>(inProcKey);
   if (cachedTotal != null) return cachedTotal;
 
-  try {
-    const filters = await resolveFilters(query_in);
-    const total = await getOrderCount(query_in.q ?? undefined, filters);
-    await aggCacheSet(inProcKey, total);
-    return total;
-  } catch (err) {
-    mapDbError(err, "getExactAggregateTotal");
-  }
+  return singleFlight(inProcKey, async () => {
+    try {
+      const filters = await resolveFilters(query_in);
+      const total = await getOrderCount(query_in.q ?? undefined, filters);
+      await aggCacheSet(inProcKey, total);
+      return total;
+    } catch (err) {
+      mapDbError(err, "getExactAggregateTotal");
+    }
+  });
 }
 
 async function fastPath(input: AggregateQueryInput, topN: number): Promise<AggRow[]> {

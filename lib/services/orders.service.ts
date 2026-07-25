@@ -2,6 +2,7 @@ import { query, insert } from "@/lib/clickhouse";
 import { AppError, mapDbError } from "@/lib/errors";
 import { invalidateAggregatesCache } from "@/lib/aggregates-cache";
 import { searchCacheGet, searchCacheSet, invalidateSearchCache } from "@/lib/search-cache";
+import { singleFlight } from "@/lib/single-flight";
 import { publishOrderEvent } from "./stream.service";
 import * as typesense from "@/lib/typesense";
 import type {
@@ -224,34 +225,36 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const cached = await searchCacheGet<OrderListResult>(cacheKey);
   if (cached) return cached;
 
-  try {
-    const t0 = Date.now();
-    const filters = await resolveFilters(input);
+  return singleFlight(cacheKey, async () => {
+    try {
+      const t0 = Date.now();
+      const filters = await resolveFilters(input);
 
-    const searchTokens = tokens.length > 0 && typesense.isEnabled()
-      ? await Promise.all(tokens.map((t) => typesense.expandPrefix(t)))
-      : tokens;
+      const searchTokens = tokens.length > 0 && typesense.isEnabled()
+        ? await Promise.all(tokens.map((t) => typesense.expandPrefix(t)))
+        : tokens;
 
-    const { clauses, params } = buildWhereParts(searchTokens, filters);
-    const where = whereSQL(clauses);
-    const sortCol = SORT_COL[sort];
-    const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
+      const { clauses, params } = buildWhereParts(searchTokens, filters);
+      const where = whereSQL(clauses);
+      const sortCol = SORT_COL[sort];
+      const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
-    const orderRows = await query<OrderRow>(
-      `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
-      { ...params, lim: pageSize, off: offset },
-      SEARCH_CACHE,
-    );
-    console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
+      const orderRows = await query<OrderRow>(
+        `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+        { ...params, lim: pageSize, off: offset },
+        SEARCH_CACHE,
+      );
+      console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
-    const data = orderRows.map(rowToDTO);
-    const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
-    if (input.facets) result.facets = await computeFacets(where, params);
-    await searchCacheSet(cacheKey, result);
-    return result;
-  } catch (err) {
-    mapDbError(err, "listOrders");
-  }
+      const data = orderRows.map(rowToDTO);
+      const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
+      if (input.facets) result.facets = await computeFacets(where, params);
+      await searchCacheSet(cacheKey, result);
+      return result;
+    } catch (err) {
+      mapDbError(err, "listOrders");
+    }
+  });
 }
 
 export async function listOrdersByCursor(
@@ -497,6 +500,7 @@ export async function getOrderCount(
   const cached = await searchCacheGet<number>(cacheKey);
   if (cached != null) return cached;
 
+  return singleFlight(cacheKey, async () => {
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);
 
   if (
@@ -560,4 +564,5 @@ export async function getOrderCount(
   const total = Number(rows[0]?.n ?? 0);
   await searchCacheSet(cacheKey, total);
   return total;
+  }); // singleFlight
 }
