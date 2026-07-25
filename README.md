@@ -20,6 +20,7 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 
 1. **Search** — type in the search bar to find orders by customer name or product; sub-second via Typesense prefix expansion + ClickHouse `hasToken` on a denormalized `searchText` column across 50 M orders.
 2. **Aggregates** — the chart shows daily order totals by category from SummingMergeTree pre-aggregated tables; never touches raw orders.
+3. **Query cache** — run the same search or chart range twice; the repeat response drops from ~180 ms to ~10 ms via ClickHouse's 60 s query cache.
 
 ---
 
