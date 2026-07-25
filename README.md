@@ -1,17 +1,24 @@
 # clickhouse-dashboard — Next.js + ClickHouse Cloud
 
-Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickHouse Cloud** (Development tier, auto-pause). Sub-second full-text search, real-time SSE updates, and chart aggregates maintained by ClickHouse Materialized Views — no Prisma, no Postgres, no aggregates worker.
+Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickHouse Cloud** (Development tier, auto-pause). Sub-second full-text search and chart aggregates maintained by ClickHouse Materialized Views — no Prisma, no Postgres, no aggregates worker.
 
 **[→ Portfolio demo](https://bganguly.github.io/?open=clickhouse)**
 
-## Live Service URLs&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[ClickHouse at 50M rows](https://claude.ai/code/artifact/079e248c-2e53-4b02-ac1c-b4f3356ecb5f)
-
-> **Schedule:** EC2 runs weekdays 8 am – 5 pm PT (EventBridge auto-start/stop). Outside those hours the app is offline and shows a maintenance page.
+## Live Service URLs
 
 | | |
 |---|---|
 | **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
 | **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
+
+> App Runner scales to zero when idle. First request after a cold start wakes the container (~5–10 s); subsequent requests are warm. A server-side keepalive in `instrumentation.ts` fires every 4 minutes to keep ClickHouse page cache warm while the container is running.
+
+## Reference
+
+| | |
+|---|---|
+| **[ClickHouse at 50 M rows](https://claude.ai/code/artifact/079e248c-2e53-4b02-ac1c-b4f3356ecb5f)** | Cost and performance brief |
+| **[Performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4)** | 8-step plan — all steps complete · chart 6–14 s → 180 ms, search 5–8 s → <0.5 s |
 
 ---
 
@@ -21,9 +28,9 @@ Production-grade **Next.js 16 / TypeScript** orders dashboard backed by **ClickH
 |---|---|
 | **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
 | **Database** | ClickHouse Cloud (Development tier · auto-pause) via `@clickhouse/client` |
+| **Search** | Typesense vocabulary index for prefix expansion → ClickHouse `hasToken` on denormalized `searchText` |
 | **Aggregates** | ClickHouse Materialized Views + SummingMergeTree — maintained at INSERT time, no worker process |
-| **Real-time** | Server-Sent Events (`/api/stream`) via in-process Node.js EventEmitter |
-| **IaC** | Terraform — EC2 t3.small + VPC + CloudFront (no RDS) |
+| **IaC** | Terraform — App Runner + CloudFront (no EC2, no RDS) |
 | **Deploy** | `./scripts/deploy.sh` — single entry point for infra + code |
 
 ---
@@ -34,8 +41,8 @@ Raw tables (MergeTree):
 
 ```
 orders            — denormalized: customerFirstName/LastName/Email, regionCode, searchText
-order_items       — denormalized: productName/Sku, categoryId/Name
-order_category_facts  — one row per orderId × categoryId; source for all MVs
+                    items: Array(Tuple(...)) — embedded, no join needed
+order_category_facts  — one row per orderId × categoryId (ARRAY JOIN o.items); source for all MVs
 categories / regions / customers / products
 ```
 
@@ -46,6 +53,7 @@ daily_summary
 daily_filter_category_summary
 daily_status_category_summary
 daily_customer_category_summary
+daily_search_token_summary      — per-token aggregation; drives <100 ms token search
 ```
 
 MVs fire on INSERT into `order_category_facts` (written by `createOrder`). No background worker needed.
@@ -55,19 +63,13 @@ MVs fire on INSERT into `order_category_facts` (written by `createOrder`). No ba
 ## Architecture
 
 ```
-Browser ──HTTP──► Next.js (port 3004) ──@clickhouse/client──► ClickHouse Cloud
-                  EC2 t3.small                                  (Development tier · HTTPS :8443)
-                  behind CloudFront
+Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
+                                 scale-to-zero                                  (Development tier · HTTPS :8443)
+                                 Terraform-managed
 
 createOrder()
-  ├─ INSERT orders + order_items
-  ├─ INSERT order_category_facts  ──► 4 Materialized Views update aggregate tables
-  └─ publishOrderEvent()  ──► in-process EventEmitter ──► /api/stream (SSE)
-```
-
-```
-Terraform manages: VPC · subnets · EC2 · EIP · CloudFront
-deploy.sh manages: ClickHouse Cloud service lifecycle via CH Cloud API
+  ├─ INSERT orders (with items ARRAY)
+  └─ INSERT order_category_facts  ──► 4 Materialized Views update aggregate tables
 ```
 
 ---
@@ -80,21 +82,19 @@ deploy.sh manages: ClickHouse Cloud service lifecycle via CH Cloud API
 CLICKHOUSE_URL=https://your-service.clickhouse.cloud:8443
 CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=...
-CLICKHOUSE_CLOUD_KEY=<key-id>:<key-secret>
+TYPESENSE_URL=http://your-typesense-host:8108
+TYPESENSE_API_KEY=...
 ```
 
 See `.env.example` for all variables.
 
-### Deploy (provision + migrate + build + start)
+### Deploy (provision infra + build + push to ECR + update App Runner)
 
 ```
 ./scripts/deploy.sh
 ```
 
-This will:
-1. Run `terraform apply` to ensure EC2 exists
-2. Create the ClickHouse Cloud service (or resume if paused) via the CH Cloud API
-3. Rsync code to EC2, run schema migrations (`CREATE TABLE IF NOT EXISTS` + `CREATE MATERIALIZED VIEW IF NOT EXISTS`), `npm run build`, start via pm2 + nginx
+Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path: Terraform provisions App Runner + CloudFront; deploy.sh builds the Docker image, pushes to ECR, and triggers an App Runner deployment.
 
 ### Tear down
 
@@ -102,7 +102,7 @@ This will:
 ./scripts/infra-down.sh
 ```
 
-Pauses the ClickHouse Cloud service (data preserved) and destroys EC2 via `terraform destroy`.
+Pauses the ClickHouse Cloud service (data preserved) and runs `terraform destroy` on App Runner + CloudFront.
 
 ---
 
@@ -110,7 +110,8 @@ Pauses the ClickHouse Cloud service (data preserved) and destroys EC2 via `terra
 
 | Resource | Cost |
 |---|---|
-| EC2 t3.small | ~$0.02/hr while running |
+| App Runner | Scale-to-zero — ~$0 when idle; ~$0.064/vCPU-hr + $0.007/GB-hr when active |
+| CloudFront | Negligible at demo traffic levels |
 | ClickHouse Cloud Development tier | Auto-pauses after idle; ~$0 when paused |
 
 ---
@@ -120,8 +121,7 @@ Pauses the ClickHouse Cloud service (data preserved) and destroys EC2 via `terra
 | Concern | Approach |
 |---|---|
 | **Aggregates** | ClickHouse Materialized Views on `order_category_facts` → SummingMergeTree aggregate tables. No worker process, no outbox, no dual-write gap. |
-| **Search** | `positionCaseInsensitive(searchText, token) > 0` on a denormalized `searchText` column on orders. No GIN index needed. |
-| **Pagination** | Keyset cursor `(placedAt, orderId) < ({cTs}, {cId})` for efficient deep pagination. |
-| **IDs** | Monotonic in-app counter (seeded from `Date.now()`) — safe for single EC2 instance. |
-| **Real-time** | In-process Node.js `EventEmitter` replaces Postgres LISTEN/NOTIFY. Works on a single instance. |
-| **Cold-start UX** | Warmup badge in dashboard header polls `/api/ch-warmup` on mount; shows elapsed seconds while ClickHouse is waking from auto-pause, then "Analytics ready" for 2s, then disappears. |
+| **Search** | Typesense holds vocabulary tokens (~50–200 k unique words). `expandPrefix()` maps partial input to the best full token; ClickHouse `hasToken` on the denormalized `searchText` column filters all 50 M orders correctly. No full-table LIKE scan. |
+| **Pagination** | Keyset cursor `(placedAt, orderId)` for efficient deep pagination. |
+| **IDs** | Monotonic in-app counter (seeded from `Date.now()`) — safe for single App Runner instance. |
+| **Keepalive** | `instrumentation.ts` fires `listOrders` + `getDailyAggregates` every 4 minutes via `setInterval`, keeping ClickHouse page cache warm between user requests. |
