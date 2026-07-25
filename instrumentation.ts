@@ -21,5 +21,6 @@ export async function register() {
     }
   };
 
+  void ping();
   setInterval(ping, 4 * 60 * 1000);
 }
