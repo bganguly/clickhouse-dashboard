@@ -142,6 +142,19 @@ export default function Dashboard() {
   const handleChartLoading = useCallback((v: boolean) => setChartLoading(v), []);
   const handleTableLoading = useCallback((v: boolean) => setTableLoading(v), []);
 
+  const handleSearchStart = useCallback(() => {
+    if (perfActive.current) return;
+    perfActive.current = true;
+    perfStart.current = performance.now();
+    setPerfMs(0);
+    setPerfSettled(false);
+    if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
+    if (perfInterval.current) clearInterval(perfInterval.current);
+    perfInterval.current = setInterval(() => {
+      setPerfMs(Math.round(performance.now() - perfStart.current));
+    }, 16);
+  }, []);
+
   useEffect(() => {
     const anyLoading = chartLoading || tableLoading;
     if (anyLoading && !perfActive.current) {
@@ -291,6 +304,7 @@ export default function Dashboard() {
                   externalTotal={chartTotal}
                   onCountChange={(n) => setChartTotal((c) => c ?? n)}
                   onLoadingChange={handleTableLoading}
+                  onSearchStart={handleSearchStart}
                 />
               </div>
               {/* LiveFeed — re-enable with liveEnabled when websockets-quickorder is running

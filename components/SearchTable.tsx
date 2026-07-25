@@ -58,6 +58,9 @@ interface SearchTableProps {
   onCountChange?: (n: number) => void;
   /** Fired whenever the internal fetch loading state changes. */
   onLoadingChange?: (loading: boolean) => void;
+  /** Fired synchronously when the user commits a search (Enter / suggestion click),
+   *  before any async fetch begins — lets the parent start a perf timer immediately. */
+  onSearchStart?: () => void;
 }
 
 function cn(...classes: (string | false | undefined)[]): string {
@@ -162,6 +165,7 @@ export default function SearchTable({
   externalTotal = null,
   onCountChange,
   onLoadingChange,
+  onSearchStart,
 }: SearchTableProps) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -623,12 +627,14 @@ export default function SearchTable({
             } else if (e.key === "Enter") {
               if (activeSuggestion >= 0 && suggestions[activeSuggestion]) {
                 const tok = suggestions[activeSuggestion].token;
+                onSearchStart?.();
                 setPendingSearch(true);
                 setQuery(tok);
                 setDebouncedQuery(tok);
                 setPage(1);
                 setShowSuggestions(false);
               } else {
+                onSearchStart?.();
                 setPendingSearch(true);
                 setDebouncedQuery(query);
                 setPage(1);
@@ -655,6 +661,7 @@ export default function SearchTable({
                 aria-selected={idx === activeSuggestion}
                 onMouseDown={(e) => {
                   e.preventDefault();
+                  onSearchStart?.();
                   setPendingSearch(true);
                   setQuery(s.token);
                   setDebouncedQuery(s.token);
@@ -808,17 +815,19 @@ export default function SearchTable({
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-gray-500 dark:text-gray-400">
           Page {page} of{" "}
-          {footerLoading || (externalTotal == null && countStillLoading)
-            ? <span className="inline-block h-3 w-8 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
-            : displayTotalPages}{" "}·{" "}
-          <span data-testid="search-total" data-total={displayTotal}>
-            {footerLoading || (externalTotal == null && countStillLoading)
-              ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
-              : <span className={countSettled ? "count-settle" : undefined}>{pendingSearch ? "0" : displayTotal.toLocaleString()}</span>}
+          {pendingSearch
+            ? 1
+            : footerLoading || (externalTotal == null && countStillLoading)
+              ? <span className="inline-block h-3 w-8 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+              : displayTotalPages}{" "}·{" "}
+          <span data-testid="search-total" data-total={pendingSearch ? 0 : displayTotal}>
+            {pendingSearch
+              ? <span>0</span>
+              : footerLoading || (externalTotal == null && countStillLoading)
+                ? <span className="inline-block h-3 w-14 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
+                : <span className={countSettled ? "count-settle" : undefined}>{displayTotal.toLocaleString()}</span>}
           </span>{" "}
-          {footerLoading || (externalTotal == null && countStillLoading)
-            ? <span className="inline-block h-3 w-10 animate-pulse rounded bg-gray-200 align-middle dark:bg-gray-700" />
-            : "results"}
+          results
         </span>
 
         {footerLoading || (externalTotal == null && countStillLoading) ? (
