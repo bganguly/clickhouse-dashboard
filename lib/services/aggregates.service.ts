@@ -4,6 +4,7 @@ import { AppError, mapDbError } from "@/lib/errors";
 import { aggCacheGet, aggCacheSet } from "@/lib/aggregates-cache";
 import { singleFlight } from "@/lib/single-flight";
 import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/lib/types";
+import * as typesense from "@/lib/typesense";
 import {
   escapeLike,
   normalizeStatusList,
@@ -76,21 +77,29 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
       if (canUseDailySummary(query_in)) {
         rows = await fastPath(query_in, topN);
       } else {
-        const r1 = await customerMultiTokenSummaryPath(query_in);
+        const rawQ = query_in.q?.trim() ?? "";
+        const rawTokens = rawQ.split(/\s+/).filter(Boolean);
+        const expandedTokens = rawTokens.length > 0 && typesense.isEnabled()
+          ? await Promise.all(rawTokens.map((t) => typesense.expandPrefix(t)))
+          : rawTokens;
+        const expandedQ = expandedTokens.join(" ");
+        const qin = expandedQ && expandedQ !== rawQ ? { ...query_in, q: expandedQ } : query_in;
+
+        const r1 = await customerMultiTokenSummaryPath(qin);
         if (r1) { aggPath = "customerMultiToken"; rows = r1; }
         else {
-          const r2 = await filterSummaryPath(query_in);
+          const r2 = await filterSummaryPath(qin);
           if (r2) { aggPath = "filterSummary"; rows = r2; }
           else {
-            const r3 = await factFilterPath(query_in);
+            const r3 = await factFilterPath(qin);
             if (r3) { aggPath = "factFilter"; rows = r3; }
             else {
-              const r4 = await tokenSummaryPath(query_in);
+              const r4 = await tokenSummaryPath(qin);
               if (r4) { aggPath = "tokenSummary"; rows = r4; }
               else {
-                const r5 = await searchFactPath(query_in);
+                const r5 = await searchFactPath(qin);
                 if (r5) { aggPath = "searchFact"; rows = r5; }
-                else { aggPath = "slowPath"; rows = await slowPath(query_in); }
+                else { aggPath = "slowPath"; rows = await slowPath(qin); }
               }
             }
           }

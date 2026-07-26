@@ -269,7 +269,10 @@ export async function listOrdersByCursor(
 
   try {
     const filters = await resolveFilters(input);
-    const { clauses: baseClauses, params: baseParams } = buildWhereParts(tokens, filters);
+    const searchTokens = tokens.length > 0 && typesense.isEnabled()
+      ? await Promise.all(tokens.map((t) => typesense.expandPrefix(t)))
+      : tokens;
+    const { clauses: baseClauses, params: baseParams } = buildWhereParts(searchTokens, filters);
 
     const cursorTs = new Date(input.cursorPlacedAt)
       .toISOString().replace("T", " ").replace("Z", "");
