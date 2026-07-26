@@ -644,6 +644,22 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
   _OCF_REBUILT=1
 fi
 
+printf '[deploy] Checking idx_ocf_search index...\n'
+_OCF_IDX="$(curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+  --data-binary "SELECT countIf(has(skip_indices, 'idx_ocf_search')), count() FROM system.parts WHERE table='order_category_facts' AND active=1" \
+  2>/dev/null || echo '0	1')"
+_OCF_IDX_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f1)"
+_OCF_TOT_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f2)"
+if [[ "${_OCF_TOT_PARTS:-0}" -gt 0 && "${_OCF_IDX_PARTS:-0}" -ne "${_OCF_TOT_PARTS}" ]]; then
+  printf '  %s / %s parts indexed — materializing idx_ocf_search (~10 min for 50M rows)...\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+    --data-binary "ALTER TABLE order_category_facts MATERIALIZE INDEX idx_ocf_search" 2>/dev/null || true
+  _poll_ocf_idx
+else
+  printf '  idx_ocf_search fully materialized (%s / %s parts) — skipping.\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
+fi
+
 printf '[deploy] Checking daily_order_count...\n'
 curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
   --data-binary "CREATE TABLE IF NOT EXISTS daily_order_count (date Date, regionId UInt32, regionCode LowCardinality(String), orderCount UInt64) ENGINE = SummingMergeTree(orderCount) ORDER BY (date, regionId)" \
