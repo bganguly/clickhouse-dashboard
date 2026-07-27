@@ -14,11 +14,21 @@ export async function register() {
 
   const today = () => new Date().toISOString().slice(0, 10);
 
+  const baseAggInput = () => ({
+    from: "2020-01-01", to: today(), q: null as string | null,
+    status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4,
+  });
+
+  const warmBoth = (tok: string) => Promise.all([
+    listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
+    getDailyAggregates({ ...baseAggInput(), q: tok }),
+  ]);
+
   const ping = async () => {
     try {
       await Promise.all([
         listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-        getDailyAggregates({ from: "2020-01-01", to: today(), q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+        getDailyAggregates(baseAggInput()),
       ]);
     } catch {}
   };
@@ -37,11 +47,7 @@ export async function register() {
       }
       const visibleTokens = [...visibleSet];
       for (let i = 0; i < visibleTokens.length; i += WARM_BATCH) {
-        await Promise.all(
-          visibleTokens.slice(i, i + WARM_BATCH).map(tok =>
-            listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
-          ),
-        );
+        await Promise.all(visibleTokens.slice(i, i + WARM_BATCH).map(warmBoth));
       }
 
       // Priority 2: top-N last names by order frequency (excludes already-warmed)
@@ -51,11 +57,7 @@ export async function register() {
       );
       const broader = rows.map(r => r.token).filter(Boolean).filter(t => !visibleSet.has(t));
       for (let i = 0; i < broader.length; i += WARM_BATCH) {
-        await Promise.all(
-          broader.slice(i, i + WARM_BATCH).map(tok =>
-            listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
-          ),
-        );
+        await Promise.all(broader.slice(i, i + WARM_BATCH).map(warmBoth));
       }
     } catch {}
   };

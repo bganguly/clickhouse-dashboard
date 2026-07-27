@@ -31,6 +31,11 @@ async function warmCaches() {
       getExactAggregateTotal(aggInput),
     ]);
 
+    const warmBoth = (tok: string) => Promise.all([
+      listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
+      getDailyAggregates({ ...aggInput, q: tok }),
+    ]);
+
     // Priority 1: every full word visible on the default first page (name + notes)
     const visibleSet = new Set<string>();
     for (const row of firstPage?.data ?? []) {
@@ -42,11 +47,7 @@ async function warmCaches() {
     }
     const visibleTokens = [...visibleSet];
     for (let i = 0; i < visibleTokens.length; i += WARM_BATCH) {
-      await Promise.all(
-        visibleTokens.slice(i, i + WARM_BATCH).map(tok =>
-          listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
-        ),
-      );
+      await Promise.all(visibleTokens.slice(i, i + WARM_BATCH).map(warmBoth));
     }
 
     // Priority 2: top-N last names by order frequency (excludes already-warmed)
@@ -56,11 +57,7 @@ async function warmCaches() {
     );
     const broader = tokenRows.map(r => r.token).filter(Boolean).filter(t => !visibleSet.has(t));
     for (let i = 0; i < broader.length; i += WARM_BATCH) {
-      await Promise.all(
-        broader.slice(i, i + WARM_BATCH).map(tok =>
-          listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
-        ),
-      );
+      await Promise.all(broader.slice(i, i + WARM_BATCH).map(warmBoth));
     }
   } catch {}
   _warming = false;

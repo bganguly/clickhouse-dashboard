@@ -2,7 +2,7 @@ import { redis } from "./redis";
 
 const PREFIX = "agg:";
 const TTL_S = 10 * 60;
-const MAX_ENTRIES = 50;
+const MAX_ENTRIES = 200;
 
 const store = new Map<string, { value: unknown; ts: number }>();
 
