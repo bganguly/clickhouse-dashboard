@@ -839,22 +839,22 @@ done
 
 if [[ "$_APP_READY" -eq 1 ]]; then
   printf '  [1/4] Baseline orders (no search)... '
-  _t0=$(date +%s%3N)
+  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
   curl -sf --max-time 30 "${_WARM_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
-  printf '%d ms\n' "$(( $(date +%s%3N) - _t0 ))"
+  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
   printf '  [2/4] Baseline aggregates (no search)... '
-  _t0=$(date +%s%3N)
+  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
   curl -sf --max-time 30 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
-  printf '%d ms\n' "$(( $(date +%s%3N) - _t0 ))"
+  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
   printf '  [3/4] Fetching top tokens from daily_search_token_summary... '
-  _t0=$(date +%s%3N)
+  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
   _WARM_TOKENS_RAW="$(curl -sf -u "default:${CH_PASS}" \
     "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
     --data-binary "SELECT token FROM daily_search_token_summary GROUP BY token ORDER BY sum(orderCount) DESC LIMIT 100" \
     2>/dev/null || echo '')"
-  printf '%d ms\n' "$(( $(date +%s%3N) - _t0 ))"
+  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
   if [[ -n "$_WARM_TOKENS_RAW" ]]; then
     _TOK_ARR=()
@@ -866,7 +866,7 @@ if [[ "$_APP_READY" -eq 1 ]]; then
     _wi=0; _batch=0
     while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
       _batch=$(( _batch + 1 ))
-      _batch_t0=$(date +%s%3N)
+      _batch_t0=$(python3 -c "import time; print(int(time.time()*1000))")
       _batch_toks=()
       for _wj in 0 1 2 3 4; do
         _wk=$(( _wi + _wj ))
@@ -881,7 +881,7 @@ if [[ "$_APP_READY" -eq 1 ]]; then
         ) &
       done
       wait
-      printf '%d ms\n' "$(( $(date +%s%3N) - _batch_t0 ))"
+      printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _batch_t0 ))"
       _wi=$(( _wi + 5 ))
     done
     printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
