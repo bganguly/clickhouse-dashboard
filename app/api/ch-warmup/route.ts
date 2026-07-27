@@ -13,7 +13,7 @@ let _warming  = false;
 
 const WARM_TOKENS   = 100;
 const WARM_BATCH    = 10;
-const REWARM_MS     = 4 * 60 * 1000; // re-warm every 4 min (cache TTL is 5 min)
+const REWARM_MS     = 4 * 60 * 1000;
 
 async function warmCaches() {
   if (_warming) return;
@@ -24,29 +24,46 @@ async function warmCaches() {
     const { getDailyAggregates, getExactAggregateTotal } = await import("@/lib/services/aggregates.service");
     const aggInput: AggregateQueryInput = { from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 };
 
-    // Baseline: no-q page 1 + aggregates
-    await Promise.all([
+    // Baseline: first page + aggregates (capture rows for visible-token extraction)
+    const [firstPage] = await Promise.all([
       listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
       getDailyAggregates(aggInput),
       getExactAggregateTotal(aggInput),
     ]);
 
-    // Plan G: prime top-N search terms — dual-write (Plan C) also warms pageSize=20
+    // Priority 1: every full word visible on the default first page (name + notes)
+    const visibleSet = new Set<string>();
+    for (const row of firstPage?.data ?? []) {
+      const text = [row.customer.firstName, row.customer.lastName, row.notes ?? ""].join(" ");
+      for (const w of text.split(/[^a-zA-Z]+/)) {
+        const t = w.toLowerCase();
+        if (t.length >= 3) visibleSet.add(t);
+      }
+    }
+    const visibleTokens = [...visibleSet];
+    for (let i = 0; i < visibleTokens.length; i += WARM_BATCH) {
+      await Promise.all(
+        visibleTokens.slice(i, i + WARM_BATCH).map(tok =>
+          listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
+        ),
+      );
+    }
+
+    // Priority 2: top-N last names by order frequency (excludes already-warmed)
     const tokenRows = await query<{ token: string }>(
       `SELECT lower(customerLastName) AS token FROM orders
        GROUP BY customerLastName ORDER BY count() DESC LIMIT ${WARM_TOKENS}`,
     );
-    const tokens = tokenRows.map(r => r.token).filter(Boolean);
-    for (let i = 0; i < tokens.length; i += WARM_BATCH) {
+    const broader = tokenRows.map(r => r.token).filter(Boolean).filter(t => !visibleSet.has(t));
+    for (let i = 0; i < broader.length; i += WARM_BATCH) {
       await Promise.all(
-        tokens.slice(i, i + WARM_BATCH).map(tok =>
+        broader.slice(i, i + WARM_BATCH).map(tok =>
           listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
         ),
       );
     }
   } catch {}
   _warming = false;
-  // Schedule next cycle so the in-memory cache never goes cold on long-lived instances
   setTimeout(() => { void warmCaches(); }, REWARM_MS);
 }
 
