@@ -1,4 +1,4 @@
-const WARM_TOKENS    = 100;
+const WARM_TOKENS    = 10_000;
 const WARM_BATCH     = 10;
 const WARM_AGG_BATCH =  5;
 

@@ -852,7 +852,7 @@ if [[ "$_APP_READY" -eq 1 ]]; then
   _t0=$(python3 -c "import time; print(int(time.time()*1000))")
   _WARM_TOKENS_RAW="$(curl -sf -u "default:${CH_PASS}" \
     "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-    --data-binary "SELECT token FROM daily_search_token_summary GROUP BY token ORDER BY sum(orderCount) DESC LIMIT 100" \
+    --data-binary "SELECT token FROM daily_search_token_summary GROUP BY token ORDER BY sum(orderCount) DESC" \
     2>/dev/null || echo '')"
   printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
