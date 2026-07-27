@@ -40,7 +40,7 @@ async function warmCaches() {
     for (let i = 0; i < tokens.length; i += WARM_BATCH) {
       await Promise.all(
         tokens.slice(i, i + WARM_BATCH).map(tok =>
-          listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
+          listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc", facets: true }),
         ),
       );
     }
