@@ -852,14 +852,14 @@ if [[ "$_APP_READY" -eq 1 ]]; then
 import json, re, sys
 try:
     data = json.loads(sys.stdin.read())
-    words = set()
+    words = {}
     for row in data.get('data', []):
         c = row.get('customer', {})
         text = ' '.join(filter(None, [c.get('firstName',''), c.get('lastName',''), row.get('notes') or '']))
         for w in re.split(r'[^a-zA-Z]+', text.lower()):
             if len(w) >= 3:
-                words.add(w)
-    print('\n'.join(sorted(words)))
+                words[w] = None
+    print('\n'.join(words.keys()))
 except: pass
 " <<< "$_FIRST_PAGE_JSON" 2>/dev/null || echo '')"
 
