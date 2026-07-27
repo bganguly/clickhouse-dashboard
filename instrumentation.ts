@@ -9,28 +9,14 @@ export async function register() {
   await ensureCollection().catch(() => {});
 
   const { listOrders } = await import("@/lib/services/orders.service");
-  const { getDailyAggregates, getExactAggregateTotal } = await import("@/lib/services/aggregates.service");
   const { query } = await import("@/lib/clickhouse");
 
-  const today = () => new Date().toISOString().slice(0, 10);
-
-  const baseAggInput = () => ({
-    from: "2020-01-01", to: today(), q: null as string | null,
-    status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4,
-  });
-
-  const warmBoth = (tok: string) => Promise.all([
-    listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
-    getDailyAggregates({ ...baseAggInput(), q: tok }),
-    getExactAggregateTotal({ ...baseAggInput(), q: tok }),
-  ]);
+  const warmBoth = (tok: string) =>
+    listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" });
 
   const ping = async () => {
     try {
-      await Promise.all([
-        listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-        getDailyAggregates(baseAggInput()),
-      ]);
+      await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
     } catch {}
   };
 

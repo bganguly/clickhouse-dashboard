@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/clickhouse";
-import type { AggregateQueryInput } from "@/lib/types";
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
 
@@ -19,23 +18,12 @@ async function warmCaches() {
   if (_warming) return;
   _warming = true;
   try {
-    const today = new Date().toISOString().slice(0, 10);
     const { listOrders } = await import("@/lib/services/orders.service");
-    const { getDailyAggregates, getExactAggregateTotal } = await import("@/lib/services/aggregates.service");
-    const aggInput: AggregateQueryInput = { from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 };
 
-    // Baseline: first page + aggregates (capture rows for visible-token extraction)
-    const [firstPage] = await Promise.all([
-      listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-      getDailyAggregates(aggInput),
-      getExactAggregateTotal(aggInput),
-    ]);
+    const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
 
-    const warmBoth = (tok: string) => Promise.all([
-      listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
-      getDailyAggregates({ ...aggInput, q: tok }),
-      getExactAggregateTotal({ ...aggInput, q: tok }),
-    ]);
+    const warmBoth = (tok: string) =>
+      listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" });
 
     // Priority 1: every full word visible on the default first page (name + notes)
     const visibleSet = new Set<string>();

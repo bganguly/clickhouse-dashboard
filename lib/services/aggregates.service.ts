@@ -400,6 +400,7 @@ async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
      GROUP BY day, category
      ORDER BY day ASC, category ASC`,
     params,
+    { max_execution_time: 20 },
   );
 }
 
