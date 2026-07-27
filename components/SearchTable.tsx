@@ -235,9 +235,11 @@ export default function SearchTable({
 
   // Latest onRows without making it a fetch dependency.
   const onRowsRef = useRef(onRows);
-  useEffect(() => {
-    onRowsRef.current = onRows;
-  });
+  useEffect(() => { onRowsRef.current = onRows; });
+
+  // Latest externalTotal without making fetchPage re-create on every chart update.
+  const externalTotalRef = useRef(externalTotal);
+  useEffect(() => { externalTotalRef.current = externalTotal; });
 
   const fetchPage = useCallback(
     async (
@@ -280,26 +282,35 @@ export default function SearchTable({
         updateCursorAnchor(sortCol, sortDir, data);
 
         if (json.countPending) {
-          setCountLoading(true);
-          setTotal(0);
-          setTotalPages(1);
-          const countParams = new URLSearchParams(params);
-          countParams.delete("page");
-          countParams.delete("pageSize");
-          countParams.delete("sort");
-          countParams.delete("dir");
-          fetch(`/api/orders/count?${countParams}`, { signal: controller.signal })
-            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-            .then((cj: { total: number }) => {
-              if (abortRef.current !== controller) return;
-              setTotal(cj.total ?? 0);
-              setTotalPages(Math.max(1, Math.ceil((cj.total ?? 0) / pageSize)));
-              onCountChange?.(cj.total ?? 0);
-              setCountSettled(true);
-              setTimeout(() => setCountSettled(false), 600);
-            })
-            .catch(() => {})
-            .finally(() => { if (abortRef.current === controller) setCountLoading(false); });
+          // Fast-path: chart total already covers the no-search filter set — skip the round-trip.
+          const ext = externalTotalRef.current;
+          if (typeof ext === "number" && !q.trim()) {
+            setTotal(ext);
+            setTotalPages(Math.max(1, Math.ceil(ext / pageSize)));
+            setCountSettled(true);
+            setTimeout(() => setCountSettled(false), 600);
+          } else {
+            setCountLoading(true);
+            setTotal(0);
+            setTotalPages(1);
+            const countParams = new URLSearchParams(params);
+            countParams.delete("page");
+            countParams.delete("pageSize");
+            countParams.delete("sort");
+            countParams.delete("dir");
+            fetch(`/api/orders/count?${countParams}`, { signal: controller.signal })
+              .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+              .then((cj: { total: number }) => {
+                if (abortRef.current !== controller) return;
+                setTotal(cj.total ?? 0);
+                setTotalPages(Math.max(1, Math.ceil((cj.total ?? 0) / pageSize)));
+                onCountChange?.(cj.total ?? 0);
+                setCountSettled(true);
+                setTimeout(() => setCountSettled(false), 600);
+              })
+              .catch(() => {})
+              .finally(() => { if (abortRef.current === controller) setCountLoading(false); });
+          }
         } else {
           setTotal(json.total ?? 0);
           setTotalPages(Math.max(1, json.totalPages ?? 1));

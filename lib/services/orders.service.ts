@@ -240,22 +240,25 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       // Over-fetch up to DEFAULT_PAGE_SIZE on page 1 so we can warm the larger pageSize cache key too
       const fetchSize = page === 1 && pageSize < DEFAULT_PAGE_SIZE ? DEFAULT_PAGE_SIZE : pageSize;
 
-      const orderRows = await query<OrderRow>(
-        `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
-        { ...params, lim: fetchSize, off: offset },
-        SEARCH_CACHE,
-      );
+      const [orderRows, total] = await Promise.all([
+        query<OrderRow>(
+          `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+          { ...params, lim: fetchSize, off: offset },
+          SEARCH_CACHE,
+        ),
+        getOrderCount(input.q?.trim() || undefined, filters),
+      ]);
       console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
       const allData = orderRows.map(rowToDTO);
       const data = allData.slice(0, pageSize);
-      const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
+      const result: OrderListResult = { data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)), approximate: false };
       await searchCacheSet(cacheKey, result);
 
       // Dual write: also cache the DEFAULT_PAGE_SIZE key so the main UI benefits
       if (fetchSize > pageSize) {
         const altKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize: fetchSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
-        const altResult: OrderListResult = { data: allData.slice(0, fetchSize), page, pageSize: fetchSize, total: 0, totalPages: 0, approximate: false, countPending: true };
+        const altResult: OrderListResult = { data: allData.slice(0, fetchSize), page, pageSize: fetchSize, total, totalPages: Math.max(1, Math.ceil(total / fetchSize)), approximate: false };
         await searchCacheSet(altKey, altResult);
       }
 
@@ -294,14 +297,17 @@ export async function listOrdersByCursor(
     const where = whereSQL(allClauses);
     const dirSQL = isNext ? "DESC" : "ASC";
 
-    const pageRows = await query<OrderRow>(
-      `${ORDER_SELECT} ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
-      { ...allParams, lim: pageSize },
-      SEARCH_CACHE,
-    );
+    const [pageRows, total] = await Promise.all([
+      query<OrderRow>(
+        `${ORDER_SELECT} ${where} ORDER BY placedAt ${dirSQL}, orderId ${dirSQL} LIMIT {lim: UInt32}`,
+        { ...allParams, lim: pageSize },
+        SEARCH_CACHE,
+      ),
+      getOrderCount(input.q?.trim() || undefined, filters),
+    ]);
 
     const data = (isNext ? pageRows : pageRows.reverse()).map(rowToDTO);
-    const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
+    const result: OrderListResult = { data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)), approximate: false };
     return result;
   } catch (err) {
     mapDbError(err, "listOrdersByCursor");
