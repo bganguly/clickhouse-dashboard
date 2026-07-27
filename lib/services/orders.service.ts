@@ -8,9 +8,7 @@ import * as typesense from "@/lib/typesense";
 import type {
   CreateOrderInput,
   CreateOrderResult,
-  FacetCount,
   OrderDTO,
-  OrderFacets,
   OrderFilterInput,
   OrderItemDTO,
   OrderListInput,
@@ -242,28 +240,22 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       // Over-fetch up to DEFAULT_PAGE_SIZE on page 1 so we can warm the larger pageSize cache key too
       const fetchSize = page === 1 && pageSize < DEFAULT_PAGE_SIZE ? DEFAULT_PAGE_SIZE : pageSize;
 
-      // Run row fetch and facets in parallel to halve cold-query latency
-      const [orderRows, facets] = await Promise.all([
-        query<OrderRow>(
-          `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
-          { ...params, lim: fetchSize, off: offset },
-          SEARCH_CACHE,
-        ),
-        input.facets ? computeFacets(where, params) : Promise.resolve(undefined),
-      ]);
+      const orderRows = await query<OrderRow>(
+        `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
+        { ...params, lim: fetchSize, off: offset },
+        SEARCH_CACHE,
+      );
       console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
       const allData = orderRows.map(rowToDTO);
       const data = allData.slice(0, pageSize);
       const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
-      if (facets) result.facets = facets;
       await searchCacheSet(cacheKey, result);
 
       // Dual write: also cache the DEFAULT_PAGE_SIZE key so the main UI benefits
       if (fetchSize > pageSize) {
         const altKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize: fetchSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
         const altResult: OrderListResult = { data: allData.slice(0, fetchSize), page, pageSize: fetchSize, total: 0, totalPages: 0, approximate: false, countPending: true };
-        if (facets) altResult.facets = facets;
         await searchCacheSet(altKey, altResult);
       }
 
@@ -310,37 +302,12 @@ export async function listOrdersByCursor(
 
     const data = (isNext ? pageRows : pageRows.reverse()).map(rowToDTO);
     const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
-    if (input.facets) result.facets = await computeFacets(whereSQL(baseClauses), baseParams);
     return result;
   } catch (err) {
     mapDbError(err, "listOrdersByCursor");
   }
 }
 
-
-async function computeFacets(
-  where: string,
-  params: Record<string, unknown>,
-): Promise<OrderFacets> {
-  const rows = await query<{ dim: string; key: string; n: string }>(
-    `SELECT 'status' AS dim, status AS key, count() AS n FROM orders ${where} GROUP BY status
-     UNION ALL
-     SELECT 'region' AS dim, regionCode AS key, count() AS n FROM orders ${where} GROUP BY regionCode`,
-    params,
-    SEARCH_CACHE,
-  );
-
-  const status: FacetCount[] = [];
-  const region: FacetCount[] = [];
-  for (const r of rows) {
-    const fc: FacetCount = { value: r.key, count: Number(r.n) };
-    if (r.dim === "status") status.push(fc);
-    else region.push(fc);
-  }
-  status.sort((a, b) => b.count - a.count);
-  region.sort((a, b) => b.count - a.count);
-  return { status, region, approximate: false };
-}
 
 let _nextId = Date.now();
 function genId(): number {
