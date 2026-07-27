@@ -838,30 +838,37 @@ for _att in $(seq 1 18); do
 done
 
 if [[ "$_APP_READY" -eq 1 ]]; then
-  printf '  [1/4] Baseline orders (no search)... '
+  printf '  [1/3] Baseline orders (no search)... '
   _t0=$(python3 -c "import time; print(int(time.time()*1000))")
-  curl -sf --max-time 30 "${_WARM_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
+  _FIRST_PAGE_JSON="$(curl -sf --max-time 30 "${_WARM_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null || echo '')"
   printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
-  printf '  [2/4] Baseline aggregates (no search)... '
+  printf '  [2/3] Baseline aggregates (no search)... '
   _t0=$(python3 -c "import time; print(int(time.time()*1000))")
   curl -sf --max-time 30 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
   printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
-  printf '  [3/4] Fetching top tokens from daily_search_token_summary... '
-  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
-  _WARM_TOKENS_RAW="$(curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-    --data-binary "SELECT token FROM daily_search_token_summary GROUP BY token ORDER BY sum(orderCount) DESC" \
-    2>/dev/null || echo '')"
-  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
+  _VIS_TOKENS="$(python3 -c "
+import json, re, sys
+try:
+    data = json.loads(sys.stdin.read())
+    words = set()
+    for row in data.get('data', []):
+        c = row.get('customer', {})
+        text = ' '.join(filter(None, [c.get('firstName',''), c.get('lastName',''), row.get('notes') or '']))
+        for w in re.split(r'[^a-zA-Z]+', text.lower()):
+            if len(w) >= 3:
+                words.add(w)
+    print('\n'.join(sorted(words)))
+except: pass
+" <<< "$_FIRST_PAGE_JSON" 2>/dev/null || echo '')"
 
-  if [[ -n "$_WARM_TOKENS_RAW" ]]; then
+  if [[ -n "$_VIS_TOKENS" ]]; then
     _TOK_ARR=()
-    while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_WARM_TOKENS_RAW"
+    while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_VIS_TOKENS"
     _TOTAL_TOKS="${#_TOK_ARR[@]}"
     _TOTAL_BATCHES=$(( (_TOTAL_TOKS + 4) / 5 ))
-    printf '  [4/4] Warming %d tokens in %d batches of 5...\n' "$_TOTAL_TOKS" "$_TOTAL_BATCHES"
+    printf '  [3/3] Warming %d visible-page tokens in %d batches of 5...\n' "$_TOTAL_TOKS" "$_TOTAL_BATCHES"
 
     _wi=0; _batch=0
     while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
@@ -886,7 +893,7 @@ if [[ "$_APP_READY" -eq 1 ]]; then
     done
     printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
   else
-    printf '  daily_search_token_summary empty — skipping per-token warmup.\n'
+    printf '  Could not parse visible tokens — skipping per-token warmup.\n'
   fi
 else
   printf '  App not reachable after 3 min — skipping HTTP warmup.\n'
