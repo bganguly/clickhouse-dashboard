@@ -1,5 +1,5 @@
-const WARM_TOKENS = 20;
-const WARM_BATCH  = 5;
+const WARM_TOKENS = 100;
+const WARM_BATCH  = 10;
 
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -26,8 +26,8 @@ export async function register() {
   const warmTopTokens = async () => {
     try {
       const rows = await query<{ token: string }>(
-        `SELECT token FROM daily_search_token_summary
-         GROUP BY token ORDER BY sum(orderCount) DESC LIMIT ${WARM_TOKENS}`,
+        `SELECT lower(customerLastName) AS token FROM orders
+         GROUP BY customerLastName ORDER BY count() DESC LIMIT ${WARM_TOKENS}`,
       );
       const tokens = rows.map(r => r.token).filter(Boolean);
       for (let i = 0; i < tokens.length; i += WARM_BATCH) {

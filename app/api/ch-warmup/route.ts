@@ -11,8 +11,8 @@ export async function OPTIONS() {
 let _warmed   = false;
 let _warming  = false;
 
-const WARM_TOKENS   = 20;
-const WARM_BATCH    = 5;
+const WARM_TOKENS   = 100;
+const WARM_BATCH    = 10;
 const REWARM_MS     = 4 * 60 * 1000; // re-warm every 4 min (cache TTL is 5 min)
 
 async function warmCaches() {
@@ -33,8 +33,8 @@ async function warmCaches() {
 
     // Plan G: prime top-N search terms — dual-write (Plan C) also warms pageSize=20
     const tokenRows = await query<{ token: string }>(
-      `SELECT token FROM daily_search_token_summary
-       GROUP BY token ORDER BY sum(orderCount) DESC LIMIT ${WARM_TOKENS}`,
+      `SELECT lower(customerLastName) AS token FROM orders
+       GROUP BY customerLastName ORDER BY count() DESC LIMIT ${WARM_TOKENS}`,
     );
     const tokens = tokenRows.map(r => r.token).filter(Boolean);
     for (let i = 0; i < tokens.length; i += WARM_BATCH) {
