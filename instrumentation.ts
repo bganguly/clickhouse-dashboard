@@ -9,7 +9,7 @@ export async function register() {
   await ensureCollection().catch(() => {});
 
   const { listOrders } = await import("@/lib/services/orders.service");
-  const { getDailyAggregates } = await import("@/lib/services/aggregates.service");
+  const { getDailyAggregates, getExactAggregateTotal } = await import("@/lib/services/aggregates.service");
   const { query } = await import("@/lib/clickhouse");
 
   const today = () => new Date().toISOString().slice(0, 10);
@@ -22,6 +22,7 @@ export async function register() {
   const warmBoth = (tok: string) => Promise.all([
     listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
     getDailyAggregates({ ...baseAggInput(), q: tok }),
+    getExactAggregateTotal({ ...baseAggInput(), q: tok }),
   ]);
 
   const ping = async () => {

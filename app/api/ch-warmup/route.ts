@@ -34,6 +34,7 @@ async function warmCaches() {
     const warmBoth = (tok: string) => Promise.all([
       listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
       getDailyAggregates({ ...aggInput, q: tok }),
+      getExactAggregateTotal({ ...aggInput, q: tok }),
     ]);
 
     // Priority 1: every full word visible on the default first page (name + notes)
