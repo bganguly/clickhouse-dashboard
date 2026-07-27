@@ -239,17 +239,30 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
       const sortCol = SORT_COL[sort];
       const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
+      // Over-fetch up to DEFAULT_PAGE_SIZE on page 1 so we can warm the larger pageSize cache key too
+      const fetchSize = page === 1 && pageSize < DEFAULT_PAGE_SIZE ? DEFAULT_PAGE_SIZE : pageSize;
+
       const orderRows = await query<OrderRow>(
         `${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT {lim: UInt32} OFFSET {off: UInt32}`,
-        { ...params, lim: pageSize, off: offset },
+        { ...params, lim: fetchSize, off: offset },
         SEARCH_CACHE,
       );
       console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
-      const data = orderRows.map(rowToDTO);
+      const allData = orderRows.map(rowToDTO);
+      const data = allData.slice(0, pageSize);
       const result: OrderListResult = { data, page, pageSize, total: 0, totalPages: 0, approximate: false, countPending: true };
       if (input.facets) result.facets = await computeFacets(where, params);
       await searchCacheSet(cacheKey, result);
+
+      // Dual write: also cache the DEFAULT_PAGE_SIZE key so the main UI benefits
+      if (fetchSize > pageSize) {
+        const altKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize: fetchSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
+        const altResult: OrderListResult = { data: allData.slice(0, fetchSize), page, pageSize: fetchSize, total: 0, totalPages: 0, approximate: false, countPending: true };
+        if (input.facets) altResult.facets = result.facets;
+        await searchCacheSet(altKey, altResult);
+      }
+
       return result;
     } catch (err) {
       mapDbError(err, "listOrders");

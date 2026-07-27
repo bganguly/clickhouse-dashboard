@@ -262,7 +262,7 @@ function OrdersCard() {
   async function run() {
     setLoading(true); setErr(null); setRes(null); setCountTotal(null);
     try {
-      const result = await fetchTimed("/api/orders?pageSize=10&sort=placedAt&dir=desc");
+      const result = await fetchTimed("/api/orders?page=1&pageSize=10&sort=placedAt&dir=desc&facets=1");
       setRes(result);
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
@@ -314,7 +314,7 @@ function SearchCard() {
     setL(true); setErr(null); setRes(null); setCountTotal(null);
     try {
       const term = q.trim();
-      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&pageSize=10`);
+      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=10&sort=placedAt&dir=desc&facets=1`);
       setRes(result);
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {

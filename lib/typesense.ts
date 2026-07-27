@@ -55,12 +55,13 @@ export async function indexTokens(
   await client.collections(COLLECTION).documents().import(docs, { action: "upsert" });
 }
 
-/**
- * Expand a potentially-partial prefix to the best matching full token in the vocabulary.
- * Returns the original prefix unchanged if Typesense is unavailable or no match is found.
- * Uses sort_by doc_freq:desc so the most common full-word wins (e.g. "conferenc" → "conference").
- */
+const _prefixCache = new Map<string, { token: string; ts: number }>();
+const _PREFIX_TTL_MS = 10 * 60 * 1000;
+
 export async function expandPrefix(prefix: string): Promise<string> {
+  const hit = _prefixCache.get(prefix);
+  if (hit && Date.now() - hit.ts < _PREFIX_TTL_MS) return hit.token;
+
   const client = getClient();
   if (!client) return prefix;
   try {
@@ -71,9 +72,10 @@ export async function expandPrefix(prefix: string): Promise<string> {
       prefix: true,
       sort_by: "doc_freq:desc",
     });
-    const hit = result.hits?.[0];
-    if (!hit) return prefix;
-    return (hit.document as { token: string }).token;
+    const best = result.hits?.[0];
+    const token = best ? (best.document as { token: string }).token : prefix;
+    _prefixCache.set(prefix, { token, ts: Date.now() });
+    return token;
   } catch {
     return prefix;
   }
