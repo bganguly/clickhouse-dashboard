@@ -838,37 +838,53 @@ for _att in $(seq 1 18); do
 done
 
 if [[ "$_APP_READY" -eq 1 ]]; then
-  printf '  Baseline (no search)...\n'
+  printf '  [1/4] Baseline orders (no search)... '
+  _t0=$(date +%s%3N)
   curl -sf --max-time 30 "${_WARM_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
-  curl -sf --max-time 30 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
-  printf '  done.\n'
+  printf '%d ms\n' "$(( $(date +%s%3N) - _t0 ))"
 
-  printf '  Fetching top search tokens from daily_search_token_summary...\n'
+  printf '  [2/4] Baseline aggregates (no search)... '
+  _t0=$(date +%s%3N)
+  curl -sf --max-time 30 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
+  printf '%d ms\n' "$(( $(date +%s%3N) - _t0 ))"
+
+  printf '  [3/4] Fetching top tokens from daily_search_token_summary... '
+  _t0=$(date +%s%3N)
   _WARM_TOKENS_RAW="$(curl -sf -u "default:${CH_PASS}" \
     "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
     --data-binary "SELECT token FROM daily_search_token_summary GROUP BY token ORDER BY sum(orderCount) DESC LIMIT 100" \
     2>/dev/null || echo '')"
+  printf '%d ms\n' "$(( $(date +%s%3N) - _t0 ))"
 
   if [[ -n "$_WARM_TOKENS_RAW" ]]; then
     _TOK_ARR=()
     while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_WARM_TOKENS_RAW"
-    printf '  Warming %d tokens (orders + aggregates, 5 parallel)...\n' "${#_TOK_ARR[@]}"
+    _TOTAL_TOKS="${#_TOK_ARR[@]}"
+    _TOTAL_BATCHES=$(( (_TOTAL_TOKS + 4) / 5 ))
+    printf '  [4/4] Warming %d tokens in %d batches of 5...\n' "$_TOTAL_TOKS" "$_TOTAL_BATCHES"
 
-    _wi=0
+    _wi=0; _batch=0
     while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
+      _batch=$(( _batch + 1 ))
+      _batch_t0=$(date +%s%3N)
+      _batch_toks=()
       for _wj in 0 1 2 3 4; do
         _wk=$(( _wi + _wj ))
         [[ $_wk -ge ${#_TOK_ARR[@]} ]] && break
-        _wtok="${_TOK_ARR[$_wk]}"
+        _batch_toks+=("${_TOK_ARR[$_wk]}")
+      done
+      printf '      batch %d/%d [%s]... ' "$_batch" "$_TOTAL_BATCHES" "$(printf '%s ' "${_batch_toks[@]}")"
+      for _wtok in "${_batch_toks[@]}"; do
         (
           curl -sf --max-time 10 "${_WARM_BASE}/api/orders?q=${_wtok}&page=1&pageSize=10&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
           curl -sf --max-time 10 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&q=${_wtok}&topCategories=4" >/dev/null 2>&1 || true
         ) &
       done
       wait
+      printf '%d ms\n' "$(( $(date +%s%3N) - _batch_t0 ))"
       _wi=$(( _wi + 5 ))
     done
-    printf '  Pre-warmed %d tokens.\n' "${#_TOK_ARR[@]}"
+    printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
   else
     printf '  daily_search_token_summary empty — skipping per-token warmup.\n'
   fi
