@@ -814,6 +814,68 @@ if [[ -n "$CF_DIST_ID" ]]; then
     --query 'Invalidation.Id' --output text
 fi
 
+printf '[deploy] Pre-warming application caches...\n'
+_TODAY="$(date +%Y-%m-%d)"
+
+_AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+  --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+_WARM_BASE="${CDN_URL}"
+[[ -n "$_AR_SVC_URL" ]] && _WARM_BASE="https://${_AR_SVC_URL}"
+
+printf '  origin: %s\n' "$_WARM_BASE"
+printf '  Waiting for app readiness...\n'
+_APP_READY=0
+for _att in $(seq 1 18); do
+  _WSTAT="$(curl -sf --max-time 15 "${_WARM_BASE}/api/ch-warmup" 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
+  if [[ "$_WSTAT" == "ready" ]]; then
+    _APP_READY=1
+    printf '  ready.\n'
+    break
+  fi
+  printf '  [%s] attempt %d/18: %s\n' "$(date +'%H:%M:%S')" "$_att" "${_WSTAT:-timeout}"
+  sleep 10
+done
+
+if [[ "$_APP_READY" -eq 1 ]]; then
+  printf '  Baseline (no search)...\n'
+  curl -sf --max-time 30 "${_WARM_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
+  curl -sf --max-time 30 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
+  printf '  done.\n'
+
+  printf '  Fetching top search tokens from daily_search_token_summary...\n'
+  _WARM_TOKENS_RAW="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT token FROM daily_search_token_summary GROUP BY token ORDER BY sum(orderCount) DESC LIMIT 100" \
+    2>/dev/null || echo '')"
+
+  if [[ -n "$_WARM_TOKENS_RAW" ]]; then
+    _TOK_ARR=()
+    while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_WARM_TOKENS_RAW"
+    printf '  Warming %d tokens (orders + aggregates, 5 parallel)...\n' "${#_TOK_ARR[@]}"
+
+    _wi=0
+    while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
+      for _wj in 0 1 2 3 4; do
+        _wk=$(( _wi + _wj ))
+        [[ $_wk -ge ${#_TOK_ARR[@]} ]] && break
+        _wtok="${_TOK_ARR[$_wk]}"
+        (
+          curl -sf --max-time 10 "${_WARM_BASE}/api/orders?q=${_wtok}&page=1&pageSize=10&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
+          curl -sf --max-time 10 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&q=${_wtok}&topCategories=4" >/dev/null 2>&1 || true
+        ) &
+      done
+      wait
+      _wi=$(( _wi + 5 ))
+    done
+    printf '  Pre-warmed %d tokens.\n' "${#_TOK_ARR[@]}"
+  else
+    printf '  daily_search_token_summary empty — skipping per-token warmup.\n'
+  fi
+else
+  printf '  App not reachable after 3 min — skipping HTTP warmup.\n'
+fi
+
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
 
