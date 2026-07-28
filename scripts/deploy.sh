@@ -88,22 +88,39 @@ _PREFLIGHT_CDN=""
 _PREFLIGHT_CF=""
 _DEFAULT_CHOICE=2
 
+printf '[preflight] Checking AWS credentials... '
 if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
+  printf 'ok\n'
   if [[ -d "$INFRA_DIR" ]]; then
+    printf '[preflight] Reading Terraform state... '
     _PREFLIGHT_ARN="$(cd "$INFRA_DIR" && terraform output -raw apprunner_service_arn 2>/dev/null || true)"
     _PREFLIGHT_CDN="$(cd "$INFRA_DIR" && terraform output -raw cdn_url 2>/dev/null || true)"
     _PREFLIGHT_CF="$(cd "$INFRA_DIR" && terraform output -raw cf_distribution_id 2>/dev/null || true)"
+    [[ -n "$_PREFLIGHT_ARN" ]] && printf 'ARN found\n' || printf 'empty\n'
   fi
   if [[ -z "$_PREFLIGHT_ARN" ]]; then
+    printf '[preflight] Querying App Runner for service ARN... '
     _TMP_ARN="$(aws apprunner list-services \
       --query "ServiceSummaryList[?ServiceName=='ch-dash-app'].ServiceArn | [0]" \
       --output text 2>/dev/null || true)"
-    [[ "$_TMP_ARN" != "None" && -n "$_TMP_ARN" ]] && _PREFLIGHT_ARN="$_TMP_ARN"
+    if [[ "$_TMP_ARN" != "None" && -n "$_TMP_ARN" ]]; then
+      _PREFLIGHT_ARN="$_TMP_ARN"
+      printf 'found\n'
+    else
+      printf 'not found\n'
+    fi
   fi
-  if [[ -n "$_PREFLIGHT_ARN" ]] && \
-     aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
-    _DEFAULT_CHOICE=3
+  if [[ -n "$_PREFLIGHT_ARN" ]]; then
+    printf '[preflight] Checking ECR for latest image... '
+    if aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
+      printf 'ok\n'
+      _DEFAULT_CHOICE=3
+    else
+      printf 'missing\n'
+    fi
   fi
+else
+  printf 'failed\n'
 fi
 
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
