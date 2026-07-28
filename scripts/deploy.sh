@@ -87,9 +87,9 @@ printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
 printf '  [3] Quick  — redeploy latest ECR image to App Runner (UX changes, skips Terraform/DB)\n\n'
-printf 'Choice [1/2/3, default 2]: '
+printf 'Choice [1/2/3, default 3]: '
 read -r DEPLOY_TARGET
-case "${DEPLOY_TARGET:-2}" in
+case "${DEPLOY_TARGET:-3}" in
   1)
     cd "$ROOT_DIR"
     npm install --prefer-offline || npm install
