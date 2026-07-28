@@ -11,7 +11,7 @@ export async function aggCacheGet<T>(key: string): Promise<T | null> {
     try {
       const raw = await redis.get(PREFIX + key);
       if (raw) {
-        redis.expire(PREFIX + key, TTL_S).catch(() => {});
+        redis.setex(PREFIX + key, TTL_S, raw).catch(() => {});
         return JSON.parse(raw) as T;
       }
     } catch {}
