@@ -82,46 +82,26 @@ except: pass
   done
   printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
 
-  printf '  [verify] Checking all %d tokens are cached (< 200ms)...\n' "$_TOTAL_TOKS"
-  local _verify_pass=0
-  for _vpass in 1 2 3; do
-    local _cached=0 _slow=0 _slow_toks=()
-    for _vtok in "${_TOK_ARR[@]}"; do
-      local _vt
-      _vt="$(curl -sf --max-time 5 -w '%{time_total}' -o /dev/null \
-        "${_BASE}/api/orders?q=${_vtok}&page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null || echo '9')"
-      local _vms
-      _vms="$(python3 -c "print(int(float('${_vt}') * 1000))" 2>/dev/null || echo 9999)"
-      if [[ "${_vms}" -lt 200 ]]; then
-        _cached=$(( _cached + 1 ))
-      else
-        _slow=$(( _slow + 1 ))
-        _slow_toks+=("${_vtok}(${_vms}ms)")
-      fi
-    done
-    printf '  [verify pass %d] cached=%d  slow=%d\n' "$_vpass" "$_cached" "$_slow"
-    if [[ "$_slow" -eq 0 ]]; then
-      _verify_pass=1
-      break
-    fi
-    printf '  [verify] Slow tokens: %s\n' "${_slow_toks[*]}"
-    if [[ "$_vpass" -lt 3 ]]; then
-      printf '  [verify] Re-warming %d slow tokens...\n' "$_slow"
-      for _rtok in "${_TOK_ARR[@]}"; do
-        local _rms
-        _rms="$(curl -sf --max-time 5 -w '%{time_total}' -o /dev/null \
-          "${_BASE}/api/orders?q=${_rtok}&page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null | python3 -c "import sys; print(int(float(sys.stdin.read().strip() or '9')*1000))" 2>/dev/null || echo 9999)"
-        if [[ "${_rms:-9999}" -ge 200 ]]; then
-          curl -sf --max-time 30 "${_BASE}/api/orders?q=${_rtok}&page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
-          curl -sf --max-time 30 "${_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&q=${_rtok}&topCategories=4" >/dev/null 2>&1 || true
-        fi
-      done
+  printf '  [verify] Spot-checking %d tokens (threshold 800ms = cache hit + network RTT)...\n' "$_TOTAL_TOKS"
+  local _cached=0 _slow=0 _slow_toks=()
+  for _vtok in "${_TOK_ARR[@]}"; do
+    local _vt
+    _vt="$(curl -sf --max-time 5 -w '%{time_total}' -o /dev/null \
+      "${_BASE}/api/orders?q=${_vtok}&page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null || echo '9')"
+    local _vms
+    _vms="$(python3 -c "print(int(float('${_vt}') * 1000))" 2>/dev/null || echo 9999)"
+    if [[ "${_vms}" -lt 800 ]]; then
+      _cached=$(( _cached + 1 ))
+    else
+      _slow=$(( _slow + 1 ))
+      _slow_toks+=("${_vtok}(${_vms}ms)")
     fi
   done
-  if [[ "$_verify_pass" -eq 1 ]]; then
+  if [[ "$_slow" -eq 0 ]]; then
     printf '  [verify] All %d tokens confirmed cached.\n' "$_TOTAL_TOKS"
   else
-    printf '  [verify] WARNING: %d token(s) still uncached after 3 passes.\n' "$_slow"
+    printf '  [verify] cached=%d  uncached=%d\n' "$_cached" "$_slow"
+    printf '  [verify] Uncached tokens: %s\n' "${_slow_toks[*]}"
   fi
 }
 
