@@ -5,10 +5,89 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
 PROJECT_NAME="$(basename "$ROOT_DIR")"
 
+_warm_app_caches() {
+  local _BASE="$1"
+  local _TODAY="${2:-$(date +%Y-%m-%d)}"
+  printf '[deploy] Pre-warming application caches...\n'
+  printf '  origin: %s\n' "$_BASE"
+  printf '  Waiting for app readiness...\n'
+  local _APP_READY=0
+  for _att in $(seq 1 18); do
+    local _WSTAT
+    _WSTAT="$(curl -sf --max-time 15 "${_BASE}/api/ch-warmup" 2>/dev/null \
+      | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
+    if [[ "$_WSTAT" == "ready" ]]; then _APP_READY=1; printf '  ready.\n'; break; fi
+    printf '  [%s] attempt %d/18: %s\n' "$(date +'%H:%M:%S')" "$_att" "${_WSTAT:-timeout}"
+    sleep 10
+  done
+  if [[ "$_APP_READY" -ne 1 ]]; then printf '  App not reachable after 3 min — skipping warmup.\n'; return; fi
+
+  printf '  [1/3] Baseline orders (no search)... '
+  local _t0
+  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
+  local _FIRST_PAGE_JSON
+  _FIRST_PAGE_JSON="$(curl -sf --max-time 30 "${_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null || echo '')"
+  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
+
+  printf '  [2/3] Baseline aggregates (no search)... '
+  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
+  curl -sf --max-time 30 "${_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
+  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
+
+  local _VIS_TOKENS
+  _VIS_TOKENS="$(python3 -c "
+import json, re, sys
+try:
+    data = json.loads(sys.stdin.read())
+    words = {}
+    for row in data.get('data', []):
+        c = row.get('customer', {})
+        text = ' '.join(filter(None, [c.get('firstName',''), c.get('lastName',''), row.get('notes') or '']))
+        for w in re.split(r'[^a-zA-Z]+', text.lower()):
+            if len(w) >= 3:
+                words[w] = None
+    print('\n'.join(words.keys()))
+except: pass
+" <<< "$_FIRST_PAGE_JSON" 2>/dev/null || echo '')"
+
+  if [[ -z "$_VIS_TOKENS" ]]; then
+    printf '  Could not parse visible tokens — skipping per-token warmup.\n'; return
+  fi
+  local _TOK_ARR=()
+  while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_VIS_TOKENS"
+  local _TOTAL_TOKS="${#_TOK_ARR[@]}"
+  local _TOTAL_BATCHES=$(( (_TOTAL_TOKS + 4) / 5 ))
+  printf '  [3/3] Warming %d visible-page tokens in %d batches of 5...\n' "$_TOTAL_TOKS" "$_TOTAL_BATCHES"
+  local _wi=0 _batch=0
+  while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
+    _batch=$(( _batch + 1 ))
+    local _batch_t0
+    _batch_t0=$(python3 -c "import time; print(int(time.time()*1000))")
+    local _batch_toks=()
+    for _wj in 0 1 2 3 4; do
+      local _wk=$(( _wi + _wj ))
+      [[ $_wk -ge ${#_TOK_ARR[@]} ]] && break
+      _batch_toks+=("${_TOK_ARR[$_wk]}")
+    done
+    printf '      batch %d/%d [%s]... ' "$_batch" "$_TOTAL_BATCHES" "$(printf '%s ' "${_batch_toks[@]}")"
+    for _wtok in "${_batch_toks[@]}"; do
+      (
+        curl -sf --max-time 10 "${_BASE}/api/orders?q=${_wtok}&page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
+        curl -sf --max-time 10 "${_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&q=${_wtok}&topCategories=4" >/dev/null 2>&1 || true
+      ) &
+    done
+    wait
+    printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _batch_t0 ))"
+    _wi=$(( _wi + 5 ))
+  done
+  printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
+}
+
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
-printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (scale-to-zero, wake on first ping)\n\n'
-printf 'Choice [1/2, default 2]: '
+printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
+printf '  [3] Quick  — redeploy latest ECR image to App Runner (UX changes, skips Terraform/DB)\n\n'
+printf 'Choice [1/2/3, default 2]: '
 read -r DEPLOY_TARGET
 case "${DEPLOY_TARGET:-2}" in
   1)
@@ -17,6 +96,47 @@ case "${DEPLOY_TARGET:-2}" in
     exec npm run dev
     ;;
   2) ;;
+  3)
+    printf '\n[quick] Checking AWS credentials...\n'
+    aws sts get-caller-identity >/dev/null
+    printf '  OK\n'
+
+    printf '[quick] Reading Terraform state...\n'
+    cd "$INFRA_DIR"
+    APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
+    CDN_URL="$(terraform output -raw cdn_url 2>/dev/null || true)"
+    CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
+    [[ -z "$APP_RUNNER_ARN" ]] && { printf 'ERROR: no App Runner ARN in state — run a full deploy first.\n'; exit 1; }
+    printf '  ARN: %s\n' "$APP_RUNNER_ARN"
+
+    if ! aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
+      printf 'ERROR: no latest image in ECR — push to GitHub and wait for Actions build first.\n'; exit 1
+    fi
+
+    printf '[quick] Starting App Runner deployment...\n'
+    aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
+    while true; do
+      SVC_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+      if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '  Running.\n'; break; fi
+      if [[ "$SVC_STATUS" == "UPDATE_FAILED" ]]; then printf 'ERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
+      printf '  %s...\n' "$SVC_STATUS"; sleep 20
+    done
+
+    if [[ -n "${CF_DIST_ID:-}" ]]; then
+      printf '[quick] Invalidating CloudFront cache...\n'
+      aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
+        --query 'Invalidation.Id' --output text
+    fi
+
+    _AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+      --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+    _QUICK_BASE="${CDN_URL}"
+    [[ -n "$_AR_SVC_URL" ]] && _QUICK_BASE="https://${_AR_SVC_URL}"
+    _warm_app_caches "$_QUICK_BASE"
+
+    printf '\n  Dashboard: %s\n' "${CDN_URL:-$_QUICK_BASE}"
+    exit 0
+    ;;
   *) printf 'Invalid choice.\n'; exit 1 ;;
 esac
 
@@ -820,90 +940,12 @@ if [[ -n "$CF_DIST_ID" ]]; then
     --query 'Invalidation.Id' --output text
 fi
 
-printf '[deploy] Pre-warming application caches...\n'
 _TODAY="$(date +%Y-%m-%d)"
-
 _AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
   --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
 _WARM_BASE="${CDN_URL}"
 [[ -n "$_AR_SVC_URL" ]] && _WARM_BASE="https://${_AR_SVC_URL}"
-
-printf '  origin: %s\n' "$_WARM_BASE"
-printf '  Waiting for app readiness...\n'
-_APP_READY=0
-for _att in $(seq 1 18); do
-  _WSTAT="$(curl -sf --max-time 15 "${_WARM_BASE}/api/ch-warmup" 2>/dev/null \
-    | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
-  if [[ "$_WSTAT" == "ready" ]]; then
-    _APP_READY=1
-    printf '  ready.\n'
-    break
-  fi
-  printf '  [%s] attempt %d/18: %s\n' "$(date +'%H:%M:%S')" "$_att" "${_WSTAT:-timeout}"
-  sleep 10
-done
-
-if [[ "$_APP_READY" -eq 1 ]]; then
-  printf '  [1/3] Baseline orders (no search)... '
-  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
-  _FIRST_PAGE_JSON="$(curl -sf --max-time 30 "${_WARM_BASE}/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null || echo '')"
-  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
-
-  printf '  [2/3] Baseline aggregates (no search)... '
-  _t0=$(python3 -c "import time; print(int(time.time()*1000))")
-  curl -sf --max-time 30 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
-  printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
-
-  _VIS_TOKENS="$(python3 -c "
-import json, re, sys
-try:
-    data = json.loads(sys.stdin.read())
-    words = {}
-    for row in data.get('data', []):
-        c = row.get('customer', {})
-        text = ' '.join(filter(None, [c.get('firstName',''), c.get('lastName',''), row.get('notes') or '']))
-        for w in re.split(r'[^a-zA-Z]+', text.lower()):
-            if len(w) >= 3:
-                words[w] = None
-    print('\n'.join(words.keys()))
-except: pass
-" <<< "$_FIRST_PAGE_JSON" 2>/dev/null || echo '')"
-
-  if [[ -n "$_VIS_TOKENS" ]]; then
-    _TOK_ARR=()
-    while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_VIS_TOKENS"
-    _TOTAL_TOKS="${#_TOK_ARR[@]}"
-    _TOTAL_BATCHES=$(( (_TOTAL_TOKS + 4) / 5 ))
-    printf '  [3/3] Warming %d visible-page tokens in %d batches of 5...\n' "$_TOTAL_TOKS" "$_TOTAL_BATCHES"
-
-    _wi=0; _batch=0
-    while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
-      _batch=$(( _batch + 1 ))
-      _batch_t0=$(python3 -c "import time; print(int(time.time()*1000))")
-      _batch_toks=()
-      for _wj in 0 1 2 3 4; do
-        _wk=$(( _wi + _wj ))
-        [[ $_wk -ge ${#_TOK_ARR[@]} ]] && break
-        _batch_toks+=("${_TOK_ARR[$_wk]}")
-      done
-      printf '      batch %d/%d [%s]... ' "$_batch" "$_TOTAL_BATCHES" "$(printf '%s ' "${_batch_toks[@]}")"
-      for _wtok in "${_batch_toks[@]}"; do
-        (
-          curl -sf --max-time 10 "${_WARM_BASE}/api/orders?q=${_wtok}&page=1&pageSize=10&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
-          curl -sf --max-time 10 "${_WARM_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&q=${_wtok}&topCategories=4" >/dev/null 2>&1 || true
-        ) &
-      done
-      wait
-      printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _batch_t0 ))"
-      _wi=$(( _wi + 5 ))
-    done
-    printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
-  else
-    printf '  Could not parse visible tokens — skipping per-token warmup.\n'
-  fi
-else
-  printf '  App not reachable after 3 min — skipping HTTP warmup.\n'
-fi
+_warm_app_caches "$_WARM_BASE" "$_TODAY"
 
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
