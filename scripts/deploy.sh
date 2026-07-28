@@ -82,27 +82,6 @@ except: pass
   done
   printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
 
-  printf '  [verify] Spot-checking %d tokens (threshold 800ms = cache hit + network RTT)...\n' "$_TOTAL_TOKS"
-  local _cached=0 _slow=0 _slow_toks=()
-  for _vtok in "${_TOK_ARR[@]}"; do
-    local _vt
-    _vt="$(curl -sf --max-time 5 -w '%{time_total}' -o /dev/null \
-      "${_BASE}/api/orders?q=${_vtok}&page=1&pageSize=20&sort=placedAt&dir=desc" 2>/dev/null || echo '9')"
-    local _vms
-    _vms="$(python3 -c "print(int(float('${_vt}') * 1000))" 2>/dev/null || echo 9999)"
-    if [[ "${_vms}" -lt 800 ]]; then
-      _cached=$(( _cached + 1 ))
-    else
-      _slow=$(( _slow + 1 ))
-      _slow_toks+=("${_vtok}(${_vms}ms)")
-    fi
-  done
-  if [[ "$_slow" -eq 0 ]]; then
-    printf '  [verify] All %d tokens confirmed cached.\n' "$_TOTAL_TOKS"
-  else
-    printf '  [verify] cached=%d  uncached=%d\n' "$_cached" "$_slow"
-    printf '  [verify] Uncached tokens: %s\n' "${_slow_toks[*]}"
-  fi
 }
 
 _PREFLIGHT_ARN=""
