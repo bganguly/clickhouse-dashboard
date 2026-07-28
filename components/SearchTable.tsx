@@ -638,6 +638,7 @@ export default function SearchTable({
             } else if (e.key === "Enter") {
               if (activeSuggestion >= 0 && suggestions[activeSuggestion]) {
                 const tok = suggestions[activeSuggestion].token;
+                if (tok === debouncedQuery) { setShowSuggestions(false); return; }
                 onSearchStart?.();
                 setPendingSearch(true);
                 setQuery(tok);
@@ -645,6 +646,8 @@ export default function SearchTable({
                 setPage(1);
                 setShowSuggestions(false);
               } else {
+                const trimmed = query.trim();
+                if (trimmed === debouncedQuery.trim()) { setShowSuggestions(false); return; }
                 onSearchStart?.();
                 setPendingSearch(true);
                 setDebouncedQuery(query);
