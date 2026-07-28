@@ -37,19 +37,24 @@ export async function register() {
       const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
       const visibleSet = new Set<string>();
       for (const row of firstPage?.data ?? []) {
-        const text = [row.customer.firstName, row.customer.lastName].join(" ");
+        const text = [row.customer.firstName, row.customer.lastName, row.notes ?? ""].join(" ");
         for (const w of text.split(/[^a-zA-Z]+/)) {
           const t = w.toLowerCase();
           if (t.length >= 3) visibleSet.add(t);
         }
       }
       const tokens = [...visibleSet];
+      const totalBatches = Math.ceil(tokens.length / WARM_BATCH);
       for (let i = 0; i < tokens.length; i += WARM_BATCH) {
-        await Promise.all(tokens.slice(i, i + WARM_BATCH).flatMap(t => [
+        const batch = tokens.slice(i, i + WARM_BATCH);
+        const batchNum = Math.floor(i / WARM_BATCH) + 1;
+        console.log(`[warmup] batch ${batchNum}/${totalBatches}: ${batch.join(", ")}`);
+        await Promise.all(batch.flatMap(t => [
           listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
           warmAgg(t),
         ]));
       }
+      console.log(`[warmup] done — ${tokens.length} tokens warmed`);
     } catch {}
   };
 
