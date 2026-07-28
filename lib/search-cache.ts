@@ -10,8 +10,11 @@ export async function searchCacheGet<T>(key: string): Promise<T | null> {
   if (redis) {
     try {
       // getex atomically reads and resets TTL so warmup hits also extend the window
-      const raw = await redis.getex(PREFIX + key, "EX", TTL_S);
-      if (raw) return JSON.parse(raw) as T;
+      const raw = await redis.get(PREFIX + key);
+      if (raw) {
+        redis.expire(PREFIX + key, TTL_S).catch(() => {});
+        return JSON.parse(raw) as T;
+      }
     } catch {}
     return null;
   }

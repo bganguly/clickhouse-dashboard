@@ -53,6 +53,7 @@ function canUseDailySummary(input: AggregateQueryInput): boolean {
 export async function getDailyAggregates(input: AggregateQueryInput): Promise<DailyAggregate[]> {
   const query_in = {
     ...input,
+    q: input.q?.trim() || null,
     to: input.to || (input.from ? todayDateString() : input.to),
   };
 
@@ -122,6 +123,7 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
 export async function getExactAggregateTotal(input: AggregateQueryInput): Promise<number> {
   const query_in = {
     ...input,
+    q: input.q?.trim() || null,
     to: input.to || (input.from ? todayDateString() : input.to),
   };
 

@@ -9,8 +9,11 @@ const store = new Map<string, { value: unknown; ts: number }>();
 export async function aggCacheGet<T>(key: string): Promise<T | null> {
   if (redis) {
     try {
-      const raw = await redis.getex(PREFIX + key, "EX", TTL_S);
-      if (raw) return JSON.parse(raw) as T;
+      const raw = await redis.get(PREFIX + key);
+      if (raw) {
+        redis.expire(PREFIX + key, TTL_S).catch(() => {});
+        return JSON.parse(raw) as T;
+      }
     } catch {}
     return null;
   }
