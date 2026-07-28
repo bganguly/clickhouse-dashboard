@@ -173,6 +173,7 @@ export default function SearchTable({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevQueryLenRef = useRef(0);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [page, setPage] = useState(1);
@@ -475,8 +476,10 @@ export default function SearchTable({
   }, []);
 
   useEffect(() => {
+    const growing = query.length > prevQueryLenRef.current;
+    prevQueryLenRef.current = query.length;
     if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
-    if (query.trim().length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
+    if (!growing || query.trim().length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
     suggestTimerRef.current = setTimeout(async () => {
       try {
         const res = await fetch(`/api/suggest?q=${encodeURIComponent(query.trim())}`);
