@@ -9,7 +9,8 @@ const store = new Map<string, { value: unknown; ts: number }>();
 export async function searchCacheGet<T>(key: string): Promise<T | null> {
   if (redis) {
     try {
-      const raw = await redis.get(PREFIX + key);
+      // getex atomically reads and resets TTL so warmup hits also extend the window
+      const raw = await redis.getex(PREFIX + key, "EX", TTL_S);
       if (raw) return JSON.parse(raw) as T;
     } catch {}
     return null;

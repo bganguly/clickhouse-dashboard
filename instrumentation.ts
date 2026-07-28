@@ -37,7 +37,7 @@ export async function register() {
       const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
       const visibleSet = new Set<string>();
       for (const row of firstPage?.data ?? []) {
-        const text = [row.customer.firstName, row.customer.lastName, row.notes ?? ""].join(" ");
+        const text = [row.customer.firstName, row.customer.lastName].join(" ");
         for (const w of text.split(/[^a-zA-Z]+/)) {
           const t = w.toLowerCase();
           if (t.length >= 3) visibleSet.add(t);
