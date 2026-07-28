@@ -34,43 +34,62 @@ _warm_app_caches() {
   curl -sf --max-time 30 "${_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&topCategories=4" >/dev/null 2>&1 || true
   printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _t0 ))"
 
-  local _VIS_TOKENS
-  _VIS_TOKENS="$(python3 -c "
+  local _VIS_ROWS
+  _VIS_ROWS="$(python3 -c "
 import json, re, sys
 try:
     data = json.loads(sys.stdin.read())
-    words = {}
     for row in data.get('data', []):
         c = row.get('customer', {})
-        text = ' '.join(filter(None, [c.get('firstName',''), c.get('lastName',''), row.get('notes') or '']))
-        for w in re.split(r'[^a-zA-Z]+', text.lower()):
-            if len(w) >= 3:
-                words[w] = None
-    print('\n'.join(words.keys()))
+        fn = c.get('firstName', '')
+        ln = c.get('lastName', '')
+        notes = row.get('notes') or ''
+        text = ' '.join(filter(None, [fn, ln, notes]))
+        toks = ','.join(dict.fromkeys(w for w in re.split(r'[^a-zA-Z]+', text.lower()) if len(w) >= 3))
+        if toks:
+            print(fn + '\t' + ln + '\t' + notes + '\t' + toks)
 except: pass
 " <<< "$_FIRST_PAGE_JSON" 2>/dev/null || echo '')"
 
-  if [[ -z "$_VIS_TOKENS" ]]; then
-    printf '  Could not parse visible tokens — skipping per-token warmup.\n'; return
+  if [[ -z "$_VIS_ROWS" ]]; then
+    printf '  Could not parse visible rows — skipping per-token warmup.\n'; return
   fi
-  local _TOK_ARR=()
-  while IFS= read -r _t; do [[ -n "$_t" ]] && _TOK_ARR+=("$_t"); done <<< "$_VIS_TOKENS"
-  local _TOTAL_TOKS="${#_TOK_ARR[@]}"
-  local _TOTAL_BATCHES=$(( (_TOTAL_TOKS + 4) / 5 ))
-  printf '  [3/3] Warming %d visible-page tokens in %d batches of 5...\n' "$_TOTAL_TOKS" "$_TOTAL_BATCHES"
-  local _wi=0 _batch=0
-  while [[ $_wi -lt ${#_TOK_ARR[@]} ]]; do
+  local _ROW_ARR=()
+  while IFS= read -r _row_line; do [[ -n "$_row_line" ]] && _ROW_ARR+=("$_row_line"); done <<< "$_VIS_ROWS"
+  local _TOTAL_ROWS="${#_ROW_ARR[@]}"
+  local _TOTAL_BATCHES=$(( (_TOTAL_ROWS + 4) / 5 ))
+  printf '  [3/3] Warming %d rows in %d batches of 5...\n' "$_TOTAL_ROWS" "$_TOTAL_BATCHES"
+  local _ri=0 _batch=0
+  declare -A _SEEN=()
+  while [[ $_ri -lt ${#_ROW_ARR[@]} ]]; do
     _batch=$(( _batch + 1 ))
     local _batch_t0
     _batch_t0=$(python3 -c "import time; print(int(time.time()*1000))")
-    local _batch_toks=()
-    for _wj in 0 1 2 3 4; do
-      local _wk=$(( _wi + _wj ))
-      [[ $_wk -ge ${#_TOK_ARR[@]} ]] && break
-      _batch_toks+=("${_TOK_ARR[$_wk]}")
+    local _batch_label=""
+    local _all_toks=()
+    _SEEN=()
+    for _rj in 0 1 2 3 4; do
+      local _rk=$(( _ri + _rj ))
+      [[ $_rk -ge ${#_ROW_ARR[@]} ]] && break
+      local _row_line="${_ROW_ARR[$_rk]}"
+      local _fn _ln _notes _toks_csv
+      _fn="$(printf '%s' "$_row_line" | cut -f1)"
+      _ln="$(printf '%s' "$_row_line" | cut -f2)"
+      _notes="$(printf '%s' "$_row_line" | cut -f3)"
+      _toks_csv="$(printf '%s' "$_row_line" | cut -f4)"
+      [[ -n "$_batch_label" ]] && _batch_label+=" | "
+      _batch_label+="${_fn} ${_ln} ${_notes}"
+      local _t
+      IFS=',' read -ra _row_toks <<< "$_toks_csv"
+      for _t in "${_row_toks[@]}"; do
+        if [[ -z "${_SEEN[$_t]+x}" ]]; then
+          _SEEN[$_t]=1
+          _all_toks+=("$_t")
+        fi
+      done
     done
-    printf '      batch %d/%d [%s]... ' "$_batch" "$_TOTAL_BATCHES" "$(printf '%s ' "${_batch_toks[@]}")"
-    for _wtok in "${_batch_toks[@]}"; do
+    printf '      batch %d/%d: %s... ' "$_batch" "$_TOTAL_BATCHES" "$_batch_label"
+    for _wtok in "${_all_toks[@]}"; do
       (
         curl -sf --max-time 10 "${_BASE}/api/orders?q=${_wtok}&page=1&pageSize=20&sort=placedAt&dir=desc" >/dev/null 2>&1 || true
         curl -sf --max-time 10 "${_BASE}/api/aggregates?from=2020-01-01&to=${_TODAY}&q=${_wtok}&topCategories=4" >/dev/null 2>&1 || true
@@ -78,9 +97,11 @@ except: pass
     done
     wait
     printf '%d ms\n' "$(( $(python3 -c "import time; print(int(time.time()*1000))") - _batch_t0 ))"
-    _wi=$(( _wi + 5 ))
+    _ri=$(( _ri + 5 ))
+    unset _all_toks
   done
-  printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
+  unset _SEEN
+  printf '  done — %d rows warmed.\n' "$_TOTAL_ROWS"
 
 }
 

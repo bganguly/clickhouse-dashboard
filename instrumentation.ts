@@ -35,26 +35,31 @@ export async function register() {
   const warmVisibleTokens = async () => {
     try {
       const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
-      const visibleSet = new Set<string>();
-      for (const row of firstPage?.data ?? []) {
-        const text = [row.customer.firstName, row.customer.lastName, row.notes ?? ""].join(" ");
-        for (const w of text.split(/[^a-zA-Z]+/)) {
-          const t = w.toLowerCase();
-          if (t.length >= 3) visibleSet.add(t);
-        }
-      }
-      const tokens = [...visibleSet];
-      const totalBatches = Math.ceil(tokens.length / WARM_BATCH);
-      for (let i = 0; i < tokens.length; i += WARM_BATCH) {
-        const batch = tokens.slice(i, i + WARM_BATCH);
+      const rows = firstPage?.data ?? [];
+      const totalBatches = Math.ceil(rows.length / WARM_BATCH);
+      for (let i = 0; i < rows.length; i += WARM_BATCH) {
+        const batch = rows.slice(i, i + WARM_BATCH);
         const batchNum = Math.floor(i / WARM_BATCH) + 1;
-        console.log(`[warmup] batch ${batchNum}/${totalBatches}: ${batch.join(", ")}`);
-        await Promise.all(batch.flatMap(t => [
-          listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-          warmAgg(t),
-        ]));
+        const label = batch
+          .map(r => `${r.customer.firstName} ${r.customer.lastName}${r.notes ? " " + r.notes : ""}`)
+          .join(" | ");
+        console.log(`[warmup] batch ${batchNum}/${totalBatches}: ${label}`);
+        const seen = new Set<string>();
+        const warmCalls = batch.flatMap(r => {
+          const words = [r.customer.firstName, r.customer.lastName, r.notes ?? ""]
+            .join(" ").split(/[^a-zA-Z]+/)
+            .map(w => w.toLowerCase())
+            .filter(w => w.length >= 3);
+          const fresh = words.filter(w => !seen.has(w));
+          fresh.forEach(w => seen.add(w));
+          return fresh.flatMap(t => [
+            listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
+            warmAgg(t),
+          ]);
+        });
+        await Promise.all(warmCalls);
       }
-      console.log(`[warmup] done — ${tokens.length} tokens warmed`);
+      console.log(`[warmup] done — ${rows.length} rows warmed`);
     } catch {}
   };
 
