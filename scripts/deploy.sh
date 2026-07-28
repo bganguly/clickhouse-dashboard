@@ -133,12 +133,17 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
     fi
   fi
   if [[ -n "$_PREFLIGHT_ARN" ]]; then
-    printf '[preflight] Checking ECR for latest image... '
-    if aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
-      printf 'ok\n'
+    _LOCAL_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo '')"
+    printf '[preflight] Checking ECR for current commit (%s)... ' "${_LOCAL_SHA:-unknown}"
+    if [[ -n "$_LOCAL_SHA" ]] && aws ecr describe-images --repository-name "ch-dash-app" \
+        --image-ids "imageTag=${_LOCAL_SHA}" >/dev/null 2>&1; then
+      printf 'built\n'
       _DEFAULT_CHOICE=3
+      _OPTION3_LABEL="Quick  — redeploy current commit (${_LOCAL_SHA}) to App Runner (skips Terraform/DB)"
     else
-      printf 'missing\n'
+      printf 'not built yet\n'
+      _DEFAULT_CHOICE=2
+      _OPTION3_LABEL="Quick  — (unavailable: GH Actions has not built commit ${_LOCAL_SHA:-HEAD} yet)"
     fi
   fi
 else
@@ -148,7 +153,7 @@ fi
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
-printf '  [3] Quick  — redeploy latest ECR image to App Runner (UX changes, skips Terraform/DB)\n\n'
+printf '  [3] %s\n\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
 printf 'Choice [1/2/3, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
 case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
