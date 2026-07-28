@@ -1,5 +1,4 @@
-const WARM_TOKENS    = 100;
-const WARM_BATCH     = 5;
+const WARM_BATCH = 5;
 
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -10,7 +9,6 @@ export async function register() {
 
   const { listOrders } = await import("@/lib/services/orders.service");
   const { getDailyAggregates, getExactAggregateTotal } = await import("@/lib/services/aggregates.service");
-  const { query } = await import("@/lib/clickhouse");
 
   const today = () => new Date().toISOString().slice(0, 10);
 
@@ -34,9 +32,8 @@ export async function register() {
     } catch {}
   };
 
-  const warmTopTokens = async () => {
+  const warmVisibleTokens = async () => {
     try {
-      // Phase 1: listOrders cache — visible first-page tokens
       const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
       const visibleSet = new Set<string>();
       for (const row of firstPage?.data ?? []) {
@@ -46,33 +43,19 @@ export async function register() {
           if (t.length >= 3) visibleSet.add(t);
         }
       }
-      const visibleTokens = [...visibleSet];
-      for (let i = 0; i < visibleTokens.length; i += WARM_BATCH) {
-        await Promise.all(visibleTokens.slice(i, i + WARM_BATCH).flatMap(t => [
+      const tokens = [...visibleSet];
+      for (let i = 0; i < tokens.length; i += WARM_BATCH) {
+        await Promise.all(tokens.slice(i, i + WARM_BATCH).flatMap(t => [
           listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
           warmAgg(t),
         ]));
       }
-
-      // Phase 2: listOrders cache — top-N last names
-      const nameRows = await query<{ token: string }>(
-        `SELECT lower(customerLastName) AS token FROM orders
-         GROUP BY customerLastName ORDER BY count() DESC LIMIT ${WARM_TOKENS}`,
-      );
-      const broader = nameRows.map(r => r.token).filter(Boolean).filter(t => !visibleSet.has(t));
-      for (let i = 0; i < broader.length; i += WARM_BATCH) {
-        await Promise.all(broader.slice(i, i + WARM_BATCH).flatMap(t => [
-          listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-          warmAgg(t),
-        ]));
-      }
-
     } catch {}
   };
 
   void ping();
   setInterval(ping, 4 * 60 * 1000);
 
-  void warmTopTokens();
-  setInterval(warmTopTokens, 4 * 60 * 1000);
+  void warmVisibleTokens();
+  setInterval(warmVisibleTokens, 4 * 60 * 1000);
 }
