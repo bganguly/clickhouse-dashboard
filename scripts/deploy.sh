@@ -510,10 +510,12 @@ if ! _ecr_image_exists "$_DEPLOY_TAG"; then
       [[ -n "$_GH_RUN_STATUS" ]] && _GH_BUILD_ACTIVE=1
     fi
     if [[ "$_GH_BUILD_ACTIVE" -eq 1 ]]; then
-      printf '  GH Actions is building %s — not in ECR yet.\n' "$_DEPLOY_TAG"
-      printf '  [W]ait for build to complete then continue, or [E]xit and re-run deploy later? [W/e]: '
+      printf '  GH Actions is building %s — not in ECR yet.\n\n' "$_DEPLOY_TAG"
+      printf '  [1] Wait for build to complete then continue\n'
+      printf '  [2] Exit now and re-run deploy later\n\n'
+      printf '  Choice [1/2, default 1]: '
       read -r _GH_WAIT_CHOICE
-      if [[ "${_GH_WAIT_CHOICE:-W}" =~ ^[Ee] ]]; then
+      if [[ "${_GH_WAIT_CHOICE:-1}" == "2" ]]; then
         printf '  Exiting. Re-run deploy.sh once GH Actions completes.\n'
         exit 0
       fi
