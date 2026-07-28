@@ -1,7 +1,7 @@
 import { redis } from "./redis";
 
 const PREFIX = "search:";
-const TTL_S = 300;
+const TTL_S = 3600;
 const MAX_ENTRIES = 200;
 
 const store = new Map<string, { value: unknown; ts: number }>();
@@ -9,10 +9,8 @@ const store = new Map<string, { value: unknown; ts: number }>();
 export async function searchCacheGet<T>(key: string): Promise<T | null> {
   if (redis) {
     try {
-      // getex atomically reads and resets TTL so warmup hits also extend the window
       const raw = await redis.get(PREFIX + key);
       if (raw) {
-        redis.setex(PREFIX + key, TTL_S, raw).catch(() => {});
         return JSON.parse(raw) as T;
       }
     } catch {}
