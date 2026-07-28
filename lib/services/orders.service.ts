@@ -220,8 +220,12 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const offset = (page - 1) * pageSize;
 
   const cacheKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
+  if (input.q) console.log(`[search-cache] received q="${input.q}"`);
   const cached = await searchCacheGet<OrderListResult>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    if (input.q) console.log(`[search-cache] q="${input.q}" → list view HIT (search-cache / search: namespace)`);
+    return cached;
+  }
 
   return singleFlight(cacheKey, async () => {
     try {

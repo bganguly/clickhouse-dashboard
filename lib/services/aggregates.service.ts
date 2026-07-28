@@ -67,7 +67,10 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
 
   const cacheKey = `data:${JSON.stringify({ ...query_in, topCategories: topN })}`;
   const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT (agg-cache / agg: namespace)`);
+    return cached;
+  }
 
   return singleFlight(cacheKey, async () => {
     try {
@@ -128,7 +131,10 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
       : DEFAULT_TOP_CATEGORIES;
   const inProcKey = `total:${JSON.stringify({ ...query_in, topCategories: resolvedTopN })}`;
   const cachedTotal = await aggCacheGet<number>(inProcKey);
-  if (cachedTotal != null) return cachedTotal;
+  if (cachedTotal != null) {
+    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT (agg-cache / agg: namespace)`);
+    return cachedTotal;
+  }
 
   return singleFlight(inProcKey, async () => {
     try {
