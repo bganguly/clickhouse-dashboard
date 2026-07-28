@@ -139,7 +139,7 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
         --image-ids "imageTag=${_LOCAL_SHA}" >/dev/null 2>&1; then
       printf 'built\n'
       _DEFAULT_CHOICE=3
-      _OPTION3_LABEL="Quick  — redeploy current commit (${_LOCAL_SHA}) to App Runner (skips Terraform/DB)"
+      _OPTION3_LABEL="Quick  — GH build passed · redeploy ${_LOCAL_SHA} to App Runner (skips Terraform/DB)"
     else
       printf 'not built yet\n'
       _DEFAULT_CHOICE=2
