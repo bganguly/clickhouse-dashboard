@@ -58,7 +58,7 @@ interface SearchTableProps {
   onCountChange?: (n: number) => void;
   /** Fired whenever the internal fetch loading state changes. */
   onLoadingChange?: (loading: boolean) => void;
-  /** Fired synchronously when the user commits a search (Enter / suggestion click),
+  /** Fired synchronously when the user commits a search (Enter),
    *  before any async fetch begins — lets the parent start a perf timer immediately. */
   onSearchStart?: () => void;
 }
@@ -169,12 +169,6 @@ export default function SearchTable({
 }: SearchTableProps) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [suggestions, setSuggestions] = useState<{ token: string; freq: number }[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [activeSuggestion, setActiveSuggestion] = useState(-1);
-  const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevQueryLenRef = useRef(0);
-  const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -475,33 +469,6 @@ export default function SearchTable({
     };
   }, []);
 
-  useEffect(() => {
-    const growing = query.length > prevQueryLenRef.current;
-    prevQueryLenRef.current = query.length;
-    if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
-    if (!growing || query.trim().length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
-    suggestTimerRef.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/suggest?q=${encodeURIComponent(query.trim())}`);
-        if (!res.ok) return;
-        const data = await res.json() as { suggestions: { token: string; freq: number }[] };
-        setSuggestions(data.suggestions ?? []);
-        setShowSuggestions((data.suggestions ?? []).length > 0);
-        setActiveSuggestion(-1);
-      } catch {}
-    }, 160);
-    return () => { if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current); };
-  }, [query]);
-
-  useEffect(() => {
-    const onMouseDown = (e: MouseEvent) => {
-      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
-        setShowSuggestions(false);
-      }
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, []);
 
   // When a new order event arrives (highlightKey bumps), flash its row once it
   // shows up in the freshly-fetched rows. The row may land a tick after the
@@ -615,7 +582,7 @@ export default function SearchTable({
         )}
       </header>
 
-      <div ref={searchContainerRef} className="relative mb-3">
+      <div className="relative mb-3">
         <input
           data-testid="search-input"
           type="search"
@@ -625,82 +592,22 @@ export default function SearchTable({
             if (e.target.value === "") {
               setDebouncedQuery("");
               setPage(1);
-              setSuggestions([]);
-              setShowSuggestions(false);
             }
           }}
           onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setActiveSuggestion((i) => Math.min(i + 1, suggestions.length - 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setActiveSuggestion((i) => Math.max(i - 1, -1));
-            } else if (e.key === "Escape") {
-              setShowSuggestions(false);
-            } else if (e.key === "Enter") {
-              if (activeSuggestion >= 0 && suggestions[activeSuggestion]) {
-                const tok = suggestions[activeSuggestion].token;
-                if (tok === debouncedQuery) { setShowSuggestions(false); return; }
-                onSearchStart?.();
-                setPendingSearch(true);
-                setQuery(tok);
-                setDebouncedQuery(tok);
-                setPage(1);
-                setShowSuggestions(false);
-              } else {
-                const trimmed = query.trim();
-                if (trimmed === debouncedQuery.trim()) { setShowSuggestions(false); return; }
-                onSearchStart?.();
-                setPendingSearch(true);
-                setDebouncedQuery(query);
-                setPage(1);
-                setShowSuggestions(false);
-              }
+            if (e.key === "Enter") {
+              const trimmed = query.trim();
+              if (trimmed === debouncedQuery.trim()) return;
+              onSearchStart?.();
+              setPendingSearch(true);
+              setDebouncedQuery(query);
+              setPage(1);
             }
           }}
-          onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
           placeholder="Search records…"
           className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
           aria-label="Search records"
-          aria-autocomplete="list"
-          aria-expanded={showSuggestions}
         />
-        {showSuggestions && suggestions.length > 0 && (
-          <ul
-            role="listbox"
-            className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-          >
-            {suggestions.map((s, idx) => (
-              <li
-                key={s.token}
-                role="option"
-                aria-selected={idx === activeSuggestion}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onSearchStart?.();
-                  setPendingSearch(true);
-                  setQuery(s.token);
-                  setDebouncedQuery(s.token);
-                  setPage(1);
-                  setShowSuggestions(false);
-                }}
-                onMouseEnter={() => setActiveSuggestion(idx)}
-                className={cn(
-                  "flex cursor-pointer items-center justify-between px-3 py-2 text-sm",
-                  idx === activeSuggestion
-                    ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
-                    : "text-gray-800 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800",
-                )}
-              >
-                <span>{s.token}</span>
-                <span className="ml-4 tabular-nums text-xs text-gray-400 dark:text-gray-500">
-                  {s.freq.toLocaleString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
       </div>
 
       {debouncedQuery.trim().split(/\s+/).some((t) => t.length > 0 && t.length < 3) && (
