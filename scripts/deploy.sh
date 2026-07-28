@@ -83,13 +83,36 @@ except: pass
   printf '  done — %d tokens warmed.\n' "$_TOTAL_TOKS"
 }
 
+_PREFLIGHT_ARN=""
+_PREFLIGHT_CDN=""
+_PREFLIGHT_CF=""
+_DEFAULT_CHOICE=2
+
+if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
+  if [[ -d "$INFRA_DIR" ]]; then
+    _PREFLIGHT_ARN="$(cd "$INFRA_DIR" && terraform output -raw apprunner_service_arn 2>/dev/null || true)"
+    _PREFLIGHT_CDN="$(cd "$INFRA_DIR" && terraform output -raw cdn_url 2>/dev/null || true)"
+    _PREFLIGHT_CF="$(cd "$INFRA_DIR" && terraform output -raw cf_distribution_id 2>/dev/null || true)"
+  fi
+  if [[ -z "$_PREFLIGHT_ARN" ]]; then
+    _TMP_ARN="$(aws apprunner list-services \
+      --query "ServiceSummaryList[?ServiceName=='ch-dash-app'].ServiceArn | [0]" \
+      --output text 2>/dev/null || true)"
+    [[ "$_TMP_ARN" != "None" && -n "$_TMP_ARN" ]] && _PREFLIGHT_ARN="$_TMP_ARN"
+  fi
+  if [[ -n "$_PREFLIGHT_ARN" ]] && \
+     aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
+    _DEFAULT_CHOICE=3
+  fi
+fi
+
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
 printf '  [3] Quick  — redeploy latest ECR image to App Runner (UX changes, skips Terraform/DB)\n\n'
-printf 'Choice [1/2/3, default 3]: '
+printf 'Choice [1/2/3, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
-case "${DEPLOY_TARGET:-3}" in
+case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
   1)
     cd "$ROOT_DIR"
     npm install --prefer-offline || npm install
@@ -101,13 +124,26 @@ case "${DEPLOY_TARGET:-3}" in
     aws sts get-caller-identity >/dev/null
     printf '  OK\n'
 
-    printf '[quick] Reading Terraform state...\n'
-    cd "$INFRA_DIR"
-    APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
-    CDN_URL="$(terraform output -raw cdn_url 2>/dev/null || true)"
-    CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
-    [[ -z "$APP_RUNNER_ARN" ]] && { printf 'ERROR: no App Runner ARN in state — run a full deploy first.\n'; exit 1; }
-    printf '  ARN: %s\n' "$APP_RUNNER_ARN"
+    APP_RUNNER_ARN="$_PREFLIGHT_ARN"
+    CDN_URL="$_PREFLIGHT_CDN"
+    CF_DIST_ID="$_PREFLIGHT_CF"
+
+    if [[ -z "$APP_RUNNER_ARN" ]]; then
+      printf '[quick] Terraform state empty — querying App Runner...\n'
+      _TMP_ARN="$(aws apprunner list-services \
+        --query "ServiceSummaryList[?ServiceName=='ch-dash-app'].ServiceArn | [0]" \
+        --output text 2>/dev/null || true)"
+      [[ "$_TMP_ARN" != "None" && -n "$_TMP_ARN" ]] && APP_RUNNER_ARN="$_TMP_ARN"
+    fi
+    [[ -z "$APP_RUNNER_ARN" ]] && { printf 'ERROR: no App Runner ARN found — run a full deploy (option 2) first.\n'; exit 1; }
+
+    if [[ -z "$CDN_URL" ]]; then
+      _AR_TMP_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+        --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+      [[ -n "$_AR_TMP_URL" ]] && CDN_URL="https://${_AR_TMP_URL}"
+    fi
+
+    printf '[quick] ARN: %s\n' "$APP_RUNNER_ARN"
 
     if ! aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
       printf 'ERROR: no latest image in ECR — push to GitHub and wait for Actions build first.\n'; exit 1
