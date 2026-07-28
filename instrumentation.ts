@@ -19,6 +19,11 @@ export async function register() {
     status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4,
   });
 
+  const warmAgg = (tok: string) => Promise.all([
+    getDailyAggregates({ ...baseAggInput(), q: tok }),
+    getExactAggregateTotal({ ...baseAggInput(), q: tok }),
+  ]);
+
   const ping = async () => {
     try {
       await Promise.all([
@@ -43,9 +48,10 @@ export async function register() {
       }
       const visibleTokens = [...visibleSet];
       for (let i = 0; i < visibleTokens.length; i += WARM_BATCH) {
-        await Promise.all(visibleTokens.slice(i, i + WARM_BATCH).map(t =>
-          listOrders({ q: t, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" })
-        ));
+        await Promise.all(visibleTokens.slice(i, i + WARM_BATCH).flatMap(t => [
+          listOrders({ q: t, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
+          warmAgg(t),
+        ]));
       }
 
       // Phase 2: listOrders cache — top-N last names
