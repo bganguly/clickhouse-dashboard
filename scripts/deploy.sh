@@ -188,6 +188,20 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
       printf 'ERROR: no latest image in ECR — push to GitHub and wait for Actions build first.\n'; exit 1
     fi
 
+    printf '[quick] Checking App Runner state...\n'
+    _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+    if [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
+      printf '  Deployment already in progress — waiting for it to finish before starting ours...\n'
+      while [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; do
+        sleep 20
+        _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+        printf '  %s...\n' "$_PRE_STATUS"
+      done
+    fi
+    if [[ "$_PRE_STATUS" != "RUNNING" ]]; then
+      printf 'ERROR: App Runner in unexpected state: %s\n' "$_PRE_STATUS"; exit 1
+    fi
+
     printf '[quick] Starting App Runner deployment...\n'
     aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
     while true; do
@@ -530,7 +544,18 @@ printf '  Reading Terraform outputs...\n'
 APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
 CDN_URL="$(terraform output -raw cdn_url)"
 
-[[ "$FIRST_DEPLOY" == "0" ]] && aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
+if [[ "$FIRST_DEPLOY" == "0" ]]; then
+  _PRE2_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+  if [[ "$_PRE2_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
+    printf '  Deployment already in progress — waiting before starting ours...\n'
+    while [[ "$_PRE2_STATUS" == "OPERATION_IN_PROGRESS" ]]; do
+      sleep 20
+      _PRE2_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+      printf '  %s...\n' "$_PRE2_STATUS"
+    done
+  fi
+  aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
+fi
 
 while true; do
   SVC_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
