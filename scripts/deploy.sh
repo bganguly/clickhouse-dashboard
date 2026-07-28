@@ -502,8 +502,36 @@ _ecr_image_exists() {
 printf '  Checking ECR for image %s...\n' "$_DEPLOY_TAG"
 if ! _ecr_image_exists "$_DEPLOY_TAG"; then
   if _ecr_image_exists "latest"; then
-    printf '  SHA %s not in ECR (image unchanged) — using latest.\n' "$_DEPLOY_TAG"
-    _DEPLOY_TAG=latest
+    _GH_BUILD_ACTIVE=0
+    if command -v gh >/dev/null 2>&1 && [[ -n "${_GH_REPO:-}" ]]; then
+      _GH_RUN_STATUS="$(gh run list --repo "$_GH_REPO" --limit 5 --json headSha,status \
+        --jq ".[] | select((.status == \"in_progress\") or (.status == \"queued\")) | select(.headSha | startswith(\"${_DEPLOY_TAG}\")) | .status" \
+        2>/dev/null | head -1 || echo '')"
+      [[ -n "$_GH_RUN_STATUS" ]] && _GH_BUILD_ACTIVE=1
+    fi
+    if [[ "$_GH_BUILD_ACTIVE" -eq 1 ]]; then
+      printf '  GH Actions is building %s — not in ECR yet.\n' "$_DEPLOY_TAG"
+      printf '  [W]ait for build to complete then continue, or [E]xit and re-run deploy later? [W/e]: '
+      read -r _GH_WAIT_CHOICE
+      if [[ "${_GH_WAIT_CHOICE:-W}" =~ ^[Ee] ]]; then
+        printf '  Exiting. Re-run deploy.sh once GH Actions completes.\n'
+        exit 0
+      fi
+      printf '  Polling ECR for %s every 30s (up to 15 min)...\n' "$_DEPLOY_TAG"
+      _ecr_elapsed=0
+      until _ecr_image_exists "$_DEPLOY_TAG"; do
+        if (( _ecr_elapsed >= 900 )); then
+          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "$_GH_REPO"
+          exit 1
+        fi
+        sleep 30; _ecr_elapsed=$(( _ecr_elapsed + 30 ))
+        printf '  ...%ds elapsed\n' "$_ecr_elapsed"
+      done
+      printf '  Image %s now in ECR.\n' "$_DEPLOY_TAG"
+    else
+      printf '  SHA %s not in ECR (code unchanged since last build) — using latest.\n' "$_DEPLOY_TAG"
+      _DEPLOY_TAG=latest
+    fi
   else
     printf '  No image in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n'
     _ecr_elapsed=0
