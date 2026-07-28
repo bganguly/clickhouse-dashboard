@@ -1,6 +1,5 @@
-const WARM_TOKENS    = 10_000;
-const WARM_BATCH     = 10;
-const WARM_AGG_BATCH =  5;
+const WARM_TOKENS    = 100;
+const WARM_BATCH     = 5;
 
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -19,12 +18,6 @@ export async function register() {
     from: "2020-01-01", to: today(), q: null as string | null,
     status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4,
   });
-
-  // Only called for tokens already in daily_search_token_summary — guaranteed tokenSummaryPath
-  const warmAgg = (tok: string) => Promise.all([
-    getDailyAggregates({ ...baseAggInput(), q: tok }),
-    getExactAggregateTotal({ ...baseAggInput(), q: tok }),
-  ]);
 
   const ping = async () => {
     try {
@@ -67,16 +60,6 @@ export async function register() {
         ));
       }
 
-      // Phase 3: aggregate cache — tokens from daily_search_token_summary only
-      // These always hit tokenSummaryPath (<100 ms each); no slowPath risk.
-      const aggRows = await query<{ token: string }>(
-        `SELECT token FROM daily_search_token_summary
-         GROUP BY token ORDER BY sum(orderCount) DESC LIMIT ${WARM_TOKENS}`,
-      );
-      const aggTokens = aggRows.map(r => r.token).filter(Boolean);
-      for (let i = 0; i < aggTokens.length; i += WARM_AGG_BATCH) {
-        await Promise.all(aggTokens.slice(i, i + WARM_AGG_BATCH).map(warmAgg));
-      }
     } catch {}
   };
 
