@@ -49,7 +49,7 @@ export async function register() {
       const visibleTokens = [...visibleSet];
       for (let i = 0; i < visibleTokens.length; i += WARM_BATCH) {
         await Promise.all(visibleTokens.slice(i, i + WARM_BATCH).flatMap(t => [
-          listOrders({ q: t, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" }),
+          listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
           warmAgg(t),
         ]));
       }
@@ -62,7 +62,7 @@ export async function register() {
       const broader = nameRows.map(r => r.token).filter(Boolean).filter(t => !visibleSet.has(t));
       for (let i = 0; i < broader.length; i += WARM_BATCH) {
         await Promise.all(broader.slice(i, i + WARM_BATCH).map(t =>
-          listOrders({ q: t, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" })
+          listOrders({ q: t, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" })
         ));
       }
 

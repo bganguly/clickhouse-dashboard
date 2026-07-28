@@ -23,7 +23,7 @@ async function warmCaches() {
     const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
 
     const warmBoth = (tok: string) =>
-      listOrders({ q: tok, page: 1, pageSize: 10, sort: "placedAt", dir: "desc" });
+      listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
 
     // Priority 1: every full word visible on the default first page (name + notes)
     const visibleSet = new Set<string>();
