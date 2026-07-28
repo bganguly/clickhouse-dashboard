@@ -166,7 +166,8 @@ if [[ -n "${REDIS_URL:-}" ]]; then
   printf '  Using REDIS_URL from environment.\n'
 elif [[ -f "$REDIS_CREDS_FILE" ]]; then
   source "$REDIS_CREDS_FILE"
-  printf '  Loaded Redis URL from .redis-creds: %s. Use it? [Y/n]: ' "${REDIS_URL:-}"
+  _REDIS_DISPLAY="$(printf '%s' "${REDIS_URL:-}" | sed 's|:\([^:@]*\)@|:***@|')"
+  printf '  Loaded Redis URL from .redis-creds: %s. Use it? [Y/n]: ' "$_REDIS_DISPLAY"
   read -r USE_REDIS_SAVED; USE_REDIS_SAVED="${USE_REDIS_SAVED:-Y}"
   if [[ ! "$USE_REDIS_SAVED" =~ ^[Yy] ]]; then
     unset REDIS_URL
