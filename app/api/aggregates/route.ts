@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
     return v != null && v !== "" ? Number(v) : null;
   };
 
+  const src = searchParams.get("_src") ?? "load";
   try {
     const query = {
       from: searchParams.get("from") ?? "",
@@ -23,6 +24,7 @@ export async function GET(req: NextRequest) {
       maxTotal: num("maxTotal"),
       topCategories: topCategories ? Number(topCategories) : null,
     };
+    if (!query.q) console.log(`[agg-route] base-case src=${src}`);
     // totalOrders is the exact distinct order count for this same range/filters
     // (same cached-count path /api/orders uses) — the per-category rows in
     // `data` can't be summed for a grand total since an order spanning

@@ -22,6 +22,7 @@ export async function GET(req: NextRequest) {
   const cursorDirRaw = searchParams.get("cursorDir");
   const cursorDir = cursorDirRaw === "next" || cursorDirRaw === "prev" ? cursorDirRaw : undefined;
 
+  const src = searchParams.get("_src") ?? "load";
   const baseInput = {
     page: num("page"),
     pageSize: num("pageSize"),
@@ -44,6 +45,7 @@ export async function GET(req: NextRequest) {
     (sort == null || sort === "placedAt") &&
     (dir == null || dir === "desc");
 
+  if (!baseInput.q) console.log(`[orders-route] base-case src=${src}`);
   try {
     const result = useCursor
       ? await listOrdersByCursor({

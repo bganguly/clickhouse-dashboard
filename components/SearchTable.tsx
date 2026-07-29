@@ -263,6 +263,7 @@ export default function SearchTable({
           params.set("dir", sortDir);
         }
         appendFilterParams(params, f);
+        if (q === "" && showSearchIndicator) params.set("_src", "clear");
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
