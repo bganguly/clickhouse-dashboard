@@ -240,7 +240,6 @@ export default function Chart({
   // Track the last refreshSignal value seen by the fetch effect so we can
   // detect SSE-driven refetches and bypass the dedup guard for those.
   const lastRefreshSignalRef = useRef(refreshSignal);
-  const prevSearchQueryRef = useRef<string | undefined>(undefined);
 
   const fetchAggregates = useCallback(
     async (from: string, to: string) => {
@@ -258,10 +257,6 @@ export default function Chart({
       const requestKey = params.toString();
       if (requestKey === lastRequestKeyRef.current) return;
       lastRequestKeyRef.current = requestKey;
-      if (!searchQuery && prevSearchQueryRef.current !== undefined && prevSearchQueryRef.current !== "") {
-        params.set("_src", "clear");
-      }
-      prevSearchQueryRef.current = searchQuery ?? "";
 
       abortRef.current?.abort();
       const controller = new AbortController();
