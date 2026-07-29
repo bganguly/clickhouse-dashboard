@@ -489,46 +489,6 @@ function CustomersCard() {
   );
 }
 
-function StreamStatusCard() {
-  const [loading, setL]   = useState(false);
-  const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
-  const [err, setErr]     = useState<unknown>(null);
-
-  async function run() {
-    setL(true); setErr(null); setRes(null);
-    try { setRes(await fetchTimed("/api/stream/status")); }
-    catch (e) { setErr(e); } finally { setL(false); }
-  }
-
-  const data = res?.json as { connected?: boolean; count?: number } | null;
-
-  return (
-    <Card path="/api/stream/status" subtitle="Whether any dashboard tab has the Live checkbox active">
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
-        <p className="text-[11px]" style={{ color:"#52525b" }}>
-          Returns the live SSE listener count — used by Quick Order to show its liveness banner.
-        </p>
-        <RunBtn onClick={run} loading={loading} />
-      </div>
-      {loading && <Loading />}
-      {!!err   && <ErrMsg err={err} />}
-      {res && data && <>
-        <MetaBar ms={res.ms} label={data.connected ? `${data.count} active listener${(data.count??0)!==1?"s":""}` : "no active listeners"} />
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold px-3 py-1 rounded-full" style={
-            data.connected
-              ? { background:"rgba(16,185,129,0.15)", color:"#6ee7b7" }
-              : { background:"rgba(100,116,139,0.15)", color:"#94a3b8" }
-          }>
-            {data.connected ? "● live" : "○ not live"}
-          </span>
-          <span className="font-mono text-xs" style={{ color:"#71717a" }}>count: {data.count}</span>
-        </div>
-        <RawJson data={res.json} />
-      </>}
-    </Card>
-  );
-}
 
 // ── Brush card ────────────────────────────────────────────────────────────────
 
@@ -762,7 +722,6 @@ export default function ApiExplorer() {
         <SearchCard />
         <AggregatesCard />
         <CustomersCard />
-        <StreamStatusCard />
         <BrushCard />
       </section>
     </div>
