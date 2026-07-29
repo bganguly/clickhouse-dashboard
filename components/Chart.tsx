@@ -240,6 +240,7 @@ export default function Chart({
   // Track the last refreshSignal value seen by the fetch effect so we can
   // detect SSE-driven refetches and bypass the dedup guard for those.
   const lastRefreshSignalRef = useRef(refreshSignal);
+  const prevSearchQueryRef = useRef<string>("");
 
   const fetchAggregates = useCallback(
     async (from: string, to: string) => {
@@ -257,6 +258,10 @@ export default function Chart({
       const requestKey = params.toString();
       if (requestKey === lastRequestKeyRef.current) return;
       lastRequestKeyRef.current = requestKey;
+      // Clear bars when search is cleared so the chart re-renders from scratch
+      // (same as tab load) rather than animating from the filtered state.
+      if (!searchQuery && prevSearchQueryRef.current) setRawData([]);
+      prevSearchQueryRef.current = searchQuery ?? "";
 
       abortRef.current?.abort();
       const controller = new AbortController();
