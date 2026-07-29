@@ -262,7 +262,7 @@ function OrdersCard() {
   async function run() {
     setLoading(true); setErr(null); setRes(null); setCountTotal(null);
     try {
-      const result = await fetchTimed("/api/orders?page=1&pageSize=10&sort=placedAt&dir=desc");
+      const result = await fetchTimed("/api/orders?page=1&pageSize=20&sort=placedAt&dir=desc");
       setRes(result);
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
@@ -287,7 +287,7 @@ function OrdersCard() {
   return (
     <Card path="/api/orders" subtitle="Latest orders — paginated, sorted by date descending">
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
-        <div className="flex flex-wrap gap-2">{mono("pageSize","10")} {mono("sort","placedAt")} {mono("dir","desc")}</div>
+        <div className="flex flex-wrap gap-2">{mono("pageSize","20")} {mono("sort","placedAt")} {mono("dir","desc")}</div>
         <RunBtn onClick={run} loading={loading} />
       </div>
       {loading && <Loading />}
@@ -407,8 +407,7 @@ function AggSummary({ rows, from, to }: { rows: Array<Record<string,unknown>>; f
 
 function AggregatesCard() {
   const today = new Date().toISOString().slice(0,10);
-  const ago60 = new Date(Date.now()-60*864e5).toISOString().slice(0,10);
-  const [from, setFrom]   = useState(ago60);
+  const [from, setFrom]   = useState("2024-07-17");
   const [to,   setTo]     = useState(today);
   const [loading, setL]   = useState(false);
   const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
@@ -417,7 +416,7 @@ function AggregatesCard() {
   async function run() {
     if (!from||!to) return;
     setL(true); setErr(null); setRes(null);
-    try { setRes(await fetchTimed(`/api/aggregates?from=${from}&to=${to}&topCategories=3`)); }
+    try { setRes(await fetchTimed(`/api/aggregates?from=${from}&to=${to}&topCategories=4`)); }
     catch (e) { setErr(e); } finally { setL(false); }
   }
 
@@ -436,7 +435,7 @@ function AggregatesCard() {
             <span className="text-[11px]" style={{ color:"#52525b" }}>to</span>
             <DarkInput type="date" value={to}   onChange={setTo}   style={{ width:150 }} />
           </div>
-          {mono("topCategories","3")}
+          {mono("topCategories","4")}
         </div>
         <RunBtn onClick={run} loading={loading} />
       </div>
