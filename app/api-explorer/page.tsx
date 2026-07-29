@@ -314,7 +314,7 @@ function SearchCard() {
     setL(true); setErr(null); setRes(null); setCountTotal(null);
     try {
       const term = q.trim();
-      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=10&sort=placedAt&dir=desc`);
+      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc`);
       setRes(result);
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
