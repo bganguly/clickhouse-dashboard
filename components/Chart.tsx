@@ -255,13 +255,13 @@ export default function Chart({
       appendFilterParams(params, filters);
       // Narrow to the active text search, matching the orders table.
       if (searchQuery) params.set("q", searchQuery);
+      const requestKey = params.toString();
+      if (requestKey === lastRequestKeyRef.current) return;
+      lastRequestKeyRef.current = requestKey;
       if (!searchQuery && prevSearchQueryRef.current !== undefined && prevSearchQueryRef.current !== "") {
         params.set("_src", "clear");
       }
       prevSearchQueryRef.current = searchQuery ?? "";
-      const requestKey = params.toString();
-      if (requestKey === lastRequestKeyRef.current) return;
-      lastRequestKeyRef.current = requestKey;
 
       abortRef.current?.abort();
       const controller = new AbortController();
