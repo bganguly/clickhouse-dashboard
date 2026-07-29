@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     const query = {
       from: searchParams.get("from") ?? "",
       to: searchParams.get("to") ?? "",
-      q: searchParams.get("q"),
+      q: (searchParams.get("q") ?? "").trim() || null,
       status: searchParams.get("status"),
       regionCode: searchParams.get("regionCode"),
       minTotal: num("minTotal"),

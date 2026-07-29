@@ -184,7 +184,7 @@ function compactBrushDate(value: string): string {
 }
 
 function defaultRange(): { from: string; to: string } {
-  return { from: "2020-01-01", to: isoDay(new Date()) };
+  return { from: "2024-07-17", to: isoDay(new Date()) };
 }
 
 export default function Chart({

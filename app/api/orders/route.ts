@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   const baseInput = {
     page: num("page"),
     pageSize: num("pageSize"),
-    q: searchParams.get("q"),
+    q: (searchParams.get("q") ?? "").trim() || null,
     sort,
     dir,
     status: searchParams.get("status"),

@@ -13,7 +13,7 @@ export async function register() {
   const today = () => new Date().toISOString().slice(0, 10);
 
   const baseAggInput = () => ({
-    from: "2020-01-01", to: today(), q: null as string | null,
+    from: "2024-07-17", to: today(), q: null as string | null,
     status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4,
   });
 
