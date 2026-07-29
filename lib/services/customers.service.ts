@@ -1,5 +1,6 @@
 import { query, insert } from "@/lib/clickhouse";
 import { AppError, mapDbError } from "@/lib/errors";
+import { searchCacheGet, searchCacheSet } from "@/lib/search-cache";
 import type {
   CreateCustomerInput, CustomerDTO, CustomerListInput, CustomerListResult,
 } from "@/lib/types";
@@ -25,7 +26,11 @@ function toDTO(r: {
 
 export async function listCustomers(input: CustomerListInput): Promise<CustomerListResult> {
   const limit = Math.min(Math.max(input.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-  const q = input.q?.trim();
+  const q = input.q?.trim() || null;
+
+  const cacheKey = `cust:${JSON.stringify({ q, limit, cursor: input.cursor ?? null, regionId: input.regionId ?? null })}`;
+  const cached = await searchCacheGet<CustomerListResult>(cacheKey);
+  if (cached) return cached;
 
   const clauses: string[] = [];
   const params: Record<string, unknown> = { lim: limit + 1 };
@@ -63,7 +68,9 @@ export async function listCustomers(input: CustomerListInput): Promise<CustomerL
     const hasMore = rows.length > limit;
     const data = (hasMore ? rows.slice(0, limit) : rows).map(toDTO);
     const nextCursor = hasMore ? data[data.length - 1].id : null;
-    return { data, nextCursor, hasMore };
+    const result: CustomerListResult = { data, nextCursor, hasMore };
+    await searchCacheSet(cacheKey, result);
+    return result;
   } catch (err) {
     mapDbError(err, "listCustomers");
   }

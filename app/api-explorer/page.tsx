@@ -459,7 +459,7 @@ function CustomersCard() {
 
   async function run() {
     setL(true); setErr(null); setRes(null);
-    try { setRes(await fetchTimed(`/api/customers?limit=10${q.trim()?`&q=${encodeURIComponent(q.trim())}`:""}`)); }
+    try { setRes(await fetchTimed(`/api/customers?limit=20${q.trim()?`&q=${encodeURIComponent(q.trim())}`:""}`)); }
     catch (e) { setErr(e); } finally { setL(false); }
   }
 
@@ -474,7 +474,7 @@ function CustomersCard() {
         <div className="flex items-center gap-3">
           <DarkInput value={q} onChange={setQ} placeholder="e.g. gupta, sara frank…"
             onEnter={run} style={{ width:200 }} />
-          {mono("limit","10")}
+          {mono("limit","20")}
         </div>
         <RunBtn onClick={run} loading={loading} />
       </div>

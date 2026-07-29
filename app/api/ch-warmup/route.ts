@@ -19,6 +19,8 @@ async function warmCaches() {
   _warming = true;
   try {
     const { listOrders } = await import("@/lib/services/orders.service");
+    const { listCustomers } = await import("@/lib/services/customers.service");
+    await listCustomers({ limit: 20 });
 
     const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
 
