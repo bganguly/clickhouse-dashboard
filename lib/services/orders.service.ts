@@ -221,11 +221,14 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
 
   const cacheKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
   if (input.q) console.log(`[search-cache] received q="${input.q}"`);
+  else console.log(`[search-cache] received base-case (no q)`);
   const cached = await searchCacheGet<OrderListResult>(cacheKey);
   if (cached) {
     if (input.q) console.log(`[search-cache] q="${input.q}" → list view HIT (search-cache / search: namespace)`);
+    else console.log(`[search-cache] base-case → list view HIT`);
     return cached;
   }
+  if (!input.q) console.log(`[search-cache] base-case → list view MISS`);
 
   return singleFlight(cacheKey, async () => {
     try {
