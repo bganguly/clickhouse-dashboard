@@ -1,9 +1,12 @@
 const WARM_BATCH = 5;
+const CH_READY_TIMEOUT_MS = 3 * 60 * 1000;
+const CH_KEEPALIVE_MS = 8 * 60 * 1000;
 
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   if (!process.env.CLICKHOUSE_URL) return;
 
+  const { query } = await import("@/lib/clickhouse");
   const { ensureCollection } = await import("@/lib/typesense");
   await ensureCollection().catch(() => {});
 
@@ -22,18 +25,34 @@ export async function register() {
     getExactAggregateTotal({ ...baseAggInput(), q: tok }),
   ]);
 
-  const ping = async () => {
-    try {
-      await Promise.all([
-        listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
-        getDailyAggregates(baseAggInput()),
-        getExactAggregateTotal(baseAggInput()),
-      ]);
-    } catch {}
+  const waitForClickHouse = async (): Promise<boolean> => {
+    const deadline = Date.now() + CH_READY_TIMEOUT_MS;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      try {
+        const t0 = Date.now();
+        await query("SELECT 1");
+        const ms = Date.now() - t0;
+        if (ms < 2000) {
+          console.log(`[warmup] ClickHouse ready (${ms}ms, attempt ${attempt + 1})`);
+          return true;
+        }
+        console.log(`[warmup] ClickHouse still cold (${ms}ms, attempt ${attempt + 1}) — retrying`);
+      } catch {
+        console.log(`[warmup] ClickHouse not reachable (attempt ${attempt + 1}) — retrying`);
+      }
+      attempt++;
+      await new Promise(r => setTimeout(r, 10_000));
+    }
+    console.log("[warmup] ClickHouse did not become ready within timeout — skipping warmup");
+    return false;
   };
 
   const warmVisibleTokens = async () => {
     try {
+      const ready = await waitForClickHouse();
+      if (!ready) return;
+
       const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
       const rows = firstPage?.data ?? [];
       const totalBatches = Math.ceil(rows.length / WARM_BATCH);
@@ -63,6 +82,9 @@ export async function register() {
     } catch {}
   };
 
-  void ping();
   void warmVisibleTokens();
+
+  setInterval(() => {
+    query("SELECT 1").catch(() => {});
+  }, CH_KEEPALIVE_MS);
 }
