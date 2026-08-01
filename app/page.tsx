@@ -103,6 +103,7 @@ export default function Dashboard() {
       perfActive.current = false;
       if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
+      console.log(`[perf:client] ✓ render settled ${ms}ms`);
       setPerfMs(ms);
       setPerfSettled(true);
       perfHide.current = setTimeout(() => { setPerfMs(null); setPerfSettled(false); }, 3500);

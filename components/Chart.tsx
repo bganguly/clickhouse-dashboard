@@ -275,9 +275,13 @@ export default function Chart({
       // (see the lastSseOrder patch effect); user-driven fetches replace the
       // bars atomically when the response lands.
       try {
+        const aggT0 = performance.now();
+        const q = params.get("q") ?? "";
+        console.log(`[perf:client] → /api/aggregates q="${q}"`);
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
+        console.log(`[perf:client] ← /api/aggregates ${(performance.now() - aggT0).toFixed(1)}ms q="${q}"`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: AggregatesResponse = await res.json();
         // An aborted controller doesn't guarantee its fetch promise rejects

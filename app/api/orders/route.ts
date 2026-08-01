@@ -9,7 +9,10 @@ import type { CreateOrderInput } from "@/lib/types";
 //   honored when sort=placedAt&dir=desc (the default); any other combination
 //   is purely additive and falls back to the plain OFFSET path unchanged.
 export async function GET(req: NextRequest) {
+  const _routeT0 = Date.now();
   const { searchParams } = req.nextUrl;
+  const _q = (searchParams.get("q") ?? "").trim() || "(none)";
+  console.log(`[api/orders] received q="${_q}"`);
   const num = (name: string) => {
     const v = searchParams.get(name);
     return v != null && v !== "" ? Number(v) : undefined;
@@ -53,10 +56,12 @@ export async function GET(req: NextRequest) {
           cursorDir: cursorDir!,
         })
       : await listOrders(baseInput);
+    console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}"`);
     return NextResponse.json(result, {
       headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=300" },
     });
   } catch (err) {
+    console.log(`[api/orders] error total=${Date.now() - _routeT0}ms q="${_q}"`);
     return toErrorResponse(err);
   }
 }

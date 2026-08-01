@@ -68,13 +68,16 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
 
   const { from: _f, to: _t, ...keyFields } = query_in;
   const cacheKey = `data:${JSON.stringify({ ...keyFields, topCategories: topN })}`;
+  const _seriesT0 = Date.now();
   const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
+  const _seriesMs = Date.now() - _seriesT0;
   if (cached) {
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT (agg-cache / agg: namespace)`);
-    else console.log(`[agg-cache] base-case → chart series HIT`);
+    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT redis=${_seriesMs}ms`);
+    else console.log(`[agg-cache] base-case → chart series HIT redis=${_seriesMs}ms`);
     return cached;
   }
-  if (!query_in.q) console.log(`[agg-cache] base-case → chart series MISS`);
+  if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series MISS redis=${_seriesMs}ms`);
+  else console.log(`[agg-cache] base-case → chart series MISS redis=${_seriesMs}ms`);
 
   return singleFlight(cacheKey, async () => {
     try {
@@ -136,13 +139,16 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
       : DEFAULT_TOP_CATEGORIES;
   const { from: _f2, to: _t2, ...totalKeyFields } = query_in;
   const inProcKey = `total:${JSON.stringify({ ...totalKeyFields, topCategories: resolvedTopN })}`;
+  const _totalT0 = Date.now();
   const cachedTotal = await aggCacheGet<number>(inProcKey);
+  const _totalMs = Date.now() - _totalT0;
   if (cachedTotal != null) {
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT (agg-cache / agg: namespace)`);
-    else console.log(`[agg-cache] base-case → chart total HIT`);
+    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT redis=${_totalMs}ms`);
+    else console.log(`[agg-cache] base-case → chart total HIT redis=${_totalMs}ms`);
     return cachedTotal;
   }
-  if (!query_in.q) console.log(`[agg-cache] base-case → chart total MISS`);
+  if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total MISS redis=${_totalMs}ms`);
+  else console.log(`[agg-cache] base-case → chart total MISS redis=${_totalMs}ms`);
 
   return singleFlight(inProcKey, async () => {
     try {
