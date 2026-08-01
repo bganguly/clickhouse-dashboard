@@ -5,6 +5,22 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
 PROJECT_NAME="$(basename "$ROOT_DIR")"
 
+_await_cache_ready() {
+  local _BASE="$1"
+  printf '[deploy] Checking cache state...\n'
+  for _att in $(seq 1 18); do
+    local _JSON
+    _JSON="$(curl -sf --max-time 15 "${_BASE}/api/ch-warmup" 2>/dev/null || echo '{}')"
+    local _STATUS _READY
+    _STATUS="$(printf '%s' "$_JSON" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo '')"
+    _READY="$(printf '%s' "$_JSON" | python3 -c "import sys,json;d=json.load(sys.stdin);print('1' if d.get('cacheReady') else '0')" 2>/dev/null || echo '0')"
+    if [[ "$_READY" == "1" ]]; then printf '  cache ready (attempt %d).\n' "$_att"; return; fi
+    if [[ "$_STATUS" == "noop" ]]; then printf '  no cache configured — skipping.\n'; return; fi
+    printf '  [%s] attempt %d/18: status=%s cacheReady=false\n' "$(date +'%H:%M:%S')" "$_att" "${_STATUS:-timeout}"
+    sleep 10
+  done
+  printf '  cache not ready after 3 min — continuing anyway.\n'
+}
 
 _PREFLIGHT_ARN=""
 _PREFLIGHT_CDN=""
@@ -127,6 +143,7 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
       --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
     _QUICK_BASE="${CDN_URL}"
     [[ -n "$_AR_SVC_URL" ]] && _QUICK_BASE="https://${_AR_SVC_URL}"
+    _await_cache_ready "$_QUICK_BASE"
     printf '\n  Dashboard: %s\n' "${CDN_URL:-$_QUICK_BASE}"
     exit 0
     ;;
@@ -973,6 +990,12 @@ if [[ -n "$CF_DIST_ID" ]]; then
   aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
     --query 'Invalidation.Id' --output text
 fi
+
+_AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+  --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+_WARM_BASE="${CDN_URL}"
+[[ -n "$_AR_SVC_URL" ]] && _WARM_BASE="https://${_AR_SVC_URL}"
+_await_cache_ready "$_WARM_BASE"
 
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"

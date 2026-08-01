@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import WarmupBadge from "@/components/WarmupBadge";
 
 function PerfTimer({ ms, settled }: { ms: number | null; settled: boolean }) {
   if (ms === null) return null;
@@ -163,14 +164,15 @@ export default function Dashboard() {
             <p className="text-sm text-gray-500">
               Live aggregates, search, and event stream.
             </p>
-            {process.env.NEXT_PUBLIC_DEMO_SCALE && (
-              <div className="mt-1">
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              {process.env.NEXT_PUBLIC_DEMO_SCALE && (
                 <span className="inline-block text-[11px] px-2 py-0.5 rounded-full font-medium"
                   style={{ background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.25)", color: "#818cf8" }}>
                   demo · {process.env.NEXT_PUBLIC_DEMO_SCALE}
                 </span>
-              </div>
-            )}
+              )}
+              <WarmupBadge />
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <PerfTimer ms={perfMs} settled={perfSettled} />
