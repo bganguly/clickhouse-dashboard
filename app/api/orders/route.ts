@@ -48,6 +48,7 @@ export async function GET(req: NextRequest) {
     (dir == null || dir === "desc");
 
   try {
+    const _diag = { src: "?" };
     const result = useCursor
       ? await listOrdersByCursor({
           ...baseInput,
@@ -55,10 +56,13 @@ export async function GET(req: NextRequest) {
           cursorPlacedAt: cursorPlacedAt!,
           cursorDir: cursorDir!,
         })
-      : await listOrders(baseInput);
-    console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}"`);
+      : await listOrders(baseInput, _diag);
+    console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}" src=${_diag.src}`);
     return NextResponse.json(result, {
-      headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=300" },
+      headers: {
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=300",
+        "X-Cache-Source": _diag.src,
+      },
     });
   } catch (err) {
     console.log(`[api/orders] error total=${Date.now() - _routeT0}ms q="${_q}"`);

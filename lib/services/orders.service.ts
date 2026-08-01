@@ -208,7 +208,7 @@ const ORDER_SELECT = `SELECT orderId, status, total, currency, notes, placedAt,
   customerFirstName, customerLastName, customerEmail, itemCount
 FROM orders`;
 
-export async function listOrders(input: OrderListInput): Promise<OrderListResult> {
+export async function listOrders(input: OrderListInput, _diag?: { src: string }): Promise<OrderListResult> {
   const page = Math.max(Math.trunc(input.page ?? 1) || 1, 1);
   const pageSize = Math.min(
     Math.max(Math.trunc(input.pageSize ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE, 1),
@@ -226,10 +226,12 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const cached = await searchCacheGet<OrderListResult>(cacheKey);
   const _cacheMs = Date.now() - _cacheT0;
   if (cached) {
+    if (_diag) _diag.src = "redis";
     if (input.q) console.log(`[search-cache] q="${input.q}" → list view HIT redis=${_cacheMs}ms`);
     else console.log(`[search-cache] base-case → list view HIT redis=${_cacheMs}ms`);
     return cached;
   }
+  if (_diag) _diag.src = "ch";
   if (input.q) console.log(`[search-cache] q="${input.q}" → list view MISS redis=${_cacheMs}ms`);
   else console.log(`[search-cache] base-case → list view MISS redis=${_cacheMs}ms`);
 

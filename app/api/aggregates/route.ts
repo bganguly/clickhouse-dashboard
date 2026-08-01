@@ -30,18 +30,24 @@ export async function GET(req: NextRequest) {
     // (same cached-count path /api/orders uses) — the per-category rows in
     // `data` can't be summed for a grand total since an order spanning
     // multiple categories gets counted once per category.
+    const _diagSeries = { src: "?" };
+    const _diagTotal = { src: "?" };
     const [data, totalOrders] = await Promise.all([
-      getDailyAggregates(query),
-      getExactAggregateTotal(query),
+      getDailyAggregates(query, _diagSeries),
+      getExactAggregateTotal(query, _diagTotal),
     ]);
+    const _aggSrc = _diagSeries.src === "redis" && _diagTotal.src === "redis" ? "redis" : "ch";
     const approximate = totalOrders === COUNT_SENTINEL;
-    console.log(`[api/aggregates] total=${Date.now() - _routeT0}ms q="${_q}"`);
+    console.log(`[api/aggregates] total=${Date.now() - _routeT0}ms q="${_q}" src=${_aggSrc}`);
     return NextResponse.json({
       data,
       totalOrders: approximate ? 10_000 : totalOrders,
       ...(approximate ? { totalOrdersApproximate: true } : {}),
     }, {
-      headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" },
+      headers: {
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
+        "X-Cache-Source": _aggSrc,
+      },
     });
   } catch (err) {
     console.log(`[api/aggregates] error total=${Date.now() - _routeT0}ms q="${_q}"`);

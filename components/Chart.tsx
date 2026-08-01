@@ -282,7 +282,8 @@ export default function Chart({
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
-        console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms — chart response received`);
+        const _aggSrc = res.headers.get("X-Cache-Source") ?? "?";
+        console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms src=${_aggSrc}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const aggJsonT0 = performance.now();
         const json: AggregatesResponse = await res.json();

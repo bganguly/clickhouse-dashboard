@@ -50,7 +50,7 @@ function canUseDailySummary(input: AggregateQueryInput): boolean {
   );
 }
 
-export async function getDailyAggregates(input: AggregateQueryInput): Promise<DailyAggregate[]> {
+export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { src: string }): Promise<DailyAggregate[]> {
   const query_in = {
     ...input,
     q: input.q?.trim() || null,
@@ -72,10 +72,12 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
   const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
   const _seriesMs = Date.now() - _seriesT0;
   if (cached) {
+    if (_diag) _diag.src = "redis";
     if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT redis=${_seriesMs}ms`);
     else console.log(`[agg-cache] base-case → chart series HIT redis=${_seriesMs}ms`);
     return cached;
   }
+  if (_diag) _diag.src = "ch";
   if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series MISS redis=${_seriesMs}ms`);
   else console.log(`[agg-cache] base-case → chart series MISS redis=${_seriesMs}ms`);
 
@@ -126,7 +128,7 @@ export async function getDailyAggregates(input: AggregateQueryInput): Promise<Da
   });
 }
 
-export async function getExactAggregateTotal(input: AggregateQueryInput): Promise<number> {
+export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?: { src: string }): Promise<number> {
   const query_in = {
     ...input,
     q: input.q?.trim() || null,
@@ -143,10 +145,12 @@ export async function getExactAggregateTotal(input: AggregateQueryInput): Promis
   const cachedTotal = await aggCacheGet<number>(inProcKey);
   const _totalMs = Date.now() - _totalT0;
   if (cachedTotal != null) {
+    if (_diag) _diag.src = "redis";
     if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT redis=${_totalMs}ms`);
     else console.log(`[agg-cache] base-case → chart total HIT redis=${_totalMs}ms`);
     return cachedTotal;
   }
+  if (_diag) _diag.src = "ch";
   if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total MISS redis=${_totalMs}ms`);
   else console.log(`[agg-cache] base-case → chart total MISS redis=${_totalMs}ms`);
 

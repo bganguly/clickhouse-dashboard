@@ -95,6 +95,8 @@ export default function Dashboard() {
     if (anyLoading && !perfActive.current) {
       perfActive.current = true;
       perfStart.current = performance.now();
+      searchPerf.start();
+      console.log("[perf:client] 🔄 loading started (initial/clear) — COUNTER STARTS (0ms)");
       setPerfSettled(false);
       if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
       if (perfInterval.current) clearInterval(perfInterval.current);

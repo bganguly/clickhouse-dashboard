@@ -270,7 +270,8 @@ export default function SearchTable({
           signal: controller.signal,
         });
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
-        console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms — table response received`);
+        const _src = res.headers.get("X-Cache-Source") ?? "?";
+        console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms src=${_src}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const jsonT0 = performance.now();
         const json: SearchResponse = await res.json();
@@ -598,6 +599,8 @@ export default function SearchTable({
           onChange={(e) => {
             setQuery(e.target.value);
             if (e.target.value === "") {
+              console.log("[perf:client] ✕ query cleared — COUNTER STARTS (0ms)");
+              onSearchStart?.();
               setDebouncedQuery("");
               setPage(1);
             }
