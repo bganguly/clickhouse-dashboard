@@ -4,7 +4,7 @@ import { redis } from "@/lib/redis";
 
 const WARM_SENTINEL_PAGE1 = "warmup:page1-done";
 const WARM_SENTINEL_FULL  = "warmup:done";
-const WARM_SENTINEL_TTL   = 60 * 60;
+const WARM_SENTINEL_TTL   = 90 * 24 * 60 * 60;
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
 
@@ -79,13 +79,21 @@ export async function GET() {
   }
   try {
     await query("SELECT 1");
+    let cacheReady = !redis;
     if (!_warmed) {
+      const alreadyDone = redis
+        ? await redis.exists(WARM_SENTINEL_FULL).then(n => n === 1).catch(() => false)
+        : false;
       _warmed = true;
-      void warmCaches();
+      if (alreadyDone) {
+        cacheReady = true;
+      } else {
+        void warmCaches();
+      }
     }
-    const cacheReady = redis
-      ? await redis.exists(WARM_SENTINEL_PAGE1).then(n => n === 1).catch(() => false)
-      : true;
+    if (!cacheReady && redis) {
+      cacheReady = await redis.exists(WARM_SENTINEL_PAGE1).then(n => n === 1).catch(() => false);
+    }
     return NextResponse.json({ status: "ready", cacheReady }, { headers: CORS });
   } catch {
     _warmed = false;
