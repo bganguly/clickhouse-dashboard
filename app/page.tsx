@@ -47,7 +47,7 @@ function eventDay(raw: unknown): string | undefined {
   return new Date(tzMs).toISOString().slice(0, 10);
 }
 
-type WarmupState = "idle" | "warming" | "ready" | "done";
+type WarmupState = "idle" | "warming" | "caching" | "ready" | "done";
 
 function WarmupBadge() {
   const [state, setState] = useState<WarmupState>("idle");
@@ -62,14 +62,20 @@ function WarmupBadge() {
     async function ping() {
       try {
         const res = await fetch("/api/ch-warmup");
-        const json = await res.json() as { status: string };
+        const json = await res.json() as { status: string; cacheReady?: boolean };
         if (cancelled) return;
         if (json.status === "noop") return;
         if (json.status === "ready") {
-          if (state === "warming") {
+          if (json.cacheReady) {
             if (timerRef.current) clearInterval(timerRef.current);
             setState("ready");
             readyTimeout = setTimeout(() => { if (!cancelled) setState("done"); }, 2000);
+          } else {
+            if (state === "warming") {
+              if (timerRef.current) clearInterval(timerRef.current);
+            }
+            if (state !== "caching") setState("caching");
+            setTimeout(ping, 2000);
           }
           return;
         }
@@ -102,16 +108,17 @@ function WarmupBadge() {
     return (
       <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full font-medium"
         style={{ background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.25)", color: "#4ade80" }}>
-        Analytics ready
+        Cache ready
       </span>
     );
   }
 
+  const label = state === "caching" ? "Search cache warming" : `Analytics warming up · ${elapsed}s`;
   return (
     <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full font-medium"
       style={{ background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.25)", color: "#fbbf24" }}>
       <span className="animate-spin inline-block w-2.5 h-2.5 border border-current border-t-transparent rounded-full" />
-      Analytics warming up · {elapsed}s
+      {label}
     </span>
   );
 }

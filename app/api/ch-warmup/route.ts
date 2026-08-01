@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/clickhouse";
+import { redis } from "@/lib/redis";
+
+const WARM_SENTINEL = "warmup:done";
+const WARM_SENTINEL_TTL = 60 * 60;
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
 
@@ -56,6 +60,7 @@ async function warmCaches() {
     for (let i = 0; i < broader.length; i += WARM_BATCH) {
       await Promise.all(broader.slice(i, i + WARM_BATCH).map(warmBoth));
     }
+    if (redis) await redis.setex(WARM_SENTINEL, WARM_SENTINEL_TTL, "1").catch(() => {});
   } catch {}
   _warming = false;
 }
@@ -70,7 +75,10 @@ export async function GET() {
       _warmed = true;
       void warmCaches();
     }
-    return NextResponse.json({ status: "ready" }, { headers: CORS });
+    const cacheReady = redis
+      ? await redis.exists(WARM_SENTINEL).then(n => n === 1).catch(() => false)
+      : true;
+    return NextResponse.json({ status: "ready", cacheReady }, { headers: CORS });
   } catch {
     _warmed = false;
     return NextResponse.json({ status: "warming" }, { status: 503, headers: CORS });
