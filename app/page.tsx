@@ -164,17 +164,17 @@ export default function Dashboard() {
             <p className="text-sm text-gray-500">
               Live aggregates, search, and event stream.
             </p>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
-              {process.env.NEXT_PUBLIC_DEMO_SCALE && (
+            {process.env.NEXT_PUBLIC_DEMO_SCALE && (
+              <div className="mt-1">
                 <span className="inline-block text-[11px] px-2 py-0.5 rounded-full font-medium"
                   style={{ background: "rgba(99,102,241,0.10)", border: "1px solid rgba(99,102,241,0.25)", color: "#818cf8" }}>
                   demo · {process.env.NEXT_PUBLIC_DEMO_SCALE}
                 </span>
-              )}
-              <WarmupBadge />
-            </div>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-3">
+            <WarmupBadge />
             <PerfTimer ms={perfMs} settled={perfSettled} />
             {/* Live checkbox — re-enable when websockets-quickorder is running alongside
             <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">
