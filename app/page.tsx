@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import WarmupBadge from "@/components/WarmupBadge";
+import { searchPerf } from "@/lib/search-perf";
 
 function PerfTimer({ ms, settled }: { ms: number | null; settled: boolean }) {
   if (ms === null) return null;
@@ -79,6 +80,7 @@ export default function Dashboard() {
     if (perfActive.current) return;
     perfActive.current = true;
     perfStart.current = performance.now();
+    searchPerf.start(); // same instant — all [perf:client] counter= values map to the displayed ms
     setPerfMs(0);
     setPerfSettled(false);
     if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
@@ -103,7 +105,7 @@ export default function Dashboard() {
       perfActive.current = false;
       if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
-      console.log(`[perf:client] ✓ render settled ${ms}ms`);
+      console.log(`[perf:client] ✓ COUNTER STOPS — render settled ${ms}ms`);
       setPerfMs(ms);
       setPerfSettled(true);
       perfHide.current = setTimeout(() => { setPerfMs(null); setPerfSettled(false); }, 3500);

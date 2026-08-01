@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { searchPerf } from "@/lib/search-perf";
 import {
   appendFilterParams,
   type OrderFilters,
@@ -189,7 +190,6 @@ export default function SearchTable({
   useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
 
   const abortRef = useRef<AbortController | null>(null);
-  const searchT0Ref = useRef<number>(0);
   const isControlled = onRequestStateChange != null;
 
   // Keyset (cursor) pagination anchor — only ever populated for the default
@@ -265,13 +265,12 @@ export default function SearchTable({
         }
         appendFilterParams(params, f);
         const fetchT0 = performance.now();
-        const sinceEnter = searchT0Ref.current ? (fetchT0 - searchT0Ref.current).toFixed(1) : "?";
-        console.log(`[perf:client] → /api/orders q="${q}" sinceEnter=${sinceEnter}ms`);
+        console.log(`[perf:client] → /api/orders q="${q}" counter=${searchPerf.counter()}ms`);
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
-        console.log(`[perf:client] ← /api/orders ${fetchMs}ms | sinceEnter=${(performance.now() - searchT0Ref.current).toFixed(1)}ms`);
+        console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms — table response received`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: SearchResponse = await res.json();
         if (abortRef.current !== controller) return;
@@ -327,7 +326,7 @@ export default function SearchTable({
         if (abortRef.current === controller) {
           setLoading(false);
           setSearchLoading(false);
-          if (searchT0Ref.current) console.log(`[perf:client] table loading cleared | sinceEnter=${(performance.now() - searchT0Ref.current).toFixed(1)}ms`);
+          console.log(`[perf:client] table loading cleared counter=${searchPerf.counter()}ms`);
         }
       }
     },
@@ -605,8 +604,7 @@ export default function SearchTable({
             if (e.key === "Enter") {
               const trimmed = query.trim();
               if (trimmed === debouncedQuery.trim()) return;
-              searchT0Ref.current = performance.now();
-              console.log(`[perf:client] ⌨️  Enter q="${trimmed}"`);
+              console.log(`[perf:client] ⌨️  Enter q="${trimmed}" — COUNTER STARTS (0ms)`);
               onSearchStart?.();
               setPendingSearch(true);
               setDebouncedQuery(query);

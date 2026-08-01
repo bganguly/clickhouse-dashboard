@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { searchPerf } from "@/lib/search-perf";
 import {
   Bar,
   BarChart,
@@ -277,11 +278,11 @@ export default function Chart({
       try {
         const aggT0 = performance.now();
         const q = params.get("q") ?? "";
-        console.log(`[perf:client] → /api/aggregates q="${q}"`);
+        console.log(`[perf:client] → /api/aggregates q="${q}" counter=${searchPerf.counter()}ms`);
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
-        console.log(`[perf:client] ← /api/aggregates ${(performance.now() - aggT0).toFixed(1)}ms q="${q}"`);
+        console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms — chart response received`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: AggregatesResponse = await res.json();
         // An aborted controller doesn't guarantee its fetch promise rejects
