@@ -32,6 +32,12 @@ async function warmCaches() {
     const today = new Date().toISOString().slice(0, 10);
     const baseAgg = { from: "2024-07-17", to: today, q: null as string | null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 };
 
+    // Warm null-query aggregates first (chart initial load)
+    await Promise.all([
+      getDailyAggregates({ ...baseAgg }),
+      getExactAggregateTotal({ ...baseAgg }),
+    ]);
+
     const warmBoth = (tok: string) => Promise.all([
       listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
       getDailyAggregates({ ...baseAgg, q: tok }),

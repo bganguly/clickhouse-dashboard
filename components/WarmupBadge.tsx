@@ -6,9 +6,15 @@ type WarmupState = "idle" | "warming" | "caching" | "ready" | "done";
 
 export default function WarmupBadge() {
   const [state, setState] = useState<WarmupState>("idle");
+  const stateRef = useRef<WarmupState>("idle");
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const set = (s: WarmupState) => {
+    stateRef.current = s;
+    setState(s);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -22,22 +28,22 @@ export default function WarmupBadge() {
         if (json.status === "noop") return;
         if (json.status === "ready") {
           if (json.cacheReady) {
-            if (timerRef.current) clearInterval(timerRef.current);
-            setState("ready");
-            readyTimeout = setTimeout(() => { if (!cancelled) setState("done"); }, 2000);
+            if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+            set("ready");
+            readyTimeout = setTimeout(() => { if (!cancelled) set("done"); }, 5000);
           } else {
-            if (state === "warming") {
-              if (timerRef.current) clearInterval(timerRef.current);
+            if (stateRef.current === "warming") {
+              if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
             }
-            if (state !== "caching") setState("caching");
+            if (stateRef.current !== "caching") set("caching");
             setTimeout(ping, 2000);
           }
           return;
         }
         if (json.status === "warming" || res.status === 503) {
-          if (state === "idle") {
+          if (stateRef.current === "idle") {
             startRef.current = Date.now();
-            setState("warming");
+            set("warming");
             timerRef.current = setInterval(() => {
               if (!cancelled) setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
             }, 500);
