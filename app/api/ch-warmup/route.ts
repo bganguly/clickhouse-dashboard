@@ -12,7 +12,6 @@ let _warming  = false;
 
 const WARM_TOKENS   = 100;
 const WARM_BATCH    = 10;
-const REWARM_MS     = 4 * 60 * 1000;
 
 async function warmCaches() {
   if (_warming) return;
@@ -52,7 +51,6 @@ async function warmCaches() {
     }
   } catch {}
   _warming = false;
-  setTimeout(() => { void warmCaches(); }, REWARM_MS);
 }
 
 export async function GET() {
