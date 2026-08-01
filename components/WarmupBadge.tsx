@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from "react";
 
 type WarmupState = "idle" | "warming" | "caching" | "ready" | "done";
 
+const MAX_POLL_MS = 90_000;
+
 export default function WarmupBadge() {
   const [state, setState] = useState<WarmupState>("idle");
   const stateRef = useRef<WarmupState>("idle");
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number>(0);
+  const pollStartRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const set = (s: WarmupState) => {
@@ -19,8 +22,14 @@ export default function WarmupBadge() {
   useEffect(() => {
     let cancelled = false;
     let readyTimeout: ReturnType<typeof setTimeout> | null = null;
+    pollStartRef.current = Date.now();
 
     async function ping() {
+      if (cancelled) return;
+      if (Date.now() - pollStartRef.current > MAX_POLL_MS) {
+        set("done");
+        return;
+      }
       try {
         const res = await fetch("/api/ch-warmup");
         const json = await res.json() as { status: string; cacheReady?: boolean };

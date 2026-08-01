@@ -69,7 +69,9 @@ async function warmCaches() {
       await Promise.all(broader.slice(i, i + WARM_BATCH).map(warmBoth));
     }
     if (redis) await redis.setex(WARM_SENTINEL_FULL, WARM_SENTINEL_TTL, "1").catch(() => {});
-  } catch {}
+  } catch {
+    if (redis) await redis.setex(WARM_SENTINEL_PAGE1, WARM_SENTINEL_TTL, "1").catch(() => {});
+  }
   _warming = false;
 }
 
