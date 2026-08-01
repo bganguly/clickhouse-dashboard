@@ -23,8 +23,15 @@ async function warmCaches() {
 
     const firstPage = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
 
-    const warmBoth = (tok: string) =>
-      listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
+    const { getDailyAggregates, getExactAggregateTotal } = await import("@/lib/services/aggregates.service");
+    const today = new Date().toISOString().slice(0, 10);
+    const baseAgg = { from: "2024-07-17", to: today, q: null as string | null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 };
+
+    const warmBoth = (tok: string) => Promise.all([
+      listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc" }),
+      getDailyAggregates({ ...baseAgg, q: tok }),
+      getExactAggregateTotal({ ...baseAgg, q: tok }),
+    ]);
 
     // Priority 1: every full word visible on the default first page (name + notes)
     const visibleSet = new Set<string>();
