@@ -583,6 +583,7 @@ function BrushCard() {
             <RunBtn onClick={initBrush} loading={false} />
           </div>
         )}
+
         {phase==="loading" && (
           <div className="flex items-center gap-2 text-xs py-2" style={{ color:"#52525b" }}>
             <Spinner /> Loading aggregates…
@@ -592,6 +593,10 @@ function BrushCard() {
 
         {phase==="chart" && (
           <div className="mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[11px]" style={{ color:"#52525b" }}>Drag handles to re-query any sub-range</span>
+            <RunBtn onClick={initBrush} loading={false} />
+          </div>
             <svg viewBox="0 0 600 80" width="100%" height="80" preserveAspectRatio="none"
               style={{ display:"block", borderRadius:6 }}>
               {totals.map((v, i) => {

@@ -1,7 +1,7 @@
 import { redis } from "./redis";
 
 const PREFIX = "search:";
-const TTL_S = 3600;
+const TTL_S = 90 * 24 * 60 * 60;
 const MAX_ENTRIES = 200;
 
 const store = new Map<string, { value: unknown; ts: number }>();
@@ -10,10 +10,7 @@ export async function searchCacheGet<T>(key: string): Promise<T | null> {
   if (redis) {
     try {
       const raw = await redis.get(PREFIX + key);
-      if (raw) {
-        await redis.expire(PREFIX + key, TTL_S);
-        return JSON.parse(raw) as T;
-      }
+      if (raw) return JSON.parse(raw) as T;
     } catch {}
     return null;
   }
