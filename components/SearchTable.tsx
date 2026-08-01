@@ -272,7 +272,9 @@ export default function SearchTable({
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
         console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms — table response received`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const jsonT0 = performance.now();
         const json: SearchResponse = await res.json();
+        console.log(`[perf:client] res.json() orders body parsed in ${(performance.now() - jsonT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
         if (abortRef.current !== controller) return;
         const data = Array.isArray(json.data) ? json.data : [];
         setPendingSearch(false);

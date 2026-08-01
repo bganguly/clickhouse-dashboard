@@ -284,7 +284,9 @@ export default function Chart({
         });
         console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms — chart response received`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const aggJsonT0 = performance.now();
         const json: AggregatesResponse = await res.json();
+        console.log(`[perf:client] res.json() aggregates body parsed in ${(performance.now() - aggJsonT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
         // An aborted controller doesn't guarantee its fetch promise rejects
         // before a newer, faster request's promise resolves — without this
         // guard, a slower stale response can land after and silently
