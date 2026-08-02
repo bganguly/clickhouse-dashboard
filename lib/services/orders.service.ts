@@ -208,7 +208,7 @@ const ORDER_SELECT = `SELECT orderId, status, total, currency, notes, placedAt,
   customerFirstName, customerLastName, customerEmail, itemCount
 FROM orders`;
 
-export async function listOrders(input: OrderListInput): Promise<OrderListResult> {
+export async function listOrders(input: OrderListInput, _diag?: { src: string }): Promise<OrderListResult> {
   const page = Math.max(Math.trunc(input.page ?? 1) || 1, 1);
   const pageSize = Math.min(
     Math.max(Math.trunc(input.pageSize ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE, 1),
@@ -220,11 +220,25 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
   const offset = (page - 1) * pageSize;
 
   const cacheKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
-  const cached = await searchCacheGet<OrderListResult>(cacheKey);
-  if (cached) return cached;
+  if (input.q) console.log(`[search-cache] received q="${input.q}"`);
+  else console.log(`[search-cache] received base-case (no q)`);
+  const _cacheT0 = Date.now();
+  const _hitSrc = { value: "ch" };
+  const cached = await searchCacheGet<OrderListResult>(cacheKey, _hitSrc);
+  const _cacheMs = Date.now() - _cacheT0;
+  if (cached) {
+    if (_diag) _diag.src = _hitSrc.value;
+    if (input.q) console.log(`[search-cache] q="${input.q}" → list view HIT src=${_hitSrc.value} ${_hitSrc.value !== "mem" ? `redis=${_cacheMs}ms` : ""}`);
+    else console.log(`[search-cache] base-case → list view HIT src=${_hitSrc.value} ${_hitSrc.value !== "mem" ? `redis=${_cacheMs}ms` : ""}`);
+    return cached;
+  }
+  if (_diag) _diag.src = "ch";
+  if (input.q) console.log(`[search-cache] q="${input.q}" → list view MISS redis=${_cacheMs}ms`);
+  else console.log(`[search-cache] base-case → list view MISS redis=${_cacheMs}ms`);
 
   return singleFlight(cacheKey, async () => {
     try {
+      const t0 = Date.now();
       const filters = await resolveFilters(input);
 
       const searchTokens = tokens.length > 0 && typesense.isEnabled()
@@ -247,6 +261,7 @@ export async function listOrders(input: OrderListInput): Promise<OrderListResult
         ),
         getOrderCount(input.q?.trim() || undefined, filters),
       ]);
+      console.log(`[orders] listOrders ms=${Date.now() - t0} tokens=${searchTokens.join(",")} q=${input.q ?? ""} sort=${sort} dir=${dir} page=${page}`);
 
       const allData = orderRows.map(rowToDTO);
       const data = allData.slice(0, pageSize);
