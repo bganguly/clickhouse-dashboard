@@ -69,12 +69,13 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
   const { from: _f, to: _t, ...keyFields } = query_in;
   const cacheKey = `data:${JSON.stringify({ ...keyFields, topCategories: topN })}`;
   const _seriesT0 = Date.now();
-  const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
+  const _seriesSrc = { value: "ch" };
+  const cached = await aggCacheGet<DailyAggregate[]>(cacheKey, _seriesSrc);
   const _seriesMs = Date.now() - _seriesT0;
   if (cached) {
-    if (_diag) _diag.src = "redis";
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT redis=${_seriesMs}ms`);
-    else console.log(`[agg-cache] base-case → chart series HIT redis=${_seriesMs}ms`);
+    if (_diag) _diag.src = _seriesSrc.value;
+    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
+    else console.log(`[agg-cache] base-case → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
     return cached;
   }
   if (_diag) _diag.src = "ch";
@@ -142,12 +143,13 @@ export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?:
   const { from: _f2, to: _t2, ...totalKeyFields } = query_in;
   const inProcKey = `total:${JSON.stringify({ ...totalKeyFields, topCategories: resolvedTopN })}`;
   const _totalT0 = Date.now();
-  const cachedTotal = await aggCacheGet<number>(inProcKey);
+  const _totalSrc = { value: "ch" };
+  const cachedTotal = await aggCacheGet<number>(inProcKey, _totalSrc);
   const _totalMs = Date.now() - _totalT0;
   if (cachedTotal != null) {
-    if (_diag) _diag.src = "redis";
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT redis=${_totalMs}ms`);
-    else console.log(`[agg-cache] base-case → chart total HIT redis=${_totalMs}ms`);
+    if (_diag) _diag.src = _totalSrc.value;
+    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
+    else console.log(`[agg-cache] base-case → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
     return cachedTotal;
   }
   if (_diag) _diag.src = "ch";

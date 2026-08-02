@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
 import {
   Bar,
@@ -293,10 +293,8 @@ function Chart({
         // guard, a slower stale response can land after and silently
         // overwrite the correct state from the request that superseded it.
         if (abortRef.current !== controller) return;
-        startTransition(() => {
-          setRawData(Array.isArray(json.data) ? json.data : []);
-          setApiTotal(json.totalOrders ?? null);
-        });
+        setRawData(Array.isArray(json.data) ? json.data : []);
+        setApiTotal(json.totalOrders ?? null);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         if (abortRef.current !== controller) return;
@@ -343,10 +341,8 @@ function Chart({
     if (!controlledData) return;
     // Controlled data is supplied by the parent after one combined dashboard fetch.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    startTransition(() => {
-      setRawData(Array.isArray(controlledData) ? controlledData : []);
-      setError(null);
-    });
+    setRawData(Array.isArray(controlledData) ? controlledData : []);
+    setError(null);
   }, [controlledData, isControlled]);
 
   useEffect(() => {
@@ -766,6 +762,7 @@ function Chart({
                 dataKey={key}
                 stackId={STACK_ID}
                 fill={colorFor(key)}
+                isAnimationActive={false}
                 radius={
                   i === seriesKeys.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]
                 }

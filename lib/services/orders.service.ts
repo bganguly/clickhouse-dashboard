@@ -223,12 +223,13 @@ export async function listOrders(input: OrderListInput, _diag?: { src: string })
   if (input.q) console.log(`[search-cache] received q="${input.q}"`);
   else console.log(`[search-cache] received base-case (no q)`);
   const _cacheT0 = Date.now();
-  const cached = await searchCacheGet<OrderListResult>(cacheKey);
+  const _hitSrc = { value: "ch" };
+  const cached = await searchCacheGet<OrderListResult>(cacheKey, _hitSrc);
   const _cacheMs = Date.now() - _cacheT0;
   if (cached) {
-    if (_diag) _diag.src = "redis";
-    if (input.q) console.log(`[search-cache] q="${input.q}" → list view HIT redis=${_cacheMs}ms`);
-    else console.log(`[search-cache] base-case → list view HIT redis=${_cacheMs}ms`);
+    if (_diag) _diag.src = _hitSrc.value;
+    if (input.q) console.log(`[search-cache] q="${input.q}" → list view HIT src=${_hitSrc.value} ${_hitSrc.value !== "mem" ? `redis=${_cacheMs}ms` : ""}`);
+    else console.log(`[search-cache] base-case → list view HIT src=${_hitSrc.value} ${_hitSrc.value !== "mem" ? `redis=${_cacheMs}ms` : ""}`);
     return cached;
   }
   if (_diag) _diag.src = "ch";
@@ -502,8 +503,8 @@ export async function getOrderCount(
   filters: ResolvedFilters,
 ): Promise<number> {
   const cacheKey = `count:${JSON.stringify({ q: q || null, ...filters })}`;
-  const cached = await searchCacheGet<number>(cacheKey);
-  if (cached != null) return cached;
+  const cachedCount = await searchCacheGet<number>(cacheKey);
+  if (cachedCount != null) return cachedCount;
 
   return singleFlight(cacheKey, async () => {
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);

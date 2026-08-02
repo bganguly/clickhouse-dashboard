@@ -89,12 +89,10 @@ export default function Dashboard() {
     setPerfMs(0);
     setPerfSettled(false);
     if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
-    if (perfInterval.current) cancelAnimationFrame(perfInterval.current);
-    const tick = () => {
-      setPerfMs(Math.round(performance.now() - perfStart.current));
-      perfInterval.current = requestAnimationFrame(tick);
-    };
-    perfInterval.current = requestAnimationFrame(tick);
+    if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
+    const tick = () => setPerfMs(Math.round(performance.now() - perfStart.current));
+    tick();
+    perfInterval.current = window.setInterval(tick, 100);
   }, []);
 
   useEffect(() => {
@@ -106,15 +104,13 @@ export default function Dashboard() {
       console.log("[perf:client] 🔄 loading started (initial/clear) — COUNTER STARTS (0ms)");
       setPerfSettled(false);
       if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
-      if (perfInterval.current) cancelAnimationFrame(perfInterval.current);
-      const tick = () => {
-        setPerfMs(Math.round(performance.now() - perfStart.current));
-        perfInterval.current = requestAnimationFrame(tick);
-      };
-      perfInterval.current = requestAnimationFrame(tick);
+      if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
+      const tick = () => setPerfMs(Math.round(performance.now() - perfStart.current));
+      tick();
+      perfInterval.current = window.setInterval(tick, 100);
     } else if (!anyLoading && perfActive.current) {
       perfActive.current = false;
-      if (perfInterval.current) { cancelAnimationFrame(perfInterval.current); perfInterval.current = null; }
+      if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
       console.log(`[perf:client] ✓ COUNTER STOPS — render settled ${ms}ms`);
       setPerfMs(ms);

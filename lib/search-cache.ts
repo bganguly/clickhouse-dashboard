@@ -2,34 +2,48 @@ import { redis } from "./redis";
 
 const PREFIX = "search:";
 const TTL_S = 90 * 24 * 60 * 60;
-const MAX_ENTRIES = 200;
+const MAX_ENTRIES = 500;
 
 const store = new Map<string, { value: unknown; ts: number }>();
 
-export async function searchCacheGet<T>(key: string): Promise<T | null> {
-  if (redis) {
-    try {
-      const raw = await redis.get(PREFIX + key);
-      if (raw) return JSON.parse(raw) as T;
-    } catch {}
-    return null;
-  }
-  const entry = store.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > TTL_S * 1000) { store.delete(key); return null; }
-  return entry.value as T;
-}
-
-export async function searchCacheSet(key: string, value: unknown): Promise<void> {
-  if (redis) {
-    try { await redis.setex(PREFIX + key, TTL_S, JSON.stringify(value)); } catch {}
-    return;
-  }
+function storeSet(key: string, value: unknown): void {
   if (store.size >= MAX_ENTRIES) {
     const oldest = store.keys().next().value;
     if (oldest !== undefined) store.delete(oldest);
   }
   store.set(key, { value, ts: Date.now() });
+}
+
+export async function searchCacheGet<T>(key: string, _src?: { value: string }): Promise<T | null> {
+  const entry = store.get(key);
+  if (entry) {
+    if (Date.now() - entry.ts > TTL_S * 1000) {
+      store.delete(key);
+    } else {
+      if (_src) _src.value = "mem";
+      return entry.value as T;
+    }
+  }
+  if (redis) {
+    try {
+      const raw = await redis.get(PREFIX + key);
+      if (raw) {
+        const value = JSON.parse(raw) as T;
+        storeSet(key, value);
+        if (_src) _src.value = "redis";
+        return value;
+      }
+    } catch {}
+    return null;
+  }
+  return null;
+}
+
+export async function searchCacheSet(key: string, value: unknown): Promise<void> {
+  storeSet(key, value);
+  if (redis) {
+    try { await redis.setex(PREFIX + key, TTL_S, JSON.stringify(value)); } catch {}
+  }
 }
 
 export async function invalidateSearchCache(): Promise<void> {
