@@ -11,6 +11,34 @@ read -r _DIAG_CHOICE
 _DIAG_LOGS=""
 if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
 
+_ecr_image_exists() {
+  aws ecr describe-images --repository-name "ch-dash-app" --image-ids "imageTag=$1" \
+    >/dev/null 2>&1
+}
+
+_ensure_diag_build_arg() {
+  if ! _ecr_image_exists "latest"; then
+    return 0
+  fi
+  local _WANT_TAG="diag-$([[ -n "$_DIAG_LOGS" ]] && echo "1" || echo "0")"
+  local _LATEST_DIGEST _WANT_DIGEST
+  _LATEST_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
+    --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' \
+    --output text 2>/dev/null || echo 'none')"
+  _WANT_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
+    --image-ids "imageTag=${_WANT_TAG}" --query 'imageDetails[0].imageDigest' \
+    --output text 2>/dev/null || echo 'missing')"
+  if [[ "$_LATEST_DIGEST" != "$_WANT_DIGEST" || "$_WANT_DIGEST" == "missing" ]]; then
+    printf '  [build-arg mismatch] NEXT_PUBLIC_DIAG_LOGS baked into current image does not match requested value — pushing rebuild commit...\n'
+    git -C "$ROOT_DIR" commit --allow-empty \
+      -m "chore: rebuild for NEXT_PUBLIC_DIAG_LOGS=${_DIAG_LOGS}"
+    git -C "$ROOT_DIR" push origin HEAD:main
+    return 1
+  fi
+  printf '  NEXT_PUBLIC_DIAG_LOGS build-arg matches current image — no rebuild needed.\n'
+  return 0
+}
+
 _PREFLIGHT_ARN=""
 _PREFLIGHT_CDN=""
 _PREFLIGHT_CF=""
@@ -99,8 +127,31 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
 
     printf '[quick] ARN: %s\n' "$APP_RUNNER_ARN"
 
-    if ! aws ecr describe-images --repository-name "ch-dash-app" --image-ids imageTag=latest >/dev/null 2>&1; then
+    if ! _ecr_image_exists "latest"; then
       printf 'ERROR: no latest image in ECR — push to GitHub and wait for Actions build first.\n'; exit 1
+    fi
+
+    printf '[quick] Checking NEXT_PUBLIC_DIAG_LOGS build-arg...\n'
+    if ! _ensure_diag_build_arg; then
+      _NEW_SHA_Q="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+      printf '[quick] Waiting for ECR image %s (up to 15 min)...\n' "$_NEW_SHA_Q"
+      _ecr_q_elapsed=0
+      until _ecr_image_exists "$_NEW_SHA_Q"; do
+        if (( _ecr_q_elapsed >= 900 )); then
+          _GH_REPO_Q="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
+            | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
+          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "${_GH_REPO_Q:-}"
+          exit 1
+        fi
+        sleep 30; _ecr_q_elapsed=$(( _ecr_q_elapsed + 30 ))
+        printf '  ...%ds elapsed\n' "$_ecr_q_elapsed"
+      done
+      printf '  Image %s ready — re-tagging as latest.\n' "$_NEW_SHA_Q"
+      _MANIFEST_Q="$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+        --image-ids "imageTag=${_NEW_SHA_Q}" --query 'images[0].imageManifest' \
+        --output text 2>/dev/null)"
+      aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+        --image-manifest "$_MANIFEST_Q" >/dev/null 2>&1 || true
     fi
 
     printf '[quick] Checking App Runner state...\n'
@@ -402,13 +453,12 @@ else
   FIRST_DEPLOY=0
 fi
 
+printf '[deploy] Verifying NEXT_PUBLIC_DIAG_LOGS build-arg...\n'
+_ensure_diag_build_arg || true
+
 printf '[4/5] Verifying image in ECR...\n'
 _REMOTE_SHA="$(git -C "$ROOT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7)"
 _DEPLOY_TAG="${_REMOTE_SHA:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")}"
-_ecr_image_exists() {
-  aws ecr describe-images --repository-name "ch-dash-app" --image-ids "imageTag=$1" \
-    >/dev/null 2>&1
-}
 printf '  Checking ECR for image %s...\n' "$_DEPLOY_TAG"
 if ! _ecr_image_exists "$_DEPLOY_TAG"; then
   if _ecr_image_exists "latest"; then

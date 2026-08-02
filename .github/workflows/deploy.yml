@@ -26,14 +26,18 @@ jobs:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REPOSITORY: ch-dash-app
           SHA: ${{ github.sha }}
+          NEXT_PUBLIC_DIAG_LOGS: ${{ secrets.NEXT_PUBLIC_DIAG_LOGS }}
         run: |
           SHORT_SHA="${SHA::7}"
+          DIAG_TAG="diag-$([[ -n "${NEXT_PUBLIC_DIAG_LOGS}" ]] && echo "1" || echo "0")"
           docker build \
-            --build-arg NEXT_PUBLIC_DIAG_LOGS="${{ secrets.NEXT_PUBLIC_DIAG_LOGS }}" \
+            --build-arg NEXT_PUBLIC_DIAG_LOGS="${NEXT_PUBLIC_DIAG_LOGS}" \
             -t "$REGISTRY/$REPOSITORY:latest" \
-            -t "$REGISTRY/$REPOSITORY:$SHORT_SHA" .
+            -t "$REGISTRY/$REPOSITORY:$SHORT_SHA" \
+            -t "$REGISTRY/$REPOSITORY:$DIAG_TAG" .
           docker push "$REGISTRY/$REPOSITORY:latest"
           docker push "$REGISTRY/$REPOSITORY:$SHORT_SHA"
+          docker push "$REGISTRY/$REPOSITORY:$DIAG_TAG"
 
       - name: Run ClickHouse migrations
         env:
