@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import WarmupBadge from "@/components/WarmupBadge";
 
 function PerfTimer({ ms, settled }: { ms: number | null; settled: boolean }) {
   if (ms === null) return null;
@@ -179,7 +178,6 @@ export default function Dashboard() {
             )}
           </div>
           <div className="flex items-center gap-3">
-            <WarmupBadge />
             <PerfTimer ms={perfMs} settled={perfSettled} />
             {/* Live checkbox — re-enable when websockets-quickorder is running alongside
             <label className="flex cursor-pointer items-center gap-1.5 text-sm text-gray-500 select-none">

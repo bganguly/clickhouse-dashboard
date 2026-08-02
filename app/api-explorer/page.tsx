@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useState } from "react";
-import WarmupBadge from "@/components/WarmupBadge";
 
 const PORTFOLIO_URL = "https://bganguly.github.io/?open=nextjs";
 
@@ -691,7 +690,6 @@ export default function ApiExplorer() {
             Portfolio
           </a>
           <div className="flex items-center gap-3">
-            <WarmupBadge />
             <span className="text-xs" style={{ color:"#3f3f46" }}>ClickHouse Dashboard</span>
             <span className="text-[11px] px-2 py-0.5 rounded-full font-medium"
               style={{ background:"rgba(99,102,241,0.12)", border:"1px solid rgba(99,102,241,0.3)", color:"#a5b4fc" }}>
