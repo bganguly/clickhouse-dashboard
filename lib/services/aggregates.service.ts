@@ -50,7 +50,7 @@ function canUseDailySummary(input: AggregateQueryInput): boolean {
   );
 }
 
-export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { src: string }): Promise<DailyAggregate[]> {
+export async function getDailyAggregates(input: AggregateQueryInput): Promise<DailyAggregate[]> {
   const query_in = {
     ...input,
     q: input.q?.trim() || null,
@@ -68,24 +68,11 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
 
   const { from: _f, to: _t, ...keyFields } = query_in;
   const cacheKey = `data:${JSON.stringify({ ...keyFields, topCategories: topN })}`;
-  const _seriesT0 = Date.now();
-  const _seriesSrc = { value: "ch" };
-  const cached = await aggCacheGet<DailyAggregate[]>(cacheKey, _seriesSrc);
-  const _seriesMs = Date.now() - _seriesT0;
-  if (cached) {
-    if (_diag) _diag.src = _seriesSrc.value;
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
-    else console.log(`[agg-cache] base-case → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
-    return cached;
-  }
-  if (_diag) _diag.src = "ch";
-  if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series MISS redis=${_seriesMs}ms`);
-  else console.log(`[agg-cache] base-case → chart series MISS redis=${_seriesMs}ms`);
+  const cached = await aggCacheGet<DailyAggregate[]>(cacheKey);
+  if (cached) return cached;
 
   return singleFlight(cacheKey, async () => {
     try {
-      const t0 = Date.now();
-      let aggPath = "fastPath";
       let rows: AggRow[];
       if (canUseDailySummary(query_in)) {
         rows = await fastPath(query_in, topN);
@@ -99,26 +86,24 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
         const qin = expandedQ && expandedQ !== rawQ ? { ...query_in, q: expandedQ } : query_in;
 
         const r1 = await customerMultiTokenSummaryPath(qin);
-        if (r1) { aggPath = "customerMultiToken"; rows = r1; }
+        if (r1) { rows = r1; }
         else {
           const r2 = await filterSummaryPath(qin);
-          if (r2) { aggPath = "filterSummary"; rows = r2; }
+          if (r2) { rows = r2; }
           else {
             const r3 = await factFilterPath(qin);
-            if (r3) { aggPath = "factFilter"; rows = r3; }
+            if (r3) { rows = r3; }
             else {
               const r4 = await tokenSummaryPath(qin);
-              if (r4) { aggPath = "tokenSummary"; rows = r4; }
+              if (r4) { rows = r4; }
               else {
                 const r5 = await searchFactPath(qin);
-                if (r5) { aggPath = "searchFact"; rows = r5; }
-                else { aggPath = "slowPath"; rows = await slowPath(qin); }
+                rows = r5 ?? await slowPath(qin);
               }
             }
           }
         }
       }
-      console.log(`[agg] path=${aggPath} ms=${Date.now() - t0} from=${query_in.from} to=${query_in.to} q=${query_in.q ?? ""}`);
 
       const result = rowsToDailyAggregates(rows, topN);
       await aggCacheSet(cacheKey, result);
@@ -129,7 +114,7 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
   });
 }
 
-export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?: { src: string }): Promise<number> {
+export async function getExactAggregateTotal(input: AggregateQueryInput): Promise<number> {
   const query_in = {
     ...input,
     q: input.q?.trim() || null,
@@ -142,19 +127,8 @@ export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?:
       : DEFAULT_TOP_CATEGORIES;
   const { from: _f2, to: _t2, ...totalKeyFields } = query_in;
   const inProcKey = `total:${JSON.stringify({ ...totalKeyFields, topCategories: resolvedTopN })}`;
-  const _totalT0 = Date.now();
-  const _totalSrc = { value: "ch" };
-  const cachedTotal = await aggCacheGet<number>(inProcKey, _totalSrc);
-  const _totalMs = Date.now() - _totalT0;
-  if (cachedTotal != null) {
-    if (_diag) _diag.src = _totalSrc.value;
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
-    else console.log(`[agg-cache] base-case → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
-    return cachedTotal;
-  }
-  if (_diag) _diag.src = "ch";
-  if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total MISS redis=${_totalMs}ms`);
-  else console.log(`[agg-cache] base-case → chart total MISS redis=${_totalMs}ms`);
+  const cachedTotal = await aggCacheGet<number>(inProcKey);
+  if (cachedTotal != null) return cachedTotal;
 
   return singleFlight(inProcKey, async () => {
     try {
