@@ -69,12 +69,17 @@ export default function Dashboard() {
   const [perfMs, setPerfMs] = useState<number | null>(null);
   const [perfSettled, setPerfSettled] = useState(false);
   const perfStart = useRef<number>(0);
-  const perfInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const perfInterval = useRef<number | null>(null);
   const perfHide = useRef<ReturnType<typeof setTimeout> | null>(null);
   const perfActive = useRef(false);
 
   const handleChartLoading = useCallback((v: boolean) => setChartLoading(v), []);
   const handleTableLoading = useCallback((v: boolean) => setTableLoading(v), []);
+  const handleRangeChange = useCallback(
+    (range: { from: string; to: string }) => setFilters((f) => ({ ...f, from: range.from, to: range.to })),
+    [],
+  );
+  const handleCountChange = useCallback((n: number) => setChartTotal((c) => c ?? n), []);
 
   const handleSearchStart = useCallback(() => {
     if (perfActive.current) return;
@@ -84,10 +89,12 @@ export default function Dashboard() {
     setPerfMs(0);
     setPerfSettled(false);
     if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
-    if (perfInterval.current) clearInterval(perfInterval.current);
-    perfInterval.current = setInterval(() => {
+    if (perfInterval.current) cancelAnimationFrame(perfInterval.current);
+    const tick = () => {
       setPerfMs(Math.round(performance.now() - perfStart.current));
-    }, 16);
+      perfInterval.current = requestAnimationFrame(tick);
+    };
+    perfInterval.current = requestAnimationFrame(tick);
   }, []);
 
   useEffect(() => {
@@ -99,13 +106,15 @@ export default function Dashboard() {
       console.log("[perf:client] 🔄 loading started (initial/clear) — COUNTER STARTS (0ms)");
       setPerfSettled(false);
       if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
-      if (perfInterval.current) clearInterval(perfInterval.current);
-      perfInterval.current = setInterval(() => {
+      if (perfInterval.current) cancelAnimationFrame(perfInterval.current);
+      const tick = () => {
         setPerfMs(Math.round(performance.now() - perfStart.current));
-      }, 16);
+        perfInterval.current = requestAnimationFrame(tick);
+      };
+      perfInterval.current = requestAnimationFrame(tick);
     } else if (!anyLoading && perfActive.current) {
       perfActive.current = false;
-      if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
+      if (perfInterval.current) { cancelAnimationFrame(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
       console.log(`[perf:client] ✓ COUNTER STOPS — render settled ${ms}ms`);
       setPerfMs(ms);
@@ -227,7 +236,7 @@ export default function Dashboard() {
                   highlightKey={lastOrder?.seq}
                   updatingSlug={updatingSlug}
                   lastSseOrder={lastSseOrder}
-                  onRangeChange={(range) => setFilters((f) => ({ ...f, from: range.from, to: range.to }))}
+                  onRangeChange={handleRangeChange}
                   onTotalChange={setChartTotal}
                   externalTotal={chartTotal}
                   onLoadingChange={handleChartLoading}
@@ -240,7 +249,7 @@ export default function Dashboard() {
                   highlightId={lastOrder?.id}
                   highlightKey={lastOrder?.seq}
                   externalTotal={chartTotal}
-                  onCountChange={(n) => setChartTotal((c) => c ?? n)}
+                  onCountChange={handleCountChange}
                   onLoadingChange={handleTableLoading}
                   onSearchStart={handleSearchStart}
                 />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
 import {
   Bar,
@@ -188,7 +188,7 @@ function defaultRange(): { from: string; to: string } {
   return { from: "2024-07-17", to: isoDay(new Date()) };
 }
 
-export default function Chart({
+function Chart({
   refreshSignal = 0,
   endpoint = "/api/aggregates",
   topN = DEFAULT_TOP_N,
@@ -293,8 +293,10 @@ export default function Chart({
         // guard, a slower stale response can land after and silently
         // overwrite the correct state from the request that superseded it.
         if (abortRef.current !== controller) return;
-        setRawData(Array.isArray(json.data) ? json.data : []);
-        setApiTotal(json.totalOrders ?? null);
+        startTransition(() => {
+          setRawData(Array.isArray(json.data) ? json.data : []);
+          setApiTotal(json.totalOrders ?? null);
+        });
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         if (abortRef.current !== controller) return;
@@ -341,8 +343,10 @@ export default function Chart({
     if (!controlledData) return;
     // Controlled data is supplied by the parent after one combined dashboard fetch.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRawData(Array.isArray(controlledData) ? controlledData : []);
-    setError(null);
+    startTransition(() => {
+      setRawData(Array.isArray(controlledData) ? controlledData : []);
+      setError(null);
+    });
   }, [controlledData, isControlled]);
 
   useEffect(() => {
@@ -795,3 +799,5 @@ export default function Chart({
     </section>
   );
 }
+
+export default memo(Chart);

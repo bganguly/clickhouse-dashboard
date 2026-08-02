@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
 import {
   appendFilterParams,
@@ -150,7 +150,7 @@ function getPageItems(current: number, total: number): PageItem[] {
   return items;
 }
 
-export default function SearchTable({
+function SearchTable({
   refreshSignal = 0,
   endpoint = "/api/orders",
   pageSize = 20,
@@ -601,6 +601,7 @@ export default function SearchTable({
             if (e.target.value === "") {
               console.log("[perf:client] ✕ query cleared — COUNTER STARTS (0ms)");
               onSearchStart?.();
+              onQueryChange?.("");
               setDebouncedQuery("");
               setPage(1);
             }
@@ -611,6 +612,7 @@ export default function SearchTable({
               if (trimmed === debouncedQuery.trim()) return;
               console.log(`[perf:client] ⌨️  Enter q="${trimmed}" — COUNTER STARTS (0ms)`);
               onSearchStart?.();
+              onQueryChange?.(trimmed);
               setPendingSearch(true);
               setDebouncedQuery(query);
               setPage(1);
@@ -864,3 +866,5 @@ export default function SearchTable({
     </section>
   );
 }
+
+export default memo(SearchTable);
