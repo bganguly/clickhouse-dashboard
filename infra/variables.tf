@@ -42,3 +42,9 @@ variable "typesense_api_key" {
   sensitive   = true
   default     = ""
 }
+
+variable "next_public_diag_logs" {
+  description = "Set to '1' to enable diagnostic console logs. Empty string disables."
+  type        = string
+  default     = ""
+}

@@ -22,6 +22,11 @@ _await_cache_ready() {
   printf '  cache not ready after 3 min — continuing anyway.\n'
 }
 
+printf 'Enable diagnostic logs? [y/N]: '
+read -r _DIAG_CHOICE
+_DIAG_LOGS=""
+if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
+
 _PREFLIGHT_ARN=""
 _PREFLIGHT_CDN=""
 _PREFLIGHT_CF=""
@@ -76,6 +81,10 @@ read -r DEPLOY_TARGET
 case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
   1)
     cd "$ROOT_DIR"
+    if [[ -f ".env.local" ]]; then
+      grep -v '^NEXT_PUBLIC_DIAG_LOGS=' .env.local > .env.local.tmp && mv .env.local.tmp .env.local
+    fi
+    [[ -n "$_DIAG_LOGS" ]] && printf 'NEXT_PUBLIC_DIAG_LOGS=%s\n' "$_DIAG_LOGS" >> .env.local
     npm install --prefer-offline || npm install
     exec npm run dev
     ;;
@@ -286,10 +295,12 @@ export TF_VAR_clickhouse_password="$CH_PASS"
 
 if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
   printf '  Syncing ClickHouse credentials to GitHub Actions secrets...\n'
-  printf '%s' "$CLICKHOUSE_URL"             | gh secret set CLICKHOUSE_URL      --repo "$_GH_REPO"
-  printf '%s' "${CLICKHOUSE_USER:-default}" | gh secret set CLICKHOUSE_USER     --repo "$_GH_REPO"
-  printf '%s' "$CH_PASS"                    | gh secret set CLICKHOUSE_PASSWORD --repo "$_GH_REPO"
+  printf '%s' "$CLICKHOUSE_URL"             | gh secret set CLICKHOUSE_URL          --repo "$_GH_REPO"
+  printf '%s' "${CLICKHOUSE_USER:-default}" | gh secret set CLICKHOUSE_USER         --repo "$_GH_REPO"
+  printf '%s' "$CH_PASS"                    | gh secret set CLICKHOUSE_PASSWORD     --repo "$_GH_REPO"
+  printf '%s' "${_DIAG_LOGS}"               | gh secret set NEXT_PUBLIC_DIAG_LOGS   --repo "$_GH_REPO"
 fi
+export TF_VAR_next_public_diag_logs="${_DIAG_LOGS}"
 
 REDIS_CREDS_FILE="$ROOT_DIR/.redis-creds"
 if [[ -n "${REDIS_URL:-}" ]]; then

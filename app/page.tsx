@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
+import { diag } from "@/lib/diag";
 
 function PerfTimer({ ms, settled }: { ms: number | null; settled: boolean }) {
   if (ms === null) return null;
@@ -100,7 +101,7 @@ export default function Dashboard() {
       perfActive.current = true;
       perfStart.current = performance.now();
       searchPerf.start();
-      console.log("[perf:client] 🔄 loading started (initial/clear) — COUNTER STARTS (0ms)");
+      if (diag) console.log("[perf:client] 🔄 loading started (initial/clear) — COUNTER STARTS (0ms)");
       setPerfSettled(false);
       if (perfHide.current) { clearTimeout(perfHide.current); perfHide.current = null; }
       if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
@@ -111,7 +112,7 @@ export default function Dashboard() {
       perfActive.current = false;
       if (perfInterval.current) { clearInterval(perfInterval.current); perfInterval.current = null; }
       const ms = Math.round(performance.now() - perfStart.current);
-      console.log(`[perf:client] ✓ COUNTER STOPS — render settled ${ms}ms`);
+      if (diag) console.log(`[perf:client] ✓ COUNTER STOPS — render settled ${ms}ms`);
       setPerfMs(ms);
       setPerfSettled(true);
       perfHide.current = setTimeout(() => { setPerfMs(null); setPerfSettled(false); }, 3500);

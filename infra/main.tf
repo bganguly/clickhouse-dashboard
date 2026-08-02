@@ -69,8 +69,9 @@ resource "aws_apprunner_service" "app" {
           CLICKHOUSE_USER       = "default"
           CLICKHOUSE_PASSWORD   = var.clickhouse_password
           REDIS_URL             = var.redis_url
-          TYPESENSE_URL         = var.typesense_url
-          TYPESENSE_API_KEY     = var.typesense_api_key
+          TYPESENSE_URL           = var.typesense_url
+          TYPESENSE_API_KEY       = var.typesense_api_key
+          NEXT_PUBLIC_DIAG_LOGS   = var.next_public_diag_logs
         }
       }
     }

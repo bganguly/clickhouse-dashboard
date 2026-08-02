@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
+import { diag } from "@/lib/diag";
 import {
   Bar,
   BarChart,
@@ -278,16 +279,16 @@ function Chart({
       try {
         const aggT0 = performance.now();
         const q = params.get("q") ?? "";
-        console.log(`[perf:client] → /api/aggregates q="${q}" counter=${searchPerf.counter()}ms`);
+        if (diag) console.log(`[perf:client] → /api/aggregates q="${q}" counter=${searchPerf.counter()}ms`);
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
         const _aggSrc = res.headers.get("X-Cache-Source") ?? "?";
-        console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms src=${_aggSrc}`);
+        if (diag) console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms src=${_aggSrc}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const aggJsonT0 = performance.now();
         const json: AggregatesResponse = await res.json();
-        console.log(`[perf:client] res.json() aggregates body parsed in ${(performance.now() - aggJsonT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
+        if (diag) console.log(`[perf:client] res.json() aggregates body parsed in ${(performance.now() - aggJsonT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
         // An aborted controller doesn't guarantee its fetch promise rejects
         // before a newer, faster request's promise resolves — without this
         // guard, a slower stale response can land after and silently

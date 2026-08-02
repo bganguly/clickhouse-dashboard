@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createOrder, isAppError, listOrders, listOrdersByCursor } from "@/lib/services";
+import { diag } from "@/lib/diag";
 import type { CreateOrderInput } from "@/lib/types";
 
 // GET /api/orders?q=&page=&pageSize=&sort=&dir=
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
   const _routeT0 = Date.now();
   const { searchParams } = req.nextUrl;
   const _q = (searchParams.get("q") ?? "").trim() || "(none)";
-  console.log(`[api/orders] received q="${_q}"`);
+  if (diag) console.log(`[api/orders] received q="${_q}"`);
   const num = (name: string) => {
     const v = searchParams.get(name);
     return v != null && v !== "" ? Number(v) : undefined;
@@ -57,7 +58,7 @@ export async function GET(req: NextRequest) {
           cursorDir: cursorDir!,
         })
       : await listOrders(baseInput, _diag);
-    console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}" src=${_diag.src}`);
+    if (diag) console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}" src=${_diag.src}`);
     return NextResponse.json(result, {
       headers: {
         "Cache-Control": "public, s-maxage=300, stale-while-revalidate=300",
@@ -65,7 +66,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.log(`[api/orders] error total=${Date.now() - _routeT0}ms q="${_q}"`);
+    if (diag) console.log(`[api/orders] error total=${Date.now() - _routeT0}ms q="${_q}"`);
     return toErrorResponse(err);
   }
 }

@@ -2,6 +2,7 @@
 
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
+import { diag } from "@/lib/diag";
 import {
   appendFilterParams,
   type OrderFilters,
@@ -265,17 +266,17 @@ function SearchTable({
         }
         appendFilterParams(params, f);
         const fetchT0 = performance.now();
-        console.log(`[perf:client] → /api/orders q="${q}" counter=${searchPerf.counter()}ms`);
+        if (diag) console.log(`[perf:client] → /api/orders q="${q}" counter=${searchPerf.counter()}ms`);
         const res = await fetch(`${endpoint}?${params}`, {
           signal: controller.signal,
         });
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
         const _src = res.headers.get("X-Cache-Source") ?? "?";
-        console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms src=${_src}`);
+        if (diag) console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms src=${_src}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const jsonT0 = performance.now();
         const json: SearchResponse = await res.json();
-        console.log(`[perf:client] res.json() orders body parsed in ${(performance.now() - jsonT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
+        if (diag) console.log(`[perf:client] res.json() orders body parsed in ${(performance.now() - jsonT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
         if (abortRef.current !== controller) return;
         const data = Array.isArray(json.data) ? json.data : [];
         setPendingSearch(false);
@@ -329,7 +330,7 @@ function SearchTable({
         if (abortRef.current === controller) {
           setLoading(false);
           setSearchLoading(false);
-          console.log(`[perf:client] table loading cleared counter=${searchPerf.counter()}ms`);
+          if (diag) console.log(`[perf:client] table loading cleared counter=${searchPerf.counter()}ms`);
         }
       }
     },
@@ -599,7 +600,7 @@ function SearchTable({
           onChange={(e) => {
             setQuery(e.target.value);
             if (e.target.value === "") {
-              console.log("[perf:client] ✕ query cleared — COUNTER STARTS (0ms)");
+              if (diag) console.log("[perf:client] ✕ query cleared — COUNTER STARTS (0ms)");
               onSearchStart?.();
               onQueryChange?.("");
               setDebouncedQuery("");
@@ -610,7 +611,7 @@ function SearchTable({
             if (e.key === "Enter") {
               const trimmed = query.trim();
               if (trimmed === debouncedQuery.trim()) return;
-              console.log(`[perf:client] ⌨️  Enter q="${trimmed}" — COUNTER STARTS (0ms)`);
+              if (diag) console.log(`[perf:client] ⌨️  Enter q="${trimmed}" — COUNTER STARTS (0ms)`);
               onSearchStart?.();
               onQueryChange?.(trimmed);
               setPendingSearch(true);

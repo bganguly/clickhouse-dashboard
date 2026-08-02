@@ -1,4 +1,5 @@
 import { createClient, type ClickHouseClient, type ClickHouseSettings } from "@clickhouse/client";
+import { diag } from "@/lib/diag";
 
 const globalForCh = globalThis as unknown as { ch: ClickHouseClient };
 
@@ -29,7 +30,7 @@ export async function query<T = Record<string, unknown>>(
   const rows = await rs.json<T>();
   const ms = Date.now() - t0;
   const label = sql.trim().replace(/\s+/g, " ").slice(0, 120);
-  console.log(`[ch] ${ms}ms | ${label}`);
+  if (diag) console.log(`[ch] ${ms}ms | ${label}`);
   return rows;
 }
 

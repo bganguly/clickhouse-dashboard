@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { COUNT_SENTINEL, getDailyAggregates, getExactAggregateTotal, isAppError } from "@/lib/services";
+import { diag } from "@/lib/diag";
 
 // GET /api/aggregates?from=YYYY-MM-DD&to=YYYY-MM-DD&topCategories=<N>
 //   filters (same as /api/orders): &status=&regionCode=&minTotal=&maxTotal=
@@ -8,7 +9,7 @@ export async function GET(req: NextRequest) {
   const _routeT0 = Date.now();
   const { searchParams } = req.nextUrl;
   const _q = (searchParams.get("q") ?? "").trim() || "(none)";
-  console.log(`[api/aggregates] received q="${_q}"`);
+  if (diag) console.log(`[api/aggregates] received q="${_q}"`);
   const topCategories = searchParams.get("topCategories");
   const num = (name: string) => {
     const v = searchParams.get(name);
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
     ]);
     const _aggSrc = _diagSeries.src === "redis" && _diagTotal.src === "redis" ? "redis" : "ch";
     const approximate = totalOrders === COUNT_SENTINEL;
-    console.log(`[api/aggregates] total=${Date.now() - _routeT0}ms q="${_q}" src=${_aggSrc}`);
+    if (diag) console.log(`[api/aggregates] total=${Date.now() - _routeT0}ms q="${_q}" src=${_aggSrc}`);
     return NextResponse.json({
       data,
       totalOrders: approximate ? 10_000 : totalOrders,
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.log(`[api/aggregates] error total=${Date.now() - _routeT0}ms q="${_q}"`);
+    if (diag) console.log(`[api/aggregates] error total=${Date.now() - _routeT0}ms q="${_q}"`);
     if (isAppError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
     }

@@ -8,6 +8,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG NEXT_PUBLIC_DIAG_LOGS
+ENV NEXT_PUBLIC_DIAG_LOGS=$NEXT_PUBLIC_DIAG_LOGS
 RUN npm run build
 
 FROM node:22-alpine AS runner

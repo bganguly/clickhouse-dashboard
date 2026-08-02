@@ -1,4 +1,5 @@
 import { query } from "@/lib/clickhouse";
+import { diag } from "@/lib/diag";
 import type { ClickHouseSettings } from "@clickhouse/client";
 import { AppError, mapDbError } from "@/lib/errors";
 import { aggCacheGet, aggCacheSet } from "@/lib/aggregates-cache";
@@ -74,13 +75,13 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
   const _seriesMs = Date.now() - _seriesT0;
   if (cached) {
     if (_diag) _diag.src = _seriesSrc.value;
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
-    else console.log(`[agg-cache] base-case → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
+    if (diag && query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
+    else if (diag) console.log(`[agg-cache] base-case → chart series HIT src=${_seriesSrc.value} ${_seriesSrc.value !== "mem" ? `redis=${_seriesMs}ms` : ""}`);
     return cached;
   }
   if (_diag) _diag.src = "ch";
-  if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series MISS redis=${_seriesMs}ms`);
-  else console.log(`[agg-cache] base-case → chart series MISS redis=${_seriesMs}ms`);
+  if (diag && query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart series MISS redis=${_seriesMs}ms`);
+  else if (diag) console.log(`[agg-cache] base-case → chart series MISS redis=${_seriesMs}ms`);
 
   return singleFlight(cacheKey, async () => {
     try {
@@ -118,7 +119,7 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
           }
         }
       }
-      console.log(`[agg] path=${aggPath} ms=${Date.now() - t0} from=${query_in.from} to=${query_in.to} q=${query_in.q ?? ""}`);
+      if (diag) console.log(`[agg] path=${aggPath} ms=${Date.now() - t0} from=${query_in.from} to=${query_in.to} q=${query_in.q ?? ""}`);
 
       const result = rowsToDailyAggregates(rows, topN);
       await aggCacheSet(cacheKey, result);
@@ -148,13 +149,13 @@ export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?:
   const _totalMs = Date.now() - _totalT0;
   if (cachedTotal != null) {
     if (_diag) _diag.src = _totalSrc.value;
-    if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
-    else console.log(`[agg-cache] base-case → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
+    if (diag && query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
+    else if (diag) console.log(`[agg-cache] base-case → chart total HIT src=${_totalSrc.value} ${_totalSrc.value !== "mem" ? `redis=${_totalMs}ms` : ""}`);
     return cachedTotal;
   }
   if (_diag) _diag.src = "ch";
-  if (query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total MISS redis=${_totalMs}ms`);
-  else console.log(`[agg-cache] base-case → chart total MISS redis=${_totalMs}ms`);
+  if (diag && query_in.q) console.log(`[agg-cache] q="${query_in.q}" → chart total MISS redis=${_totalMs}ms`);
+  else if (diag) console.log(`[agg-cache] base-case → chart total MISS redis=${_totalMs}ms`);
 
   return singleFlight(inProcKey, async () => {
     try {
