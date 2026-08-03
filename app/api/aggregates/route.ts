@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { COUNT_SENTINEL, getDailyAggregates, getExactAggregateTotal, isAppError, listOrders } from "@/lib/services";
+import { COUNT_SENTINEL, getDailyAggregates, getExactAggregateTotal, isAppError } from "@/lib/services";
 import { diag } from "@/lib/diag";
 
 // GET /api/aggregates?from=YYYY-MM-DD&to=YYYY-MM-DD&topCategories=<N>
@@ -42,7 +42,6 @@ export async function GET(req: NextRequest) {
       _diagSeries.src === "redis" && _diagTotal.src === "redis" ? "redis" : "ch";
     const approximate = totalOrders === COUNT_SENTINEL;
     if (diag) console.log(`[api/aggregates] total=${Date.now() - _routeT0}ms q="${_q}" src=${_aggSrc}`);
-    void listOrders({ q: query.q, from: query.from, to: query.to, status: query.status, regionCode: query.regionCode, minTotal: query.minTotal, maxTotal: query.maxTotal }).catch(() => {});
     return NextResponse.json({
       data,
       totalOrders: approximate ? 10_000 : totalOrders,
