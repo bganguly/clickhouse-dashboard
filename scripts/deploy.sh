@@ -462,11 +462,6 @@ printf '  Endpoint: %s\n' "$CLICKHOUSE_URL"
 export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
 export TF_VAR_clickhouse_password="$CH_PASS"
 
-printf '  Sending ClickHouse wake-up in background...\n'
-curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=5" \
-  --data-binary "SELECT 1" >/dev/null 2>&1 &
-
 if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
   printf '  Syncing ClickHouse credentials to GitHub Actions secrets...\n'
   printf '%s' "$CLICKHOUSE_URL"             | gh secret set CLICKHOUSE_URL          --repo "$_GH_REPO"
@@ -708,6 +703,8 @@ if [[ "$FIRST_DEPLOY" == "0" ]]; then
       printf '\r  not ready (%ds remaining)...' "$_ch2_pre_remaining"
       sleep 10
     done
+  else
+    printf '[5/5] ClickHouse confirmed reachable (pre-flight check passed).\n'
   fi
   aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
 fi
