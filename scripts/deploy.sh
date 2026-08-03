@@ -164,6 +164,28 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
         --image-manifest "$_MANIFEST_Q" >/dev/null 2>&1 || true
     fi
 
+    _HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+    if ! _ecr_image_exists "$_HEAD_SHA"; then
+      printf '[quick] Waiting for ECR image %s (up to 15 min)...\n' "$_HEAD_SHA"
+      _ecr_head_elapsed=0
+      until _ecr_image_exists "$_HEAD_SHA"; do
+        if (( _ecr_head_elapsed >= 900 )); then
+          _GH_REPO_H="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
+            | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
+          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "${_GH_REPO_H:-}"
+          exit 1
+        fi
+        sleep 30; _ecr_head_elapsed=$(( _ecr_head_elapsed + 30 ))
+        printf '  ...%ds elapsed\n' "$_ecr_head_elapsed"
+      done
+      printf '  Image %s ready — re-tagging as latest.\n' "$_HEAD_SHA"
+      _MANIFEST_H="$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+        --image-ids "imageTag=${_HEAD_SHA}" --query 'images[0].imageManifest' \
+        --output text 2>/dev/null)"
+      aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+        --image-manifest "$_MANIFEST_H" >/dev/null 2>&1 || true
+    fi
+
     printf '[quick] Checking App Runner state...\n'
     _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
     if [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
