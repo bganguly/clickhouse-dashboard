@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
 PROJECT_NAME="$(basename "$ROOT_DIR")"
 
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/opt/local/bin:$PATH"
+
 
 printf 'Enable diagnostic logs? [y/N]: '
 read -r _DIAG_CHOICE
@@ -120,11 +122,60 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
     _LOCAL_AGO="$(git -C "$ROOT_DIR" log -1 --format='%ar' 2>/dev/null || echo '')"
     printf '[preflight] HEAD commit : %s — "%s" (%s)\n' "${_LOCAL_SHA:-unknown}" "$_LOCAL_MSG" "$_LOCAL_AGO"
     if command -v gh >/dev/null 2>&1; then
-      _GH_STATUS="$(gh run list --limit 1 \
-        --json status,conclusion,headSha,displayTitle \
-        --jq '.[0] | "\(.status)\(if .conclusion != "" and .conclusion != null then "/\(.conclusion)" else "" end) · \(.headSha[:7]) · \(.displayTitle)"' \
+      _GH_RUN_JSON="$(gh run list --limit 1 \
+        --json databaseId,status,conclusion,headSha,displayTitle \
         2>/dev/null || echo '')"
-      [[ -n "$_GH_STATUS" ]] && printf '[preflight] GH Actions  : %s\n' "$_GH_STATUS"
+      _GH_RUN_ID="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+        "import sys,json; r=json.load(sys.stdin); print(r[0]['databaseId'] if r else '')" 2>/dev/null || echo '')"
+      _GH_RUN_ST="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+        "import sys,json; r=json.load(sys.stdin); o=r[0] if r else {}; co=o.get('conclusion') or ''; st=o.get('status',''); print(st+'/'+co if co else st)" 2>/dev/null || echo '')"
+      _GH_RUN_SHA="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+        "import sys,json; r=json.load(sys.stdin); print(r[0]['headSha'][:7] if r else '')" 2>/dev/null || echo '')"
+      _GH_RUN_TITLE="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+        "import sys,json; r=json.load(sys.stdin); print(r[0]['displayTitle'] if r else '')" 2>/dev/null || echo '')"
+      printf '[preflight] GH Actions  : %s · %s · %s\n' "$_GH_RUN_ST" "$_GH_RUN_SHA" "$_GH_RUN_TITLE"
+
+      if [[ "$_GH_RUN_ST" == "in_progress" || "$_GH_RUN_ST" == "queued" || "$_GH_RUN_ST" == "waiting" ]] \
+          && [[ -n "$_GH_RUN_ID" ]]; then
+        printf '[preflight] Waiting for GH Actions to finish (polls every 20s)...\n'
+        _gh_t0=$(date +%s)
+        _gh_view=""
+        while true; do
+          sleep 20
+          _gh_view="$(gh run view "$_GH_RUN_ID" --json status,conclusion,jobs 2>/dev/null || echo '')"
+          _gh_cur_st="$(printf '%s' "$_gh_view" | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo '')"
+          printf '\r  %s (%ds)...' "${_gh_cur_st:-waiting}" $(( $(date +%s) - _gh_t0 ))
+          if [[ "$_gh_cur_st" != "in_progress" && "$_gh_cur_st" != "queued" && "$_gh_cur_st" != "waiting" ]]; then
+            printf '\n'; break
+          fi
+        done
+        _gh_conclusion="$(printf '%s' "$_gh_view" | python3 -c \
+          "import sys,json; d=json.load(sys.stdin); print(d.get('conclusion') or '')" 2>/dev/null || echo '')"
+        _step_build="$(printf '%s' "$_gh_view" | python3 -c "
+import sys, json
+for step in json.load(sys.stdin).get('jobs',[{}])[0].get('steps',[]):
+    if 'push' in step.get('name','').lower() or 'build' in step.get('name','').lower():
+        print(step.get('conclusion','unknown')); break
+else: print('unknown')
+" 2>/dev/null || echo 'unknown')"
+        _step_migration="$(printf '%s' "$_gh_view" | python3 -c "
+import sys, json
+for step in json.load(sys.stdin).get('jobs',[{}])[0].get('steps',[]):
+    if 'migration' in step.get('name','').lower():
+        print(step.get('conclusion','unknown')); break
+else: print('unknown')
+" 2>/dev/null || echo 'unknown')"
+        printf '  build/push : %s\n' "$_step_build"
+        printf '  migration  : %s\n' "$_step_migration"
+        if [[ "$_step_migration" != "success" ]]; then
+          printf '\n  WARNING: ClickHouse migration step did not succeed (%s).\n' "$_step_migration"
+          printf '  Schema may be out of sync with the new image.\n'
+          printf '  Proceed anyway? [y/N]: '
+          read -r _PROCEED_ANYWAY
+          [[ "${_PROCEED_ANYWAY:-N}" != "y" && "${_PROCEED_ANYWAY:-N}" != "Y" ]] && { printf 'Aborting.\n'; exit 1; }
+        fi
+      fi
     fi
     printf '[preflight] Checking ECR for current commit (%s)... ' "${_LOCAL_SHA:-unknown}"
     if [[ -n "$_LOCAL_SHA" ]] && aws ecr describe-images --repository-name "ch-dash-app" \
