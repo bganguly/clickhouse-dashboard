@@ -169,11 +169,9 @@ else: print('unknown')
         printf '  build/push : %s\n' "$_step_build"
         printf '  migration  : %s\n' "$_step_migration"
         if [[ "$_step_migration" != "success" ]]; then
-          printf '\n  WARNING: ClickHouse migration step did not succeed (%s).\n' "$_step_migration"
-          printf '  Schema may be out of sync with the new image.\n'
-          printf '  Proceed anyway? [y/N]: '
-          read -r _PROCEED_ANYWAY
-          [[ "${_PROCEED_ANYWAY:-N}" != "y" && "${_PROCEED_ANYWAY:-N}" != "Y" ]] && { printf 'Aborting.\n'; exit 1; }
+          printf '\nERROR: ClickHouse migration step %s — aborting.\n' "$_step_migration"
+          printf '  Check the GH Actions log for details, fix the issue, then re-run deploy.sh.\n'
+          exit 1
         fi
       fi
     fi
