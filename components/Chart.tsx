@@ -284,7 +284,9 @@ function Chart({
           signal: controller.signal,
         });
         const _aggSrc = res.headers.get("X-Cache-Source") ?? "?";
-        if (diag) console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms src=${_aggSrc}`);
+        const _aggXcache = res.headers.get("X-Cache") ?? "";
+        const _aggCdn = _aggXcache ? ` cdn=${_aggXcache.split(" ")[0]}` : "";
+        if (diag) console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms src=${_aggSrc}${_aggCdn}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const aggJsonT0 = performance.now();
         const json: AggregatesResponse = await res.json();

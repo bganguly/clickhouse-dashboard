@@ -272,7 +272,9 @@ function SearchTable({
         });
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
         const _src = res.headers.get("X-Cache-Source") ?? "?";
-        if (diag) console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms src=${_src}`);
+        const _xcache = res.headers.get("X-Cache") ?? "";
+        const _cdn = _xcache ? ` cdn=${_xcache.split(" ")[0]}` : "";
+        if (diag) console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms src=${_src}${_cdn}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const jsonT0 = performance.now();
         const json: SearchResponse = await res.json();
