@@ -116,6 +116,16 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
   fi
   if [[ -n "$_PREFLIGHT_ARN" ]]; then
     _LOCAL_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo '')"
+    _LOCAL_MSG="$(git -C "$ROOT_DIR" log -1 --format='%s' 2>/dev/null || echo '')"
+    _LOCAL_AGO="$(git -C "$ROOT_DIR" log -1 --format='%ar' 2>/dev/null || echo '')"
+    printf '[preflight] HEAD commit : %s — "%s" (%s)\n' "${_LOCAL_SHA:-unknown}" "$_LOCAL_MSG" "$_LOCAL_AGO"
+    if command -v gh >/dev/null 2>&1; then
+      _GH_STATUS="$(gh run list --limit 1 \
+        --json status,conclusion,headSha,displayTitle \
+        --jq '.[0] | "\(.status)\(if .conclusion != "" and .conclusion != null then "/\(.conclusion)" else "" end) · \(.headSha[:7]) · \(.displayTitle)"' \
+        2>/dev/null || echo '')"
+      [[ -n "$_GH_STATUS" ]] && printf '[preflight] GH Actions  : %s\n' "$_GH_STATUS"
+    fi
     printf '[preflight] Checking ECR for current commit (%s)... ' "${_LOCAL_SHA:-unknown}"
     if [[ -n "$_LOCAL_SHA" ]] && aws ecr describe-images --repository-name "ch-dash-app" \
         --image-ids "imageTag=${_LOCAL_SHA}" >/dev/null 2>&1; then
