@@ -528,7 +528,7 @@ function BrushCard() {
   async function initBrush() {
     setPhase("loading");
     const today = new Date().toISOString().slice(0,10);
-    const ago   = new Date(Date.now()-365*864e5).toISOString().slice(0,10);
+    const ago   = "2020-01-01";
     try {
       const { json, ms } = await fetchTimed(`/api/aggregates?from=${ago}&to=${today}&topCategories=1`);
       const raw  = (json as Record<string,unknown>).data ?? json;

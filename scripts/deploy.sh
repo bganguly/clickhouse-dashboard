@@ -29,7 +29,17 @@ _ensure_diag_build_arg() {
     --image-ids "imageTag=${_WANT_TAG}" --query 'imageDetails[0].imageDigest' \
     --output text 2>/dev/null || echo 'missing')"
   if [[ "$_LATEST_DIGEST" != "$_WANT_DIGEST" || "$_WANT_DIGEST" == "missing" ]]; then
-    printf '  [build-arg mismatch] NEXT_PUBLIC_DIAG_LOGS baked into current image does not match requested value — pushing rebuild commit...\n'
+    printf '  [build-arg mismatch] NEXT_PUBLIC_DIAG_LOGS baked into current image does not match requested value\n'
+    local _FN_GH_REPO
+    _FN_GH_REPO="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
+      | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
+    if command -v gh >/dev/null 2>&1 && [[ -n "$_FN_GH_REPO" ]]; then
+      printf '%s' "${_DIAG_LOGS}" | gh secret set NEXT_PUBLIC_DIAG_LOGS --repo "$_FN_GH_REPO"
+      printf '  Synced NEXT_PUBLIC_DIAG_LOGS secret → pushing rebuild commit...\n'
+    else
+      printf '  (gh CLI not available — ensure NEXT_PUBLIC_DIAG_LOGS secret is set in GitHub Actions)\n'
+      printf '  Pushing rebuild commit...\n'
+    fi
     git -C "$ROOT_DIR" commit --allow-empty \
       -m "chore: rebuild for NEXT_PUBLIC_DIAG_LOGS=${_DIAG_LOGS}"
     git -C "$ROOT_DIR" push origin HEAD:main
