@@ -59,14 +59,27 @@ Materialized Views fire on INSERT into order_category_facts (written by createOr
 
 ## Constraints — ask before violating any of these
 
-### ClickHouse query budget
-- The free tier has a strict compute quota. Never add ClickHouse queries to any
-  high-frequency code path (called more than once per minute) without explicit approval.
-- /api/health MUST NOT query ClickHouse. It is called every 30 s by App Runner.
-  The instrumentation.ts keepalive (SELECT 1 every 8 min) is sufficient for CH warm-up.
-- Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
+Ordered from closest to the app outward: instrumentation → CDN → cache → DB.
 
-### Redis memory budget
+### Instrumentation (in-process, startup)
+- instrumentation.ts runs SELECT 1 every 8 min to keep ClickHouse warm. Do not
+  add a second keepalive or shorten this interval without approval.
+- /api/health MUST NOT query ClickHouse or Redis. It is polled every 30 s by
+  App Runner; the keepalive above is sufficient for warm-up.
+- Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
+- Every dashboard response must complete in < 1 s end-to-end. A code path slower
+  than 1 s is a bug, not a trade-off.
+- Any change to infra/main.tf requires a full deploy (option 2 in deploy.sh).
+  Never run terraform directly.
+
+### CDN (CloudFront — outermost layer before the app)
+- CloudFront is used as a caching layer for API responses, not just static assets.
+  Cache-Control headers on /api/orders and /api/aggregates must not be removed or
+  reduced without approval.
+- Never introduce approximate or estimated values (counts, totals) in place of exact
+  data without explicit approval.
+
+### Cache (Redis — between app and DB)
 - Upstash free tier hard limit: 256 MB. Safe operating budget: ≤ 150 MB.
 - Redis is for small, bounded payloads only (row lists, IDs, counts).
 - Never cache large aggregated datasets (charts, multi-dimensional rollups) in Redis.
@@ -76,24 +89,11 @@ Materialized Views fire on INSERT into order_category_facts (written by createOr
 - Before adding a new cache layer or raising a token limit, estimate per-entry byte size
   × number of entries and confirm it fits within 150 MB.
 - The Upstash instance must be in us-east-1 (same region as App Runner).
-
-### topCategories / topN
 - Never change the topCategories or topN cache key, default value, or lookup logic
   without explicit user approval.
 
-### Performance
-- Every dashboard response must complete in < 1 s end-to-end. A code path slower
-  than 1 s is a bug, not a trade-off.
+### DB (ClickHouse Cloud — furthest from the app)
+- The free tier has a strict compute quota. Never add ClickHouse queries to any
+  code path called more than once per minute without explicit approval.
 - Before switching a query from a pre-aggregated table to a live GROUP BY, stop and
   confirm the performance trade-off is acceptable.
-
-### CDN caching
-- CloudFront is used as a caching layer for API responses, not just static assets.
-  Cache-Control headers on /api/orders and /api/aggregates must not be removed or
-  reduced without approval.
-- Never introduce approximate or estimated values (counts, totals) in place of exact
-  data without explicit approval.
-
-### Infra changes
-- Any change to infra/main.tf requires a full deploy (option 2 in deploy.sh) to apply.
-  Do not suggest running terraform directly.
