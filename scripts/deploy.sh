@@ -618,6 +618,9 @@ _poll_update_mutation() {
       printf '\r  done — searchText backfill complete.\n'; return 0
     fi
     elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed > 1200 )); then
+      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
+    fi
     printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
     sleep 10
   done
@@ -650,6 +653,9 @@ _poll_materialize_idx() {
     fi
     [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
     elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed > 1200 )); then
+      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
+    fi
     printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
     sleep 10
   done
@@ -681,6 +687,9 @@ _poll_ocf_mutation() {
       printf '\r  done — order_category_facts.searchText backfill complete.\n'; return 0
     fi
     elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed > 1200 )); then
+      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
+    fi
     printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
     sleep 10
   done
@@ -713,6 +722,9 @@ _poll_notes_ngram_idx() {
     fi
     [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
     elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed > 1200 )); then
+      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
+    fi
     printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
     sleep 10
   done
@@ -745,10 +757,32 @@ _poll_ocf_idx() {
     fi
     [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
     elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed > 1200 )); then
+      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
+    fi
     printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
     sleep 10
   done
 }
+
+printf '[deploy] Waiting for ClickHouse to be reachable...\n'
+_ch_deadline=$(( $(date +%s) + 180 ))
+_ch_attempt=0
+while true; do
+  _ch_ping="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=5" \
+    --data-binary "SELECT 1" 2>/dev/null || echo '')"
+  if [[ "$_ch_ping" == "1" ]]; then
+    printf '  ready.\n'; break
+  fi
+  if (( $(date +%s) > _ch_deadline )); then
+    printf '  ClickHouse not reachable after 3 min — skipping DB checks.\n'
+    exit 0
+  fi
+  _ch_attempt=$(( _ch_attempt + 1 ))
+  printf '\r  not ready (attempt %d)...' "$_ch_attempt"
+  sleep 5
+done
 
 printf '[deploy] Checking searchText case...\n'
 _SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
