@@ -173,6 +173,7 @@ else: print('unknown')
           printf '  Check the GH Actions log for details, fix the issue, then re-run deploy.sh.\n'
           exit 1
         fi
+        _GH_RUN_ST="completed/${_gh_conclusion}"
       fi
     fi
     printf '[preflight] Checking ECR for current commit (%s)... ' "${_LOCAL_SHA:-unknown}"
@@ -180,7 +181,7 @@ else: print('unknown')
         --image-ids "imageTag=${_LOCAL_SHA}" >/dev/null 2>&1; then
       printf 'built\n'
       _OPTION3_LABEL="Quick  — redeploy ECR:latest direct to App Runner · HEAD=${_LOCAL_SHA} (${_LOCAL_AGO}) · skips Terraform/DB/migration checks"
-      if [[ "$_GH_RUN_ST" == *"success"* ]]; then
+      if [[ "$_GH_RUN_ST" == "completed/success" ]]; then
         _DEFAULT_CHOICE=3
       fi
     else
