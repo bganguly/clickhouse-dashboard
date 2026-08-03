@@ -179,7 +179,10 @@ else: print('unknown')
     if [[ -n "$_LOCAL_SHA" ]] && aws ecr describe-images --repository-name "ch-dash-app" \
         --image-ids "imageTag=${_LOCAL_SHA}" >/dev/null 2>&1; then
       printf 'built\n'
-      _OPTION3_LABEL="Quick  — redeploy ECR:latest direct to App Runner · HEAD=${_LOCAL_SHA} (${_LOCAL_AGO}) · CAUTION: skips Terraform/DB/migration checks; ECR:latest may be a prior build if GH Actions is still running"
+      _OPTION3_LABEL="Quick  — redeploy ECR:latest direct to App Runner · HEAD=${_LOCAL_SHA} (${_LOCAL_AGO}) · skips Terraform/DB/migration checks"
+      if [[ "$_GH_RUN_ST" == *"success"* ]]; then
+        _DEFAULT_CHOICE=3
+      fi
     else
       printf 'not built yet\n'
       _OPTION3_LABEL="Quick  — UNAVAILABLE · HEAD=${_LOCAL_SHA:-unknown} (${_LOCAL_AGO:-unknown age}) not yet in ECR — wait for GH Actions build to complete"
