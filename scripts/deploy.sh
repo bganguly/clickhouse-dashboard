@@ -49,6 +49,41 @@ _ensure_diag_build_arg() {
   return 0
 }
 
+_ch_cloud_start() {
+  local _KEY _HOSTNAME _ORG _SVC _RESP
+  _KEY="$(grep '^CLICKHOUSE_CLOUD_KEY=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+  [[ -z "$_KEY" ]] && return 0
+  _HOSTNAME="$(printf '%s' "${_CH_PREFLIGHT_URL:-}" | sed 's|https://||; s|:.*||')"
+  [[ -z "$_HOSTNAME" ]] && return 0
+  printf '  Calling ClickHouse Cloud API to start service...\n'
+  _ORG="$(curl -fsSL -X GET \
+    -H "Authorization: Basic $(printf '%s' "$_KEY" | base64)" \
+    "https://api.clickhouse.cloud/v1/organizations" 2>/dev/null \
+    | python3 -c "import sys,json;r=json.load(sys.stdin).get('result',[]); print(r[0]['id'] if r else '')" 2>/dev/null || echo '')"
+  if [[ -z "$_ORG" ]]; then
+    printf '  Could not resolve org ID — skipping API start.\n'; return 0
+  fi
+  _SVC="$(curl -fsSL -X GET \
+    -H "Authorization: Basic $(printf '%s' "$_KEY" | base64)" \
+    "https://api.clickhouse.cloud/v1/organizations/${_ORG}/services" 2>/dev/null \
+    | python3 -c "
+import sys, json
+for s in json.load(sys.stdin).get('result', []):
+    for ep in s.get('endpoints', []):
+        if '${_HOSTNAME}' in ep.get('hostname', ''):
+            print(s['id']); break
+" 2>/dev/null || echo '')"
+  if [[ -z "$_SVC" ]]; then
+    printf '  Could not find service for %s — skipping API start.\n' "$_HOSTNAME"; return 0
+  fi
+  _RESP="$(curl -sS -X PATCH \
+    -H "Authorization: Basic $(printf '%s' "$_KEY" | base64)" \
+    -H "Content-Type: application/json" \
+    "https://api.clickhouse.cloud/v1/organizations/${_ORG}/services/${_SVC}/state" \
+    -d '{"command":"start"}' 2>&1 || true)"
+  [[ -n "$_RESP" ]] && printf '  API: %s\n' "$_RESP"
+}
+
 _PREFLIGHT_ARN=""
 _PREFLIGHT_CDN=""
 _PREFLIGHT_CF=""
@@ -108,7 +143,8 @@ if [[ -n "$_CH_PREFLIGHT_URL" && -n "$_CH_PREFLIGHT_PASS" ]]; then
     printf 'reachable\n'
     _CH_PREWARMED=1
   else
-    printf 'paused — sending wake-up in background\n'
+    printf 'paused — attempting to start\n'
+    _ch_cloud_start
     curl -sf --max-time 60 -u "default:${_CH_PREFLIGHT_PASS}" \
       "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
       --data-binary "SELECT 1" >/dev/null 2>&1 &
@@ -235,7 +271,7 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
         fi
         _ch3_pre_remaining=$(( _ch3_pre_deadline - $(date +%s) ))
         if (( _ch3_pre_remaining <= 0 )); then
-          printf '  ClickHouse not reachable after 3 min — proceeding anyway.\n'; break
+          printf '\nERROR: ClickHouse not reachable after 3 min — aborting deploy.\n'; exit 1
         fi
         printf '\r  not ready (%ds remaining)...' "$_ch3_pre_remaining"
         sleep 10
@@ -278,7 +314,7 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
         fi
         _q3_remaining=$(( _q3_deadline - $(date +%s) ))
         if (( _q3_remaining <= 0 )); then
-          printf '  ClickHouse not reachable after 3 min — app may error until it resumes.\n'; break
+          printf '\nERROR: ClickHouse not reachable after 3 min — aborting deploy.\n'; exit 1
         fi
         printf '\r  not ready (%ds remaining)...' "$_q3_remaining"
         sleep 10
@@ -666,7 +702,7 @@ if [[ "$FIRST_DEPLOY" == "0" ]]; then
       fi
       _ch2_pre_remaining=$(( _ch2_pre_deadline - $(date +%s) ))
       if (( _ch2_pre_remaining <= 0 )); then
-        printf '  ClickHouse not reachable after 3 min — proceeding anyway.\n'; break
+        printf '\nERROR: ClickHouse not reachable after 3 min — aborting deploy.\n'; exit 1
       fi
       printf '\r  not ready (%ds remaining)...' "$_ch2_pre_remaining"
       sleep 10
