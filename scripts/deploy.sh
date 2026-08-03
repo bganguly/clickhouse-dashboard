@@ -190,11 +190,13 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
     _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
     if [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
       printf '  Deployment already in progress — waiting for it to finish before starting ours...\n'
+      _pre_t0=$(date +%s)
       while [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; do
         sleep 20
         _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-        printf '  %s...\n' "$_PRE_STATUS"
+        printf '\r  %s... (%ds)' "$_PRE_STATUS" $(( $(date +%s) - _pre_t0 ))
       done
+      printf '\n'
     fi
     if [[ "$_PRE_STATUS" != "RUNNING" ]]; then
       printf 'ERROR: App Runner in unexpected state: %s\n' "$_PRE_STATUS"; exit 1
@@ -202,11 +204,13 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
 
     printf '[quick] Starting App Runner deployment...\n'
     aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
+    _ar3_t0=$(date +%s)
     while true; do
       SVC_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-      if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '  Running.\n'; break; fi
-      if [[ "$SVC_STATUS" == "UPDATE_FAILED" ]]; then printf 'ERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
-      printf '  %s...\n' "$SVC_STATUS"; sleep 20
+      if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '\r  Running (%ds).  \n' $(( $(date +%s) - _ar3_t0 )); break; fi
+      if [[ "$SVC_STATUS" == "UPDATE_FAILED" ]]; then printf '\nERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
+      printf '\r  %s... (%ds)' "$SVC_STATUS" $(( $(date +%s) - _ar3_t0 ))
+      sleep 20
     done
 
     if [[ -n "${CF_DIST_ID:-}" ]]; then
@@ -602,21 +606,25 @@ if [[ "$FIRST_DEPLOY" == "0" ]]; then
   _PRE2_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
   if [[ "$_PRE2_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
     printf '  Deployment already in progress — waiting before starting ours...\n'
+    _pre2_t0=$(date +%s)
     while [[ "$_PRE2_STATUS" == "OPERATION_IN_PROGRESS" ]]; do
       sleep 20
       _PRE2_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-      printf '  %s...\n' "$_PRE2_STATUS"
+      printf '\r  %s... (%ds)' "$_PRE2_STATUS" $(( $(date +%s) - _pre2_t0 ))
     done
+    printf '\n'
   fi
   aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
 fi
 
+_ar2_t0=$(date +%s)
 while true; do
   SVC_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-  if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '  Running.\n'; break; fi
+  if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '\r  Running (%ds).  \n' $(( $(date +%s) - _ar2_t0 )); break; fi
   if [[ "$SVC_STATUS" == "CREATE_FAILED" || "$SVC_STATUS" == "UPDATE_FAILED" ]]; then
-    printf 'ERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
-  printf '  %s...\n' "$SVC_STATUS"; sleep 20
+    printf '\nERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
+  printf '\r  %s... (%ds)' "$SVC_STATUS" $(( $(date +%s) - _ar2_t0 ))
+  sleep 20
 done
 
 _poll_update_mutation() {
