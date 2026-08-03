@@ -219,6 +219,22 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
       --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
     _QUICK_BASE="${CDN_URL}"
     [[ -n "$_AR_SVC_URL" ]] && _QUICK_BASE="https://${_AR_SVC_URL}"
+
+    printf '[quick] Waiting for app to respond at %s...\n' "${CDN_URL:-$_QUICK_BASE}"
+    _qh_deadline=$(( $(date +%s) + 120 ))
+    while true; do
+      _qh="$(curl -sf "${_QUICK_BASE}/api/health" 2>/dev/null || echo '')"
+      if printf '%s' "$_qh" | grep -q '"ok"'; then
+        printf '  App is live.\n'; break
+      fi
+      _qh_remaining=$(( _qh_deadline - $(date +%s) ))
+      if (( _qh_remaining <= 0 )); then
+        printf '  Timed out — app may still be warming up (health checks run every 10 s).\n'; break
+      fi
+      printf '\r  not ready yet (%ds remaining)...' "$_qh_remaining"
+      sleep 10
+    done
+
     printf '\n  Dashboard: %s\n' "${CDN_URL:-$_QUICK_BASE}"
     exit 0
     ;;
@@ -358,6 +374,11 @@ fi
 printf '  Endpoint: %s\n' "$CLICKHOUSE_URL"
 export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
 export TF_VAR_clickhouse_password="$CH_PASS"
+
+printf '  Sending ClickHouse wake-up in background...\n'
+curl -sf -u "default:${CH_PASS}" \
+  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=5" \
+  --data-binary "SELECT 1" >/dev/null 2>&1 &
 
 if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
   printf '  Syncing ClickHouse credentials to GitHub Actions secrets...\n'
@@ -1100,6 +1121,21 @@ if [[ -n "$CF_DIST_ID" ]]; then
   aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
     --query 'Invalidation.Id' --output text
 fi
+
+printf '[deploy] Waiting for app to respond at %s...\n' "$CDN_URL"
+_dh_deadline=$(( $(date +%s) + 120 ))
+while true; do
+  _dh="$(curl -sf "${CDN_URL}/api/health" 2>/dev/null || echo '')"
+  if printf '%s' "$_dh" | grep -q '"ok"'; then
+    printf '  App is live.\n'; break
+  fi
+  _dh_remaining=$(( _dh_deadline - $(date +%s) ))
+  if (( _dh_remaining <= 0 )); then
+    printf '  Timed out — app may still be warming up (health checks run every 10 s).\n'; break
+  fi
+  printf '\r  not ready yet (%ds remaining)...' "$_dh_remaining"
+  sleep 10
+done
 
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
