@@ -53,6 +53,9 @@ _PREFLIGHT_ARN=""
 _PREFLIGHT_CDN=""
 _PREFLIGHT_CF=""
 _DEFAULT_CHOICE=2
+_CH_PREWARMED=0
+_CH_PREFLIGHT_URL=""
+_CH_PREFLIGHT_PASS=""
 
 printf '[preflight] Checking AWS credentials... '
 if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
@@ -92,6 +95,24 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
   fi
 else
   printf 'failed\n'
+fi
+
+_CH_PREFLIGHT_URL="$(grep '^CLICKHOUSE_URL=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+_CH_PREFLIGHT_PASS="$(grep '^CLICKHOUSE_PASSWORD=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+if [[ -n "$_CH_PREFLIGHT_URL" && -n "$_CH_PREFLIGHT_PASS" ]]; then
+  printf '[preflight] Checking ClickHouse reachability... '
+  _ch_pre_ping="$(curl -sf --max-time 8 -u "default:${_CH_PREFLIGHT_PASS}" \
+    "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
+    --data-binary "SELECT 1" 2>/dev/null || echo '')"
+  if [[ "$_ch_pre_ping" == "1" ]]; then
+    printf 'reachable\n'
+    _CH_PREWARMED=1
+  else
+    printf 'paused — sending wake-up in background\n'
+    curl -sf --max-time 60 -u "default:${_CH_PREFLIGHT_PASS}" \
+      "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
+      --data-binary "SELECT 1" >/dev/null 2>&1 &
+  fi
 fi
 
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
@@ -200,6 +221,25 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
     fi
     if [[ "$_PRE_STATUS" != "RUNNING" ]]; then
       printf 'ERROR: App Runner in unexpected state: %s\n' "$_PRE_STATUS"; exit 1
+    fi
+
+    if [[ "$_CH_PREWARMED" -eq 0 && -n "$_CH_PREFLIGHT_URL" && -n "$_CH_PREFLIGHT_PASS" ]]; then
+      printf '[quick] Waiting for ClickHouse before deployment...\n'
+      _ch3_pre_deadline=$(( $(date +%s) + 180 ))
+      while true; do
+        _ch3_pre_ping="$(curl -sf --max-time 8 -u "default:${_CH_PREFLIGHT_PASS}" \
+          "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
+          --data-binary "SELECT 1" 2>/dev/null || echo '')"
+        if [[ "$_ch3_pre_ping" == "1" ]]; then
+          printf '  ClickHouse ready.\n'; _CH_PREWARMED=1; break
+        fi
+        _ch3_pre_remaining=$(( _ch3_pre_deadline - $(date +%s) ))
+        if (( _ch3_pre_remaining <= 0 )); then
+          printf '  ClickHouse not reachable after 3 min — proceeding anyway.\n'; break
+        fi
+        printf '\r  not ready (%ds remaining)...' "$_ch3_pre_remaining"
+        sleep 10
+      done
     fi
 
     printf '[quick] Starting App Runner deployment...\n'
@@ -613,6 +653,24 @@ if [[ "$FIRST_DEPLOY" == "0" ]]; then
       printf '\r  %s... (%ds)' "$_PRE2_STATUS" $(( $(date +%s) - _pre2_t0 ))
     done
     printf '\n'
+  fi
+  if [[ "$_CH_PREWARMED" -eq 0 ]]; then
+    printf '[5/5] Waiting for ClickHouse before deployment...\n'
+    _ch2_pre_deadline=$(( $(date +%s) + 180 ))
+    while true; do
+      _ch2_pre_ping="$(curl -sf --max-time 8 -u "default:${CH_PASS}" \
+        "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=5" \
+        --data-binary "SELECT 1" 2>/dev/null || echo '')"
+      if [[ "$_ch2_pre_ping" == "1" ]]; then
+        printf '  ClickHouse ready.\n'; break
+      fi
+      _ch2_pre_remaining=$(( _ch2_pre_deadline - $(date +%s) ))
+      if (( _ch2_pre_remaining <= 0 )); then
+        printf '  ClickHouse not reachable after 3 min — proceeding anyway.\n'; break
+      fi
+      printf '\r  not ready (%ds remaining)...' "$_ch2_pre_remaining"
+      sleep 10
+    done
   fi
   aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
 fi
