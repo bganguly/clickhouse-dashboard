@@ -6,7 +6,12 @@ export async function register() {
 
   const { query } = await import("@/lib/clickhouse");
   const { ensureCollection } = await import("@/lib/typesense");
-  await ensureCollection().catch(() => {});
+  const { redis } = await import("@/lib/redis");
+
+  await Promise.allSettled([
+    ensureCollection(),
+    redis?.ping(),
+  ]);
 
   setInterval(() => {
     query("SELECT 1").catch(() => {});

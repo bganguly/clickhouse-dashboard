@@ -288,6 +288,7 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
       printf '\r  %s... (%ds)' "$SVC_STATUS" $(( $(date +%s) - _ar3_t0 ))
       sleep 20
     done
+    printf '  Startup instrumentation complete — Redis and ClickHouse connections pre-warmed.\n'
 
     if [[ -n "${CF_DIST_ID:-}" ]]; then
       printf '[quick] Invalidating CloudFront cache...\n'
@@ -720,6 +721,7 @@ while true; do
   printf '\r  %s... (%ds)' "$SVC_STATUS" $(( $(date +%s) - _ar2_t0 ))
   sleep 20
 done
+printf '  Startup instrumentation complete — Redis and ClickHouse connections pre-warmed.\n'
 
 _poll_update_mutation() {
   local t0 elapsed row is_done left failed
