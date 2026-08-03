@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createOrder, isAppError, listOrders, listOrdersByCursor } from "@/lib/services";
+import { createOrder, getDailyAggregates, getExactAggregateTotal, isAppError, listOrders, listOrdersByCursor } from "@/lib/services";
 import { diag } from "@/lib/diag";
 import type { CreateOrderInput } from "@/lib/types";
 
@@ -59,6 +59,10 @@ export async function GET(req: NextRequest) {
         })
       : await listOrders(baseInput, _diag);
     if (diag) console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}" src=${_diag.src}`);
+    void Promise.all([
+      getDailyAggregates({ q: baseInput.q, from: baseInput.from ?? "", to: baseInput.to ?? "", status: baseInput.status, regionCode: baseInput.regionCode, minTotal: baseInput.minTotal, maxTotal: baseInput.maxTotal, topCategories: null }),
+      getExactAggregateTotal({ q: baseInput.q, from: baseInput.from ?? "", to: baseInput.to ?? "", status: baseInput.status, regionCode: baseInput.regionCode, minTotal: baseInput.minTotal, maxTotal: baseInput.maxTotal, topCategories: null }),
+    ]).catch(() => {});
     return NextResponse.json(result, {
       headers: {
         "Cache-Control": "public, s-maxage=300, stale-while-revalidate=300",
