@@ -220,20 +220,26 @@ case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
     _QUICK_BASE="${CDN_URL}"
     [[ -n "$_AR_SVC_URL" ]] && _QUICK_BASE="https://${_AR_SVC_URL}"
 
-    printf '[quick] Waiting for app to respond at %s...\n' "${CDN_URL:-$_QUICK_BASE}"
-    _qh_deadline=$(( $(date +%s) + 120 ))
-    while true; do
-      _qh="$(curl -sf "${_QUICK_BASE}/api/health" 2>/dev/null || echo '')"
-      if printf '%s' "$_qh" | grep -q '"ok"'; then
-        printf '  App is live.\n'; break
-      fi
-      _qh_remaining=$(( _qh_deadline - $(date +%s) ))
-      if (( _qh_remaining <= 0 )); then
-        printf '  Timed out — app may still be warming up (health checks run every 10 s).\n'; break
-      fi
-      printf '\r  not ready yet (%ds remaining)...' "$_qh_remaining"
-      sleep 10
-    done
+    _Q3_CH_PASS="$(grep '^CLICKHOUSE_PASSWORD=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+    _Q3_CH_URL="$(grep '^CLICKHOUSE_URL=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+    if [[ -n "$_Q3_CH_PASS" && -n "$_Q3_CH_URL" ]]; then
+      printf '[quick] Waiting for ClickHouse to be reachable...\n'
+      _q3_deadline=$(( $(date +%s) + 180 ))
+      while true; do
+        _q3_ping="$(curl -sf -u "default:${_Q3_CH_PASS}" \
+          "${_Q3_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
+          --data-binary "SELECT 1" 2>/dev/null || echo '')"
+        if [[ "$_q3_ping" == "1" ]]; then
+          printf '  ClickHouse ready.\n'; break
+        fi
+        _q3_remaining=$(( _q3_deadline - $(date +%s) ))
+        if (( _q3_remaining <= 0 )); then
+          printf '  ClickHouse not reachable after 3 min — app may error until it resumes.\n'; break
+        fi
+        printf '\r  not ready (%ds remaining)...' "$_q3_remaining"
+        sleep 10
+      done
+    fi
 
     printf '\n  Dashboard: %s\n' "${CDN_URL:-$_QUICK_BASE}"
     exit 0
@@ -1121,21 +1127,6 @@ if [[ -n "$CF_DIST_ID" ]]; then
   aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
     --query 'Invalidation.Id' --output text
 fi
-
-printf '[deploy] Waiting for app to respond at %s...\n' "$CDN_URL"
-_dh_deadline=$(( $(date +%s) + 120 ))
-while true; do
-  _dh="$(curl -sf "${CDN_URL}/api/health" 2>/dev/null || echo '')"
-  if printf '%s' "$_dh" | grep -q '"ok"'; then
-    printf '  App is live.\n'; break
-  fi
-  _dh_remaining=$(( _dh_deadline - $(date +%s) ))
-  if (( _dh_remaining <= 0 )); then
-    printf '  Timed out — app may still be warming up (health checks run every 10 s).\n'; break
-  fi
-  printf '\r  not ready yet (%ds remaining)...' "$_dh_remaining"
-  sleep 10
-done
 
 printf '\n  Dashboard: %s\n' "$CDN_URL"
 printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
