@@ -291,7 +291,7 @@ function Chart({
             : _aggSrc === "ch"    ? "cdn=Miss mem=Miss redis=Miss"
             : `cdn=Miss src=${_aggSrc}`
           : `src=${_aggSrc}`;
-        if (diag) console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms ${_aggCacheLabel}`);
+        if (diag) console.log(`[perf:client] ← /api/aggregates ${_aggCacheLabel} fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const aggJsonT0 = performance.now();
         const json: AggregatesResponse = await res.json();

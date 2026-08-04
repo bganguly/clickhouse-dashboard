@@ -281,7 +281,7 @@ function SearchTable({
             : _src === "ch"    ? "cdn=Miss mem=Miss redis=Miss"
             : `cdn=Miss src=${_src}`
           : `src=${_src}`;
-        if (diag) console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms ${_cacheLabel}`);
+        if (diag) console.log(`[perf:client] ← /api/orders ${_cacheLabel} fetch=${fetchMs}ms counter=${searchPerf.counter()}ms`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const jsonT0 = performance.now();
         const json: SearchResponse = await res.json();
