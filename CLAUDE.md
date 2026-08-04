@@ -52,7 +52,7 @@ Materialized Views fire on INSERT into order_category_facts (written by createOr
 - SSE: in-process EventEmitter (no LISTEN/NOTIFY), heartbeat every 25s
 - Search: hasToken / positionCaseInsensitive on denormalized searchText column; Typesense for prefix expansion
 - Pagination: keyset cursor (placedAt, orderId) for default sort; OFFSET for other sorts
-- CDN caching: CloudFront caches /api/orders (s-maxage=300) and /api/aggregates (s-maxage=300, swr=600)
+- CDN caching: CloudFront caches /api/orders (s-maxage=300) and /api/aggregates (s-maxage=300, swr=600); cache key = exact URL including param order
 - Diag: NEXT_PUBLIC_DIAG_LOGS enables [perf:client] / [search-cache] / [agg-cache] / [ch] console logs
 
 ---
@@ -70,11 +70,9 @@ Instrumentation (startup, not on the hot path) is listed last.
   data without explicit approval.
 - deploy.sh already runs `aws cloudfront create-invalidation --paths "/*"` after
   every deploy (both option 2 and option 3). Do not add a second invalidation call.
-- CDN cache key = exact URL including param order. The api-explorer fire-and-forget
-  calls in app/api-explorer/page.tsx must use the exact same URL structure as the
-  main UI (Chart.tsx / SearchTable.tsx) so CDN keys align. Canonical forms:
-    /api/orders:     q=<term>&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=<today>
-    /api/aggregates: q=<term>&from=2024-07-17&to=<today>&topCategories=4
+- The api-explorer fire-and-forget calls in app/api-explorer/page.tsx must use the
+  exact same URL structure as the main UI (Chart.tsx / SearchTable.tsx) so CDN keys
+  align. See "Cache key reference" below for canonical forms.
   If you change how Chart.tsx or SearchTable.tsx builds its URL, update the
   fire-and-forget URLs in api-explorer/page.tsx to match.
 
@@ -98,22 +96,14 @@ Instrumentation (startup, not on the hot path) is listed last.
 
 ### Cache key reference
 
-CDN key = exact URL string (param order matters):
+One row per API endpoint. CDN key = exact URL string (param order matters).
+App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant).
 
-    /api/orders:     q=<term>&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=<today>
-    /api/aggregates: q=<term>&from=2024-07-17&to=<today>&topCategories=4
-
-In-process Map + Redis key = JSON-serialised param object (param order irrelevant):
-
-    Data                 Key
-    ─────────────────────────────────────────────────────────────────────────────────────────────────────
-    Orders rows          search:rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}
-    Orders count         search:count:{q, statuses, regionCodes, from, to, minTotal, maxTotal, hasAny}
-    Aggregates series    agg:data:{q, status, regionCode, minTotal, maxTotal, topCategories}
-    Aggregates total     agg:total:{q, status, regionCode, minTotal, maxTotal, topCategories}
-
-Aggregates keys omit from/to — the same series is reused across date ranges when
-q/filters/topN match. Orders keys include from/to because row content changes with the date window.
+| Endpoint | CDN canonical URL | App cache key fields | from/to in app key | API Explorer constraint |
+|---|---|---|---|---|
+| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}` | **included** (null when no filter) | omit from/to — main UI sends no date by default, so keys have from:null, to:null |
+| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `data:{q, status, regionCode, minTotal, maxTotal, topCategories}` | **excluded** (all date ranges share one entry per q+topN) | include `q=` even when empty; include from/to (route rejects requests without them) |
+| `/api/customers` | `q=<t>&limit=20` | `cust:{q, limit, cursor, regionId}` | n/a | no main-UI equivalent; warms its own entries |
 
 ### DB (ClickHouse Cloud — reached only after all cache misses)
 - The free tier has a strict compute quota. Never add ClickHouse queries to any

@@ -31,15 +31,13 @@ CloudFront CDN  →  in-process Map (mem, Node.js process)  →  Upstash Redis  
   s-maxage=300       MAX_ENTRIES=500, TTL=90d                  TTL=90d
 ```
 
-Cache key constraints:
+CDN key = exact URL including param order. App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
 
-| Endpoint | App cache key fields | CDN key |
-|---|---|---|
-| `/api/orders` | `q`, `page`, `pageSize`, `sort`, `dir`, `status`, `regionCode`, `from`, `to`, `minTotal`, `maxTotal` (all serialized; nulls for absent filters) | full URL including query string |
-| `/api/aggregates` | `q`, `topCategories` only — **`from`/`to` are intentionally excluded** so all date ranges sharing the same query share one cache entry | full URL including query string (so `q=` must be present to match the main chart's CDN key) |
-| `/api/customers` | `q`, `limit`, `cursor`, `regionId` | full URL |
-
-**API Explorer cache alignment**: the Orders and Search cards omit `from`/`to` to match the main dashboard's unfiltered cache keys (`from: null, to: null`). The Aggregates card includes `q=` so its CDN key matches the main chart. The Customers and Brush cards have no main-dashboard equivalent and warm their own independent cache entries.
+| Endpoint | CDN canonical URL | App cache key fields | from/to in app key |
+|---|---|---|---|
+| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal` | **included** — null when no date filter |
+| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `q, status, regionCode, minTotal, maxTotal, topCategories` | **excluded** — all date ranges with the same q+topN share one cache entry |
+| `/api/customers` | `q=<t>&limit=20` | `q, limit, cursor, regionId` | n/a |
 
 ---
 
