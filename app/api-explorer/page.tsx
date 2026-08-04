@@ -291,9 +291,9 @@ function OrdersCard() {
   async function run() {
     setLoading(true); setErr(null); setRes(null); setCountTotal(null);
     try {
-      const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=${new Date().toISOString().slice(0,10)}`);
+      const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc`);
       setRes(result);
-      fetch(`/api/aggregates?q=&from=2024-07-17&to=${new Date().toISOString().slice(0,10)}&topCategories=4`).catch(() => {});
+      fetch(`/api/aggregates?topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
         setCountLoading(true);
@@ -344,9 +344,9 @@ function SearchCard() {
     setL(true); setErr(null); setRes(null); setCountTotal(null);
     try {
       const term = q.trim();
-      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=${new Date().toISOString().slice(0,10)}`);
+      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc`);
       setRes(result);
-      fetch(`/api/aggregates?q=${encodeURIComponent(term)}&from=2024-07-17&to=${new Date().toISOString().slice(0,10)}&topCategories=4`).catch(() => {});
+      fetch(`/api/aggregates?q=${encodeURIComponent(term)}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
         setCountLoading(true);
