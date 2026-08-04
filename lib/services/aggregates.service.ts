@@ -67,7 +67,7 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
       ? Math.trunc(query_in.topCategories)
       : DEFAULT_TOP_CATEGORIES;
 
-  const { from: _f, to: _t, ...keyFields } = query_in;
+  const { ...keyFields } = query_in;
   const cacheKey = `data:${JSON.stringify({ ...keyFields, topCategories: topN })}`;
   const _seriesT0 = Date.now();
   const _seriesSrc = { value: "ch" };
@@ -141,7 +141,7 @@ export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?:
     query_in.topCategories != null && query_in.topCategories > 0
       ? Math.trunc(query_in.topCategories)
       : DEFAULT_TOP_CATEGORIES;
-  const { from: _f2, to: _t2, ...totalKeyFields } = query_in;
+  const { ...totalKeyFields } = query_in;
   const inProcKey = `total:${JSON.stringify({ ...totalKeyFields, topCategories: resolvedTopN })}`;
   const _totalT0 = Date.now();
   const _totalSrc = { value: "ch" };

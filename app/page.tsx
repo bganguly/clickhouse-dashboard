@@ -26,6 +26,14 @@ import FilterSidebar, {
   type RegionOption,
 } from "@/components/FilterSidebar";
 
+function defaultDashboardFilters(): OrderFilters {
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - 90);
+  const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+  return { ...EMPTY_FILTERS, from: isoDay(from), to: isoDay(to) };
+}
+
 function mergeRegions(prev: RegionOption[], incoming: RegionOption[]): RegionOption[] {
   const map = new Map(prev.map((r) => [r.code, r]));
   let changed = false;
@@ -56,7 +64,7 @@ export default function Dashboard() {
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [liveEnabled, setLiveEnabled] = useState(false);
   const [quickOrderUnavailable, setQuickOrderUnavailable] = useState(false);
-  const [filters, setFilters] = useState<OrderFilters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<OrderFilters>(defaultDashboardFilters);
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [chartTotal, setChartTotal] = useState<number | null>(null);
