@@ -73,6 +73,8 @@ interface FilterSidebarProps {
   onChange: (next: OrderFilters) => void;
   /** Regions with display names (from /api/regions, falling back to discovered). */
   regionOptions: RegionOption[];
+  /** Dataset date bounds from /api/dataset-bounds. "All time" uses these. */
+  datasetBounds?: { from: string; to: string } | null;
 }
 
 interface Chip {
@@ -246,6 +248,7 @@ export default function FilterSidebar({
   value,
   onChange,
   regionOptions,
+  datasetBounds,
 }: FilterSidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -380,12 +383,22 @@ export default function FilterSidebar({
         <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-500">
           <input
             type="checkbox"
-            checked={value.from === "2024-07-17"}
-            onChange={(e) =>
-              e.target.checked
-                ? patch({ from: "2024-07-17", to: "" })
-                : patch({ from: "", to: "" })
+            disabled={!datasetBounds}
+            checked={
+              !!datasetBounds &&
+              value.from === datasetBounds.from &&
+              value.to === datasetBounds.to
             }
+            onChange={(e) => {
+              if (!datasetBounds) return;
+              if (e.target.checked) {
+                patch({ from: datasetBounds.from, to: datasetBounds.to });
+              } else {
+                const d = new Date(`${datasetBounds.to}T00:00:00Z`);
+                d.setUTCDate(d.getUTCDate() - 90);
+                patch({ from: d.toISOString().slice(0, 10), to: datasetBounds.to });
+              }
+            }}
             className="h-3.5 w-3.5 rounded accent-indigo-500"
           />
           All time

@@ -1204,12 +1204,19 @@ _finalize_deploy() {
 
   if [[ -n "${CDN_URL:-}" ]]; then
     printf '\n  Priming CDN cache for default 90-day view...\n'
-    local _today _from90
-    _today=$(python3 -c "from datetime import date; print(date.today().isoformat())")
-    _from90=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=90)).isoformat())")
-    curl -sf "${CDN_URL}/api/aggregates?q=&from=${_from90}&to=${_today}&topCategories=4" >/dev/null \
+    local _max_date _from90
+    _max_date=$(curl -sf "${CDN_URL}/api/dataset-bounds" \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('to',''))" 2>/dev/null || true)
+    if [[ -z "$_max_date" ]]; then
+      _max_date=$(python3 -c "from datetime import date; print(date.today().isoformat())")
+      printf '  (dataset-bounds unavailable — using today as fallback)\n'
+    else
+      printf '  dataset max date: %s\n' "$_max_date"
+    fi
+    _from90=$(python3 -c "from datetime import date, timedelta; print((date.fromisoformat('${_max_date}') - timedelta(days=90)).isoformat())")
+    curl -sf "${CDN_URL}/api/aggregates?q=&from=${_from90}&to=${_max_date}&topCategories=4" >/dev/null \
       && printf '  aggregates (90d): primed\n' || printf '  aggregates (90d): skipped (not ready)\n'
-    curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_today}&facets=1" >/dev/null \
+    curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_max_date}&facets=1" >/dev/null \
       && printf '  orders (90d):     primed\n' || printf '  orders (90d):     skipped (not ready)\n'
   fi
 

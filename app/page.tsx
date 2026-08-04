@@ -26,14 +26,6 @@ import FilterSidebar, {
   type RegionOption,
 } from "@/components/FilterSidebar";
 
-function defaultDashboardFilters(): OrderFilters {
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(from.getDate() - 90);
-  const isoDay = (d: Date) => d.toISOString().slice(0, 10);
-  return { ...EMPTY_FILTERS, from: isoDay(from), to: isoDay(to) };
-}
-
 function mergeRegions(prev: RegionOption[], incoming: RegionOption[]): RegionOption[] {
   const map = new Map(prev.map((r) => [r.code, r]));
   let changed = false;
@@ -64,7 +56,8 @@ export default function Dashboard() {
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [liveEnabled, setLiveEnabled] = useState(false);
   const [quickOrderUnavailable, setQuickOrderUnavailable] = useState(false);
-  const [filters, setFilters] = useState<OrderFilters>(defaultDashboardFilters);
+  const [datasetBounds, setDatasetBounds] = useState<{ from: string; to: string } | null>(null);
+  const [filters, setFilters] = useState<OrderFilters>(EMPTY_FILTERS);
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [chartTotal, setChartTotal] = useState<number | null>(null);
@@ -149,6 +142,30 @@ export default function Dashboard() {
 
   useEffect(() => {
     let cancelled = false;
+    fetch("/api/dataset-bounds")
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((bounds: { from: string; to: string }) => {
+        if (cancelled) return;
+        setDatasetBounds(bounds);
+        const d = new Date(`${bounds.to}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() - 90);
+        const from = d.toISOString().slice(0, 10);
+        setFilters((f) => ({ ...f, from, to: bounds.to }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const to = new Date().toISOString().slice(0, 10);
+        const d = new Date();
+        d.setDate(d.getDate() - 90);
+        const from = d.toISOString().slice(0, 10);
+        setDatasetBounds({ from: "2024-07-17", to });
+        setFilters((f) => ({ ...f, from, to }));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     fetch("/api/regions")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
       .then((data: RegionOption[]) => {
@@ -226,11 +243,14 @@ export default function Dashboard() {
         </header>
 
         <div className="flex flex-col gap-6 lg:flex-row">
-          <FilterSidebar value={filters} onChange={setFilters} regionOptions={regionOptions} />
+          <FilterSidebar value={filters} onChange={setFilters} regionOptions={regionOptions} datasetBounds={datasetBounds} />
 
           <div className="min-w-0 flex-1">
             <div className="grid grid-cols-1 gap-6">
               <div className="space-y-6">
+                {!datasetBounds ? (
+                  <div className="h-96 animate-pulse rounded-lg border border-gray-200 bg-gray-100 dark:border-gray-800 dark:bg-gray-900" />
+                ) : (
                 <Chart
                   refreshSignal={refreshSignal}
                   filters={filters}
@@ -244,6 +264,7 @@ export default function Dashboard() {
                   externalTotal={chartTotal}
                   onLoadingChange={handleChartLoading}
                 />
+                )}
                 <SearchTable
                   refreshSignal={refreshSignal}
                   filters={filters}
