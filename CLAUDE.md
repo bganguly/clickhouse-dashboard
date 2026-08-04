@@ -74,7 +74,7 @@ Instrumentation (startup, not on the hot path) is listed last.
   calls in app/api-explorer/page.tsx must use the exact same URL structure as the
   main UI (Chart.tsx / SearchTable.tsx) so CDN keys align. Canonical forms:
     /api/orders:     q=<term>&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=<today>
-    /api/aggregates: from=2024-07-17&to=<today>&topCategories=4[&q=<term>]  (q always last)
+    /api/aggregates: q=<term>&from=2024-07-17&to=<today>&topCategories=4
   If you change how Chart.tsx or SearchTable.tsx builds its URL, update the
   fire-and-forget URLs in api-explorer/page.tsx to match.
 
@@ -101,7 +101,7 @@ Instrumentation (startup, not on the hot path) is listed last.
 CDN key = exact URL string (param order matters):
 
     /api/orders:     q=<term>&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=<today>
-    /api/aggregates: from=2024-07-17&to=<today>&topCategories=4[&q=<term>]   ← q always last
+    /api/aggregates: q=<term>&from=2024-07-17&to=<today>&topCategories=4
 
 In-process Map + Redis key = JSON-serialised param object (param order irrelevant):
 

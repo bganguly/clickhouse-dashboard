@@ -248,15 +248,13 @@ function Chart({
     async (from: string, to: string) => {
       // A date filter, if set, overrides the brush/default range; the other
       // filters (status, region, total) narrow the same set as the table.
-      const params = new URLSearchParams({
-        from: filters?.from || from,
-        to: filters?.to || to,
-      });
+      const params = new URLSearchParams();
+      params.set("q", searchQuery || "");
+      params.set("from", filters?.from || from);
+      params.set("to", filters?.to || to);
       params.set("topCategories", String(topN));
       // Sets status/regionCode/minTotal/maxTotal (and from/to if filtered).
       appendFilterParams(params, filters);
-      // Narrow to the active text search, matching the orders table.
-      if (searchQuery) params.set("q", searchQuery);
       const requestKey = params.toString();
       if (requestKey === lastRequestKeyRef.current) return;
       lastRequestKeyRef.current = requestKey;
