@@ -216,13 +216,8 @@ codes if this endpoint is unavailable.
 
 ## GET /api/stream
 
-Server-Sent Events backed by Postgres `LISTEN/NOTIFY` on channel
-`orders_channel`. `Content-Type: text/event-stream`.
-
-> **Connection:** the raw `pg` driver needs a standard `postgresql://` URL via
-> `DIRECT_DATABASE_URL` (or `PG_URL`). `DATABASE_URL` must also be a standard
-> `postgresql://` URL — this project's Prisma datasource is plain `postgresql`,
-> not the `prisma+postgres://` proxy. See `lib/pg-url.ts`.
+Server-Sent Events backed by an in-process Node.js `EventEmitter` (no database
+polling). `Content-Type: text/event-stream`.
 
 ### Events
 

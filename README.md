@@ -1,4 +1,4 @@
-# clickhouse-dashboard — Next.js + ClickHouse Cloud
+# clickhouse-dashboard — 50M orders · Next.js + ClickHouse Cloud
 
 Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard delivering sub-second search
 and chart responses across 50 M orders: full-text search via Typesense prefix expansion + ClickHouse
