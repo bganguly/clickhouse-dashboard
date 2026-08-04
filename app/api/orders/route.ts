@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
     if (diag) console.log(`[api/orders] total=${Date.now() - _routeT0}ms q="${_q}" src=${_diag.src}`);
     return NextResponse.json(result, {
       headers: {
-        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=300",
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
         "X-Cache-Source": _diag.src,
       },
     });
