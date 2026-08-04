@@ -78,6 +78,15 @@ Ordered from closest to the app outward: instrumentation → CDN → cache → D
   reduced without approval.
 - Never introduce approximate or estimated values (counts, totals) in place of exact
   data without explicit approval.
+- deploy.sh already runs `aws cloudfront create-invalidation --paths "/*"` after
+  every deploy (both option 2 and option 3). Do not add a second invalidation call.
+- CDN cache key = exact URL including param order. The api-explorer fire-and-forget
+  calls in app/api-explorer/page.tsx must use the exact same URL structure as the
+  main UI (Chart.tsx / SearchTable.tsx) so CDN keys align. Canonical forms:
+    /api/orders:     q=<term>&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=<today>
+    /api/aggregates: from=2024-07-17&to=<today>&topCategories=4[&q=<term>]  (q always last)
+  If you change how Chart.tsx or SearchTable.tsx builds its URL, update the
+  fire-and-forget URLs in api-explorer/page.tsx to match.
 
 ### Cache (Redis — between app and DB)
 - Upstash free tier hard limit: 256 MB. Safe operating budget: ≤ 150 MB.
