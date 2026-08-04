@@ -169,7 +169,6 @@ function SearchTable({
   onLoadingChange,
   onSearchStart,
 }: SearchTableProps) {
-  const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [page, setPage] = useState(1);
@@ -190,6 +189,7 @@ function SearchTable({
 
   useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
 
+  const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isControlled = onRequestStateChange != null;
 
@@ -604,10 +604,10 @@ function SearchTable({
       <div className="relative mb-3">
         <input
           data-testid="search-input"
+          ref={inputRef}
           type="search"
-          value={query}
+          defaultValue=""
           onChange={(e) => {
-            setQuery(e.target.value);
             if (e.target.value === "") {
               if (diag) console.log("[perf:client] ✕ query cleared — COUNTER STARTS (0ms)");
               onSearchStart?.();
@@ -618,13 +618,13 @@ function SearchTable({
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
-              const trimmed = query.trim();
+              const trimmed = (inputRef.current?.value ?? "").trim();
               if (trimmed === debouncedQuery.trim()) return;
               if (diag) console.log(`[perf:client] ⌨️  Enter q="${trimmed}" — COUNTER STARTS (0ms)`);
               onSearchStart?.();
               onQueryChange?.(trimmed);
               setPendingSearch(true);
-              setDebouncedQuery(query);
+              setDebouncedQuery(trimmed);
               setPage(1);
             }
           }}
