@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchPerf } from "@/lib/search-perf";
 import { diag } from "@/lib/diag";
 import {
@@ -220,15 +220,6 @@ function Chart({
   // order lands (Task 17) — the visible companion to the in-place patch above.
   const [flashSlug, setFlashSlug] = useState<string | null>(null);
   const [showOthers, setShowOthers] = useState(false);
-  const [previewSvg, setPreviewSvg] = useState<string>("");
-
-  useEffect(() => {
-    const q = searchQuery ?? "";
-    fetch(`/api/chart-svg?q=${encodeURIComponent(q)}`)
-      .then((r) => (r.ok ? r.text() : ""))
-      .then((svg) => setPreviewSvg(svg))
-      .catch(() => {});
-  }, [searchQuery]);
 
   useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
 
@@ -310,10 +301,8 @@ function Chart({
         // guard, a slower stale response can land after and silently
         // overwrite the correct state from the request that superseded it.
         if (abortRef.current !== controller) return;
-        startTransition(() => {
-          setRawData(Array.isArray(json.data) ? json.data : []);
-          setApiTotal(json.totalOrders ?? null);
-        });
+        setRawData(Array.isArray(json.data) ? json.data : []);
+        setApiTotal(json.totalOrders ?? null);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         if (abortRef.current !== controller) return;
@@ -640,17 +629,9 @@ function Chart({
         </div>
       ) : buckets.length === 0 ? (
         <div className="flex h-72 items-center justify-center text-sm text-gray-400">
-          {(isControlled ? controlledLoading : loading) && previewSvg ? (
-            <img
-              src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(previewSvg)}`}
-              className="h-full w-full object-contain opacity-40"
-              aria-hidden
-            />
-          ) : (isControlled ? controlledLoading : loading) ? (
-            "Loading…"
-          ) : (
-            "No data for this range."
-          )}
+          {(isControlled ? controlledLoading : loading)
+            ? "Loading…"
+            : "No data for this range."}
         </div>
       ) : (
         <>
