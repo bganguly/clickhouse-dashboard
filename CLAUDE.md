@@ -105,16 +105,15 @@ CDN key = exact URL string (param order matters):
 
 In-process Map + Redis key = JSON-serialised param object (param order irrelevant):
 
-    Data                 Key prefix + fields                                       from/to?
-    ─────────────────────────────────────────────────────────────────────────────────────────
-    Orders rows          search:rows:{q, page, pageSize, sort, dir, from, to, …}  YES
-    Orders count         search:count:{q, statuses, regionCodes, from, to, …}     YES
-    Aggregates series    agg:data:{q, status, topCategories, …}                   NO
-    Aggregates total     agg:total:{q, status, topCategories, …}                  NO
+    Data                 Key
+    ─────────────────────────────────────────────────────────────────────────────────────────────────────
+    Orders rows          search:rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}
+    Orders count         search:count:{q, statuses, regionCodes, from, to, minTotal, maxTotal, hasAny}
+    Aggregates series    agg:data:{q, status, regionCode, minTotal, maxTotal, topCategories}
+    Aggregates total     agg:total:{q, status, regionCode, minTotal, maxTotal, topCategories}
 
-Aggregates keys omit from/to intentionally — the same series is reused across date
-ranges when q/filters/topN are identical. Orders keys include from/to because the
-result rows change with the date window.
+Aggregates keys omit from/to — the same series is reused across date ranges when
+q/filters/topN match. Orders keys include from/to because row content changes with the date window.
 
 ### DB (ClickHouse Cloud — reached only after all cache misses)
 - The free tier has a strict compute quota. Never add ClickHouse queries to any
