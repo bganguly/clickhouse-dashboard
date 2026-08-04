@@ -33,11 +33,11 @@ CloudFront CDN  →  in-process Map (mem, Node.js process)  →  Upstash Redis  
 
 CDN key = exact URL including param order. App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
 
-| Endpoint | CDN canonical URL | App cache key fields | from/to in app key |
-|---|---|---|---|
-| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal` | **included** — null when no date filter |
-| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `q, status, regionCode, minTotal, maxTotal, topCategories` | **excluded** — all date ranges with the same q+topN share one cache entry |
-| `/api/customers` | `q=<t>&limit=20` | `q, limit, cursor, regionId` | n/a |
+| Endpoint | CDN canonical URL | App cache key fields |
+|---|---|---|
+| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal` |
+| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `q, status, regionCode, minTotal, maxTotal, topCategories` |
+| `/api/customers` | `q=<t>&limit=20` | `q, limit, cursor, regionId` |
 
 ---
 
