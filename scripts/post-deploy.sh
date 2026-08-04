@@ -6,6 +6,12 @@ set -euo pipefail
 CH_PASS="$CLICKHOUSE_PASSWORD"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+_CH_DUMP_BUCKET="bikram-nextjs-subsecond-fetch-with-websockets"
+_CH_DUMP_S3_KEY="clickhouse-dash/orders.parquet"
+_CH_DUMP_S3_PREFIX="https://s3.us-east-1.amazonaws.com/${_CH_DUMP_BUCKET}/clickhouse-dash"
+
+# ── Poll helpers ──────────────────────────────────────────────────────────────
+
 _poll_update_mutation() {
   local t0 elapsed row is_done left failed
   t0=$(date +%s)
@@ -38,7 +44,7 @@ _poll_update_mutation() {
 }
 
 _poll_materialize_idx() {
-  local t0 elapsed total left done_parts pct eta row is_done failed
+  local t0 elapsed total left row is_done failed
   t0=$(date +%s); total=0
   for _w in $(seq 1 12); do
     sleep 5
@@ -83,26 +89,29 @@ _poll_count() {
   printf '\n'
 }
 
-_CH_DUMP_BUCKET="bikram-nextjs-subsecond-fetch-with-websockets"
-_CH_DUMP_S3_KEY="clickhouse-dash/orders.parquet"
-_CH_DUMP_S3_PREFIX="https://s3.us-east-1.amazonaws.com/${_CH_DUMP_BUCKET}/clickhouse-dash"
+# ── Checks ────────────────────────────────────────────────────────────────────
 
-printf '[post-deploy] Checking S3 Parquet dump...\n'
-if aws s3 ls "s3://${_CH_DUMP_BUCKET}/${_CH_DUMP_S3_KEY}" >/dev/null 2>&1; then
-  printf '  Dump exists.\n'
-else
-  printf '  No dump — baking 50M rows to S3...\n'
-  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
-    bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
-fi
+_check_s3_dump() {
+  printf '[post-deploy] Checking S3 Parquet dump...\n'
+  if aws s3 ls "s3://${_CH_DUMP_BUCKET}/${_CH_DUMP_S3_KEY}" >/dev/null 2>&1; then
+    printf '  Dump exists.\n'
+  else
+    printf '  No dump — baking 50M rows to S3...\n'
+    CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
+      bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
+  fi
+}
 
-printf '[post-deploy] Checking demo data...\n'
-_SEED_COUNT="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary 'SELECT count() FROM orders' 2>/dev/null || echo 0)"
-if [[ "${_SEED_COUNT:-0}" -gt 0 ]]; then
-  printf '  orders: %s rows — skipping seed.\n' "$_SEED_COUNT"
-else
+_check_seed() {
+  printf '[post-deploy] Checking demo data...\n'
+  local _SEED_COUNT _PID _t0 _cur
+  _SEED_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary 'SELECT count() FROM orders' 2>/dev/null || echo 0)"
+  if [[ "${_SEED_COUNT:-0}" -gt 0 ]]; then
+    printf '  orders: %s rows — skipping seed.\n' "$_SEED_COUNT"
+    return 0
+  fi
   printf '  orders empty — seeding from S3 dump...\n'
   CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
   CH_DUMP_S3_PREFIX="$_CH_DUMP_S3_PREFIX" \
@@ -117,27 +126,31 @@ else
   done
   printf '\n'
   wait "$_PID"
-fi
+}
 
-printf '[post-deploy] Checking name dictionary...\n'
-_NAME_UNIQ="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT uniqExact(customerFirstName) FROM orders" 2>/dev/null || echo 0)"
-if [[ "${_NAME_UNIQ:-0}" -lt 50 ]]; then
+_check_names() {
+  printf '[post-deploy] Checking name dictionary...\n'
+  local _NAME_UNIQ
+  _NAME_UNIQ="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT uniqExact(customerFirstName) FROM orders" 2>/dev/null || echo 0)"
+  [[ "${_NAME_UNIQ:-0}" -ge 50 ]] && return 0
   printf '  Only %s distinct names — reseeding...\n' "$_NAME_UNIQ"
   CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
   SEED_FORCE=1 CH_DUMP_S3_PREFIX='' \
     bash "$ROOT_DIR/scripts/seed.sh"
-  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER=default CLICKHOUSE_PASSWORD="$CH_PASS" \
+  CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS" \
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
-fi
+}
 
-printf '[post-deploy] Checking searchText case...\n'
-_SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT if(lower(customerLastName) != customerLastName, 1, 0) FROM orders LIMIT 1" \
-  2>/dev/null || echo 0)"
-if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
+_check_searchtext() {
+  printf '[post-deploy] Checking searchText case...\n'
+  local _SEARCH_FIX
+  _SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT if(lower(customerLastName) != customerLastName, 1, 0) FROM orders LIMIT 1" \
+    2>/dev/null || echo 0)"
+  [[ "${_SEARCH_FIX:-0}" -eq 0 ]] && return 0
   printf '  Mixed-case names detected — submitting searchText UPDATE...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders UPDATE searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE lower(customerLastName) != customerLastName" \
@@ -146,27 +159,31 @@ if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
   printf '  Re-baking S3 dump with corrected data...\n'
   CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS" \
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
-fi
+}
 
-printf '[post-deploy] Checking search index...\n'
-_IDX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT countIf(has(skip_indices, 'idx_search_fulltext')), count() FROM system.parts WHERE table='orders' AND active=1" \
-  2>/dev/null || echo '0	1')"
-_IDX_PARTS="$(printf '%s' "$_IDX" | cut -f1)"
-_TOT_PARTS="$(printf '%s' "$_IDX" | cut -f2)"
-if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -ne "${_TOT_PARTS}" ]]; then
+_check_index() {
+  printf '[post-deploy] Checking search index...\n'
+  local _IDX _IDX_PARTS _TOT_PARTS
+  _IDX="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT countIf(has(skip_indices, 'idx_search_fulltext')), count() FROM system.parts WHERE table='orders' AND active=1" \
+    2>/dev/null || echo '0	1')"
+  _IDX_PARTS="$(printf '%s' "$_IDX" | cut -f1)"
+  _TOT_PARTS="$(printf '%s' "$_IDX" | cut -f2)"
+  [[ "${_TOT_PARTS:-0}" -le 0 || "${_IDX_PARTS:-0}" -eq "${_TOT_PARTS}" ]] && return 0
   printf '  %s / %s parts indexed — materializing...\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" 2>/dev/null || true
   _poll_materialize_idx
-fi
+}
 
-printf '[post-deploy] Checking order_category_facts...\n'
-_FACTS="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary 'SELECT count() FROM order_category_facts' 2>/dev/null || echo 0)"
-if [[ "${_FACTS:-0}" -eq 0 ]]; then
+_check_ocf() {
+  printf '[post-deploy] Checking order_category_facts...\n'
+  local _FACTS _PID
+  _FACTS="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary 'SELECT count() FROM order_category_facts' 2>/dev/null || echo 0)"
+  [[ "${_FACTS:-0}" -gt 0 ]] && return 0
   printf '  Backfilling order_category_facts...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "
@@ -181,6 +198,15 @@ FROM orders AS o INNER JOIN order_items AS i ON i.orderId = o.orderId
   _PID=$!
   _poll_count order_category_facts 50000000 "$_PID"
   wait "$_PID"
-fi
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+_check_s3_dump
+_check_seed
+_check_names
+_check_searchtext
+_check_index
+_check_ocf
 
 printf '[post-deploy] Done.\n'

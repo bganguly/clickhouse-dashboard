@@ -3,15 +3,30 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
+DATA_DIR="$ROOT_DIR/scripts/data"
 PROJECT_NAME="$(basename "$ROOT_DIR")"
 
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/opt/local/bin:$PATH"
-
 
 printf 'Enable diagnostic logs? [y/N]: '
 read -r _DIAG_CHOICE
 _DIAG_LOGS=""
 if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
+
+# Globals set during preflight
+_PREFLIGHT_ARN=""; _PREFLIGHT_CDN=""; _PREFLIGHT_CF=""
+_DEFAULT_CHOICE=2; _OPTION3_LABEL=""
+_CH_PREWARMED=0; _CH_PREFLIGHT_URL=""; _CH_PREFLIGHT_PASS=""
+
+# Globals set during cloud deploy
+CREDS_FILE="$ROOT_DIR/.clickhouse-creds"
+USE_CH_API=0
+_GH_REPO=""; _GH_RUN_ST=""
+FIRST_DEPLOY=0; _DEPLOY_TAG=""
+APP_RUNNER_ARN=""; CDN_URL=""; CF_DIST_ID=""
+_OCF_REBUILT=0; _ITEMS_MIGRATION_PENDING=0
+
+# ── Utility ───────────────────────────────────────────────────────────────────
 
 _ecr_image_exists() {
   aws ecr describe-images --repository-name "ch-dash-app" --image-ids "imageTag=$1" \
@@ -19,11 +34,9 @@ _ecr_image_exists() {
 }
 
 _ensure_diag_build_arg() {
-  if ! _ecr_image_exists "latest"; then
-    return 0
-  fi
-  local _WANT_TAG="diag-$([[ -n "$_DIAG_LOGS" ]] && echo "1" || echo "0")"
-  local _LATEST_DIGEST _WANT_DIGEST
+  if ! _ecr_image_exists "latest"; then return 0; fi
+  local _WANT_TAG _LATEST_DIGEST _WANT_DIGEST
+  _WANT_TAG="diag-$([[ -n "$_DIAG_LOGS" ]] && echo "1" || echo "0")"
   _LATEST_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
     --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' \
     --output text 2>/dev/null || echo 'none')"
@@ -32,18 +45,14 @@ _ensure_diag_build_arg() {
     --output text 2>/dev/null || echo 'missing')"
   if [[ "$_LATEST_DIGEST" != "$_WANT_DIGEST" || "$_WANT_DIGEST" == "missing" ]]; then
     printf '  [build-arg mismatch] NEXT_PUBLIC_DIAG_LOGS baked into current image does not match requested value\n'
-    local _FN_GH_REPO
-    _FN_GH_REPO="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
-      | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
-    if command -v gh >/dev/null 2>&1 && [[ -n "$_FN_GH_REPO" ]]; then
-      printf '%s' "${_DIAG_LOGS}" | gh secret set NEXT_PUBLIC_DIAG_LOGS --repo "$_FN_GH_REPO"
+    if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+      printf '%s' "${_DIAG_LOGS}" | gh secret set NEXT_PUBLIC_DIAG_LOGS --repo "$_GH_REPO"
       printf '  Synced NEXT_PUBLIC_DIAG_LOGS secret → pushing rebuild commit...\n'
     else
       printf '  (gh CLI not available — ensure NEXT_PUBLIC_DIAG_LOGS secret is set in GitHub Actions)\n'
       printf '  Pushing rebuild commit...\n'
     fi
-    git -C "$ROOT_DIR" commit --allow-empty \
-      -m "chore: rebuild for NEXT_PUBLIC_DIAG_LOGS=${_DIAG_LOGS}"
+    git -C "$ROOT_DIR" commit --allow-empty -m "chore: rebuild for NEXT_PUBLIC_DIAG_LOGS=${_DIAG_LOGS}"
     git -C "$ROOT_DIR" push origin HEAD:main
     return 1
   fi
@@ -86,17 +95,92 @@ for s in json.load(sys.stdin).get('result', []):
   [[ -n "$_RESP" ]] && printf '  API: %s\n' "$_RESP"
 }
 
-_PREFLIGHT_ARN=""
-_PREFLIGHT_CDN=""
-_PREFLIGHT_CF=""
-_DEFAULT_CHOICE=2
-_CH_PREWARMED=0
-_CH_PREFLIGHT_URL=""
-_CH_PREFLIGHT_PASS=""
+_ch_wait_ready() {
+  local label="${1}" url="${2}" pass="${3}" timeout_sec="${4:-180}" on_timeout="${5:-abort}"
+  local deadline=$(( $(date +%s) + timeout_sec )) remaining ping attempt=0
+  printf '%s Waiting for ClickHouse to be reachable...\n' "$label"
+  while true; do
+    ping="$(curl -sf --max-time 8 -u "default:${pass}" \
+      "${url}/?default_format=TabSeparated&max_execution_time=5" \
+      --data-binary "SELECT 1" 2>/dev/null || echo '')"
+    if [[ "$ping" == "1" ]]; then printf '  ClickHouse ready.\n'; return 0; fi
+    remaining=$(( deadline - $(date +%s) ))
+    if (( remaining <= 0 )); then
+      if [[ "$on_timeout" == "skip" ]]; then
+        printf '  ClickHouse not reachable after %ds — skipping DB checks.\n' "$timeout_sec"; exit 0
+      else
+        printf '\nERROR: ClickHouse not reachable after %ds — aborting deploy.\n' "$timeout_sec"; exit 1
+      fi
+    fi
+    attempt=$(( attempt + 1 ))
+    printf '\r  not ready (%ds remaining)...' "$remaining"
+    sleep 10
+  done
+}
 
-printf '[preflight] Checking AWS credentials... '
-if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
+_sql_array() {
+  awk "BEGIN{ORS=\"\"} NR>1{print \",\"} {gsub(/'/, \"''\"); print \"'\" \$0 \"'\"}" "$1"
+}
+
+# ── Poll functions ────────────────────────────────────────────────────────────
+
+_poll_mutation() {
+  local label="$1" table="$2" like_clause="$3" done_msg="$4"
+  local t0 elapsed row is_done left failed total=0
+  t0=$(date +%s)
+  for _w in $(seq 1 12); do
+    sleep 5
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='${table}' AND command LIKE '${like_clause}' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    [[ -n "$row" ]] && break
+    printf '\r  waiting for %s mutation to register (%ds)...' "$label" $(( _w * 5 ))
+  done
+  printf '\n'
+  while true; do
+    row="$(curl -sf -u "default:${CH_PASS}" \
+      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='${table}' AND command LIKE '${like_clause}' ORDER BY create_time DESC LIMIT 1" \
+      2>/dev/null || echo '')"
+    is_done="$(printf '%s' "$row" | cut -f1)"
+    left="$(printf '%s' "$row" | cut -f2)"
+    failed="$(printf '%s' "$row" | cut -f3)"
+    if [[ "$is_done" == "1" ]]; then
+      [[ -n "$failed" ]] && { printf '\n  ERROR: %s mutation failed on part: %s\n' "$label" "$failed"; return 1; }
+      printf '\r  done — %s\n' "$done_msg"; return 0
+    fi
+    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
+    elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed > 1200 )); then
+      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
+    fi
+    if [[ "${total:-0}" -gt 0 ]]; then
+      printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "$total" "$elapsed"
+    else
+      printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
+    fi
+    sleep 10
+  done
+}
+
+_poll_update_mutation()      { _poll_mutation "UPDATE searchText" "orders" "%UPDATE searchText%" "searchText backfill complete."; }
+_poll_materialize_idx()      { _poll_mutation "MATERIALIZE INDEX idx_search_fulltext" "orders" "%MATERIALIZE INDEX%idx_search_fulltext%" "index fully materialized."; }
+_poll_ocf_mutation()         { _poll_mutation "OCF UPDATE searchText" "order_category_facts" "%UPDATE searchText%" "order_category_facts.searchText backfill complete."; }
+_poll_notes_ngram_idx()      { _poll_mutation "idx_notes_ngram" "orders" "%MATERIALIZE INDEX%idx_notes_ngram%" "idx_notes_ngram materialized."; }
+_poll_ocf_idx()              { _poll_mutation "idx_ocf_search" "order_category_facts" "%MATERIALIZE INDEX%idx_ocf_search%" "idx_ocf_search materialized."; }
+
+# ── Preflight ─────────────────────────────────────────────────────────────────
+
+_run_preflight() {
+  printf '[preflight] Checking AWS credentials... '
+  if ! command -v aws >/dev/null 2>&1 || ! aws sts get-caller-identity >/dev/null 2>&1; then
+    printf 'failed\n'
+    _ch_preflight_check
+    return
+  fi
   printf 'ok\n'
+
   if [[ -d "$INFRA_DIR" ]]; then
     printf '[preflight] Reading Terraform state... '
     _PREFLIGHT_ARN="$(cd "$INFRA_DIR" && terraform output -raw apprunner_service_arn 2>/dev/null || true)"
@@ -104,105 +188,120 @@ if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1
     _PREFLIGHT_CF="$(cd "$INFRA_DIR" && terraform output -raw cf_distribution_id 2>/dev/null || true)"
     [[ -n "$_PREFLIGHT_ARN" ]] && printf 'ARN found\n' || printf 'empty\n'
   fi
+
   if [[ -z "$_PREFLIGHT_ARN" ]]; then
     printf '[preflight] Querying App Runner for service ARN... '
+    local _TMP_ARN
     _TMP_ARN="$(aws apprunner list-services \
       --query "ServiceSummaryList[?ServiceName=='ch-dash-app'].ServiceArn | [0]" \
       --output text 2>/dev/null || true)"
     if [[ "$_TMP_ARN" != "None" && -n "$_TMP_ARN" ]]; then
-      _PREFLIGHT_ARN="$_TMP_ARN"
-      printf 'found\n'
+      _PREFLIGHT_ARN="$_TMP_ARN"; printf 'found\n'
     else
       printf 'not found\n'
     fi
   fi
-  if [[ -n "$_PREFLIGHT_ARN" ]]; then
-    _LOCAL_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo '')"
-    _LOCAL_MSG="$(git -C "$ROOT_DIR" log -1 --format='%s' 2>/dev/null || echo '')"
-    _LOCAL_AGO="$(git -C "$ROOT_DIR" log -1 --format='%ar' 2>/dev/null || echo '')"
-    printf '[preflight] HEAD commit : %s — "%s" (%s)\n' "${_LOCAL_SHA:-unknown}" "$_LOCAL_MSG" "$_LOCAL_AGO"
-    if command -v gh >/dev/null 2>&1; then
-      _GH_RUN_JSON="$(gh run list --limit 1 \
-        --json databaseId,status,conclusion,headSha,displayTitle \
-        2>/dev/null || echo '')"
-      _GH_RUN_ID="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
-        "import sys,json; r=json.load(sys.stdin); print(r[0]['databaseId'] if r else '')" 2>/dev/null || echo '')"
-      _GH_RUN_ST="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
-        "import sys,json; r=json.load(sys.stdin); o=r[0] if r else {}; co=o.get('conclusion') or ''; st=o.get('status',''); print(st+'/'+co if co else st)" 2>/dev/null || echo '')"
-      _GH_RUN_SHA="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
-        "import sys,json; r=json.load(sys.stdin); print(r[0]['headSha'][:7] if r else '')" 2>/dev/null || echo '')"
-      _GH_RUN_TITLE="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
-        "import sys,json; r=json.load(sys.stdin); print(r[0]['displayTitle'] if r else '')" 2>/dev/null || echo '')"
-      printf '[preflight] GH Actions  : %s · %s · %s\n' "$_GH_RUN_ST" "$_GH_RUN_SHA" "$_GH_RUN_TITLE"
 
-      if [[ "$_GH_RUN_ST" == "in_progress" || "$_GH_RUN_ST" == "queued" || "$_GH_RUN_ST" == "waiting" ]] \
-          && [[ -n "$_GH_RUN_ID" ]]; then
-        printf '[preflight] Waiting for GH Actions to finish (polls every 20s)...\n'
-        _gh_t0=$(date +%s)
-        _gh_view=""
-        while true; do
-          sleep 20
-          _gh_view="$(gh run view "$_GH_RUN_ID" --json status,conclusion,jobs 2>/dev/null || echo '')"
-          _gh_cur_st="$(printf '%s' "$_gh_view" | python3 -c \
-            "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo '')"
-          printf '\r  %s (%ds)...' "${_gh_cur_st:-waiting}" $(( $(date +%s) - _gh_t0 ))
-          if [[ "$_gh_cur_st" != "in_progress" && "$_gh_cur_st" != "queued" && "$_gh_cur_st" != "waiting" ]]; then
-            printf '\n'; break
-          fi
-        done
-        _gh_conclusion="$(printf '%s' "$_gh_view" | python3 -c \
-          "import sys,json; d=json.load(sys.stdin); print(d.get('conclusion') or '')" 2>/dev/null || echo '')"
-        _step_build="$(printf '%s' "$_gh_view" | python3 -c "
+  if [[ -n "$_PREFLIGHT_ARN" ]]; then
+    _preflight_check_gh_run
+  fi
+
+  _ch_preflight_check
+}
+
+_preflight_check_gh_run() {
+  local _LOCAL_SHA _LOCAL_MSG _LOCAL_AGO _GH_RUN_JSON _GH_RUN_ID _GH_RUN_SHA _GH_RUN_TITLE
+  _LOCAL_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo '')"
+  _LOCAL_MSG="$(git -C "$ROOT_DIR" log -1 --format='%s' 2>/dev/null || echo '')"
+  _LOCAL_AGO="$(git -C "$ROOT_DIR" log -1 --format='%ar' 2>/dev/null || echo '')"
+  printf '[preflight] HEAD commit : %s — "%s" (%s)\n' "${_LOCAL_SHA:-unknown}" "$_LOCAL_MSG" "$_LOCAL_AGO"
+
+  if ! command -v gh >/dev/null 2>&1; then return; fi
+
+  _GH_RUN_JSON="$(gh run list --limit 1 \
+    --json databaseId,status,conclusion,headSha,displayTitle 2>/dev/null || echo '')"
+  local _GH_RUN_ID _GH_RUN_TITLE
+  _GH_RUN_ID="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+    "import sys,json; r=json.load(sys.stdin); print(r[0]['databaseId'] if r else '')" 2>/dev/null || echo '')"
+  _GH_RUN_ST="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+    "import sys,json; r=json.load(sys.stdin); o=r[0] if r else {}; co=o.get('conclusion') or ''; st=o.get('status',''); print(st+'/'+co if co else st)" 2>/dev/null || echo '')"
+  _GH_RUN_SHA="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+    "import sys,json; r=json.load(sys.stdin); print(r[0]['headSha'][:7] if r else '')" 2>/dev/null || echo '')"
+  _GH_RUN_TITLE="$(printf '%s' "$_GH_RUN_JSON" | python3 -c \
+    "import sys,json; r=json.load(sys.stdin); print(r[0]['displayTitle'] if r else '')" 2>/dev/null || echo '')"
+  printf '[preflight] GH Actions  : %s · %s · %s\n' "$_GH_RUN_ST" "$_GH_RUN_SHA" "$_GH_RUN_TITLE"
+
+  if [[ "$_GH_RUN_ST" == "in_progress" || "$_GH_RUN_ST" == "queued" || "$_GH_RUN_ST" == "waiting" ]] \
+      && [[ -n "$_GH_RUN_ID" ]]; then
+    _preflight_wait_gh_run "$_GH_RUN_ID"
+  fi
+
+  local _LOCAL_SHA2
+  _LOCAL_SHA2="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo '')"
+  _LOCAL_AGO="$(git -C "$ROOT_DIR" log -1 --format='%ar' 2>/dev/null || echo '')"
+  printf '[preflight] Checking ECR for current commit (%s)... ' "${_LOCAL_SHA2:-unknown}"
+  if [[ -n "$_LOCAL_SHA2" ]] && _ecr_image_exists "$_LOCAL_SHA2"; then
+    printf 'built\n'
+    _OPTION3_LABEL="Quick  — redeploy ECR:latest direct to App Runner · HEAD=${_LOCAL_SHA2} (${_LOCAL_AGO}) · skips Terraform/DB/migration checks"
+    [[ "$_GH_RUN_ST" == "completed/success" ]] && _DEFAULT_CHOICE=3
+  else
+    printf 'not built yet\n'
+    _OPTION3_LABEL="Quick  — UNAVAILABLE · HEAD=${_LOCAL_SHA2:-unknown} (${_LOCAL_AGO:-unknown age}) not yet in ECR — wait for GH Actions build to complete"
+  fi
+}
+
+_preflight_wait_gh_run() {
+  local run_id="$1" _gh_t0 _gh_view _gh_cur_st _gh_conclusion _step_build _step_migration
+  printf '[preflight] Waiting for GH Actions to finish (polls every 20s)...\n'
+  _gh_t0=$(date +%s)
+  while true; do
+    sleep 20
+    _gh_view="$(gh run view "$run_id" --json status,conclusion,jobs 2>/dev/null || echo '')"
+    _gh_cur_st="$(printf '%s' "$_gh_view" | python3 -c \
+      "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo '')"
+    printf '\r  %s (%ds)...' "${_gh_cur_st:-waiting}" $(( $(date +%s) - _gh_t0 ))
+    if [[ "$_gh_cur_st" != "in_progress" && "$_gh_cur_st" != "queued" && "$_gh_cur_st" != "waiting" ]]; then
+      printf '\n'; break
+    fi
+  done
+  _gh_conclusion="$(printf '%s' "$_gh_view" | python3 -c \
+    "import sys,json; d=json.load(sys.stdin); print(d.get('conclusion') or '')" 2>/dev/null || echo '')"
+  _step_build="$(printf '%s' "$_gh_view" | python3 -c "
 import sys, json
 for step in json.load(sys.stdin).get('jobs',[{}])[0].get('steps',[]):
     if 'push' in step.get('name','').lower() or 'build' in step.get('name','').lower():
         print(step.get('conclusion','unknown')); break
 else: print('unknown')
 " 2>/dev/null || echo 'unknown')"
-        _step_migration="$(printf '%s' "$_gh_view" | python3 -c "
+  _step_migration="$(printf '%s' "$_gh_view" | python3 -c "
 import sys, json
 for step in json.load(sys.stdin).get('jobs',[{}])[0].get('steps',[]):
     if 'migration' in step.get('name','').lower():
         print(step.get('conclusion','unknown')); break
 else: print('unknown')
 " 2>/dev/null || echo 'unknown')"
-        printf '  build/push : %s\n' "$_step_build"
-        printf '  migration  : %s\n' "$_step_migration"
-        if [[ "$_step_migration" != "success" ]]; then
-          printf '\nERROR: ClickHouse migration step %s — aborting.\n' "$_step_migration"
-          printf '  Check the GH Actions log for details, fix the issue, then re-run deploy.sh.\n'
-          exit 1
-        fi
-        _GH_RUN_ST="completed/${_gh_conclusion}"
-      fi
-    fi
-    printf '[preflight] Checking ECR for current commit (%s)... ' "${_LOCAL_SHA:-unknown}"
-    if [[ -n "$_LOCAL_SHA" ]] && aws ecr describe-images --repository-name "ch-dash-app" \
-        --image-ids "imageTag=${_LOCAL_SHA}" >/dev/null 2>&1; then
-      printf 'built\n'
-      _OPTION3_LABEL="Quick  — redeploy ECR:latest direct to App Runner · HEAD=${_LOCAL_SHA} (${_LOCAL_AGO}) · skips Terraform/DB/migration checks"
-      if [[ "$_GH_RUN_ST" == "completed/success" ]]; then
-        _DEFAULT_CHOICE=3
-      fi
-    else
-      printf 'not built yet\n'
-      _OPTION3_LABEL="Quick  — UNAVAILABLE · HEAD=${_LOCAL_SHA:-unknown} (${_LOCAL_AGO:-unknown age}) not yet in ECR — wait for GH Actions build to complete"
-    fi
+  printf '  build/push : %s\n' "$_step_build"
+  printf '  migration  : %s\n' "$_step_migration"
+  if [[ "$_step_migration" != "success" ]]; then
+    printf '\nERROR: ClickHouse migration step %s — aborting.\n' "$_step_migration"
+    printf '  Check the GH Actions log for details, fix the issue, then re-run deploy.sh.\n'
+    exit 1
   fi
-else
-  printf 'failed\n'
-fi
+  _GH_RUN_ST="completed/${_gh_conclusion}"
+}
 
-_CH_PREFLIGHT_URL="$(grep '^CLICKHOUSE_URL=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
-_CH_PREFLIGHT_PASS="$(grep '^CLICKHOUSE_PASSWORD=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
-if [[ -n "$_CH_PREFLIGHT_URL" && -n "$_CH_PREFLIGHT_PASS" ]]; then
+_ch_preflight_check() {
+  _CH_PREFLIGHT_URL="$(grep '^CLICKHOUSE_URL=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+  _CH_PREFLIGHT_PASS="$(grep '^CLICKHOUSE_PASSWORD=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
+  [[ -z "$_CH_PREFLIGHT_URL" || -z "$_CH_PREFLIGHT_PASS" ]] && return 0
+
   printf '[preflight] Checking ClickHouse reachability... '
-  _ch_pre_ping="$(curl -sf --max-time 8 -u "default:${_CH_PREFLIGHT_PASS}" \
+  local _ping
+  _ping="$(curl -sf --max-time 8 -u "default:${_CH_PREFLIGHT_PASS}" \
     "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
     --data-binary "SELECT 1" 2>/dev/null || echo '')"
-  if [[ "$_ch_pre_ping" == "1" ]]; then
-    printf 'reachable\n'
-    _CH_PREWARMED=1
+  if [[ "$_ping" == "1" ]]; then
+    printf 'reachable\n'; _CH_PREWARMED=1
   else
     printf 'paused — attempting to start\n'
     _ch_cloud_start
@@ -210,186 +309,143 @@ if [[ -n "$_CH_PREFLIGHT_URL" && -n "$_CH_PREFLIGHT_PASS" ]]; then
       "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
       --data-binary "SELECT 1" >/dev/null 2>&1 &
   fi
-fi
+}
 
-printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
-printf '  [1] Local  — npm run dev (port 3004)\n'
-printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
-printf '  [3] %s\n\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
-printf 'Choice [1/2/3, default %s]: ' "$_DEFAULT_CHOICE"
-read -r DEPLOY_TARGET
-case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
-  1)
-    cd "$ROOT_DIR"
-    if [[ -f ".env.local" ]]; then
-      grep -v '^NEXT_PUBLIC_DIAG_LOGS=' .env.local > .env.local.tmp && mv .env.local.tmp .env.local
-    fi
-    [[ -n "$_DIAG_LOGS" ]] && printf 'NEXT_PUBLIC_DIAG_LOGS=%s\n' "$_DIAG_LOGS" >> .env.local
-    npm install --prefer-offline || npm install
-    exec npm run dev
-    ;;
-  2) ;;
-  3)
-    printf '\n[quick] Checking AWS credentials...\n'
-    aws sts get-caller-identity >/dev/null
-    printf '  OK\n'
+# ── Option 1: local dev ───────────────────────────────────────────────────────
 
-    APP_RUNNER_ARN="$_PREFLIGHT_ARN"
-    CDN_URL="$_PREFLIGHT_CDN"
-    CF_DIST_ID="$_PREFLIGHT_CF"
+_deploy_local() {
+  cd "$ROOT_DIR"
+  if [[ -f ".env.local" ]]; then
+    grep -v '^NEXT_PUBLIC_DIAG_LOGS=' .env.local > .env.local.tmp && mv .env.local.tmp .env.local
+  fi
+  [[ -n "$_DIAG_LOGS" ]] && printf 'NEXT_PUBLIC_DIAG_LOGS=%s\n' "$_DIAG_LOGS" >> .env.local
+  npm install --prefer-offline || npm install
+  exec npm run dev
+}
 
-    if [[ -z "$APP_RUNNER_ARN" ]]; then
-      printf '[quick] Terraform state empty — querying App Runner...\n'
-      _TMP_ARN="$(aws apprunner list-services \
-        --query "ServiceSummaryList[?ServiceName=='ch-dash-app'].ServiceArn | [0]" \
-        --output text 2>/dev/null || true)"
-      [[ "$_TMP_ARN" != "None" && -n "$_TMP_ARN" ]] && APP_RUNNER_ARN="$_TMP_ARN"
-    fi
-    [[ -z "$APP_RUNNER_ARN" ]] && { printf 'ERROR: no App Runner ARN found — run a full deploy (option 2) first.\n'; exit 1; }
+# ── Option 3: quick redeploy ──────────────────────────────────────────────────
 
-    if [[ -z "$CDN_URL" ]]; then
-      _AR_TMP_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
-        --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
-      [[ -n "$_AR_TMP_URL" ]] && CDN_URL="https://${_AR_TMP_URL}"
-    fi
+_deploy_quick() {
+  printf '\n[quick] Checking AWS credentials...\n'
+  aws sts get-caller-identity >/dev/null
+  printf '  OK\n'
 
-    printf '[quick] ARN: %s\n' "$APP_RUNNER_ARN"
+  APP_RUNNER_ARN="$_PREFLIGHT_ARN"
+  CDN_URL="$_PREFLIGHT_CDN"
+  CF_DIST_ID="${_PREFLIGHT_CF:-}"
 
-    if ! _ecr_image_exists "latest"; then
-      printf 'ERROR: no latest image in ECR — push to GitHub and wait for Actions build first.\n'; exit 1
-    fi
+  if [[ -z "$APP_RUNNER_ARN" ]]; then
+    printf '[quick] Terraform state empty — querying App Runner...\n'
+    local _TMP
+    _TMP="$(aws apprunner list-services \
+      --query "ServiceSummaryList[?ServiceName=='ch-dash-app'].ServiceArn | [0]" \
+      --output text 2>/dev/null || true)"
+    [[ "$_TMP" != "None" && -n "$_TMP" ]] && APP_RUNNER_ARN="$_TMP"
+  fi
+  [[ -z "$APP_RUNNER_ARN" ]] && { printf 'ERROR: no App Runner ARN found — run a full deploy (option 2) first.\n'; exit 1; }
 
-    printf '[quick] Checking NEXT_PUBLIC_DIAG_LOGS build-arg...\n'
-    if ! _ensure_diag_build_arg; then
-      _NEW_SHA_Q="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
-      printf '[quick] Waiting for ECR image %s (up to 15 min)...\n' "$_NEW_SHA_Q"
-      _ecr_q_elapsed=0
-      until _ecr_image_exists "$_NEW_SHA_Q"; do
-        if (( _ecr_q_elapsed >= 900 )); then
-          _GH_REPO_Q="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
-            | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
-          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "${_GH_REPO_Q:-}"
-          exit 1
-        fi
-        sleep 30; _ecr_q_elapsed=$(( _ecr_q_elapsed + 30 ))
-        printf '  ...%ds elapsed\n' "$_ecr_q_elapsed"
-      done
-      printf '  Image %s ready — re-tagging as latest.\n' "$_NEW_SHA_Q"
-      _MANIFEST_Q="$(aws ecr batch-get-image --repository-name "ch-dash-app" \
-        --image-ids "imageTag=${_NEW_SHA_Q}" --query 'images[0].imageManifest' \
-        --output text 2>/dev/null)"
-      aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
-        --image-manifest "$_MANIFEST_Q" >/dev/null 2>&1 || true
-    fi
-
-    _HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
-    if ! _ecr_image_exists "$_HEAD_SHA"; then
-      printf '[quick] Waiting for ECR image %s (up to 15 min)...\n' "$_HEAD_SHA"
-      _ecr_head_elapsed=0
-      until _ecr_image_exists "$_HEAD_SHA"; do
-        if (( _ecr_head_elapsed >= 900 )); then
-          _GH_REPO_H="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
-            | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
-          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "${_GH_REPO_H:-}"
-          exit 1
-        fi
-        sleep 30; _ecr_head_elapsed=$(( _ecr_head_elapsed + 30 ))
-        printf '  ...%ds elapsed\n' "$_ecr_head_elapsed"
-      done
-      printf '  Image %s ready — re-tagging as latest.\n' "$_HEAD_SHA"
-      _MANIFEST_H="$(aws ecr batch-get-image --repository-name "ch-dash-app" \
-        --image-ids "imageTag=${_HEAD_SHA}" --query 'images[0].imageManifest' \
-        --output text 2>/dev/null)"
-      aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
-        --image-manifest "$_MANIFEST_H" >/dev/null 2>&1 || true
-    fi
-
-    printf '[quick] Checking App Runner state...\n'
-    _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-    if [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
-      printf '  Deployment already in progress — waiting for it to finish before starting ours...\n'
-      _pre_t0=$(date +%s)
-      while [[ "$_PRE_STATUS" == "OPERATION_IN_PROGRESS" ]]; do
-        sleep 20
-        _PRE_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-        printf '\r  %s... (%ds)' "$_PRE_STATUS" $(( $(date +%s) - _pre_t0 ))
-      done
-      printf '\n'
-    fi
-    if [[ "$_PRE_STATUS" != "RUNNING" ]]; then
-      printf 'ERROR: App Runner in unexpected state: %s\n' "$_PRE_STATUS"; exit 1
-    fi
-
-    if [[ "$_CH_PREWARMED" -eq 0 && -n "$_CH_PREFLIGHT_URL" && -n "$_CH_PREFLIGHT_PASS" ]]; then
-      printf '[quick] Waiting for ClickHouse before deployment...\n'
-      _ch3_pre_deadline=$(( $(date +%s) + 180 ))
-      while true; do
-        _ch3_pre_ping="$(curl -sf --max-time 8 -u "default:${_CH_PREFLIGHT_PASS}" \
-          "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
-          --data-binary "SELECT 1" 2>/dev/null || echo '')"
-        if [[ "$_ch3_pre_ping" == "1" ]]; then
-          printf '  ClickHouse ready.\n'; _CH_PREWARMED=1; break
-        fi
-        _ch3_pre_remaining=$(( _ch3_pre_deadline - $(date +%s) ))
-        if (( _ch3_pre_remaining <= 0 )); then
-          printf '\nERROR: ClickHouse not reachable after 3 min — aborting deploy.\n'; exit 1
-        fi
-        printf '\r  not ready (%ds remaining)...' "$_ch3_pre_remaining"
-        sleep 10
-      done
-    fi
-
-    printf '[quick] Starting App Runner deployment...\n'
-    aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
-    _ar3_t0=$(date +%s)
-    while true; do
-      SVC_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-      if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '\r  Running (%ds).  \n' $(( $(date +%s) - _ar3_t0 )); break; fi
-      if [[ "$SVC_STATUS" == "UPDATE_FAILED" ]]; then printf '\nERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
-      printf '\r  %s... (%ds)' "$SVC_STATUS" $(( $(date +%s) - _ar3_t0 ))
-      sleep 20
-    done
-    printf '  Startup instrumentation complete — Redis and ClickHouse connections pre-warmed.\n'
-
-    if [[ -n "${CF_DIST_ID:-}" ]]; then
-      printf '[quick] Invalidating CloudFront cache...\n'
-      aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
-        --query 'Invalidation.Id' --output text
-    fi
-
-    _AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+  if [[ -z "$CDN_URL" ]]; then
+    local _AR_URL
+    _AR_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
       --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
-    _QUICK_BASE="${CDN_URL}"
-    [[ -n "$_AR_SVC_URL" ]] && _QUICK_BASE="https://${_AR_SVC_URL}"
+    [[ -n "$_AR_URL" ]] && CDN_URL="https://${_AR_URL}"
+  fi
 
-    _Q3_CH_PASS="$(grep '^CLICKHOUSE_PASSWORD=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
-    _Q3_CH_URL="$(grep '^CLICKHOUSE_URL=' "$ROOT_DIR/.clickhouse-creds" 2>/dev/null | cut -d= -f2-)"
-    if [[ -n "$_Q3_CH_PASS" && -n "$_Q3_CH_URL" ]]; then
-      printf '[quick] Waiting for ClickHouse to be reachable...\n'
-      _q3_deadline=$(( $(date +%s) + 180 ))
-      while true; do
-        _q3_ping="$(curl -sf -u "default:${_Q3_CH_PASS}" \
-          "${_Q3_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
-          --data-binary "SELECT 1" 2>/dev/null || echo '')"
-        if [[ "$_q3_ping" == "1" ]]; then
-          printf '  ClickHouse ready.\n'; break
-        fi
-        _q3_remaining=$(( _q3_deadline - $(date +%s) ))
-        if (( _q3_remaining <= 0 )); then
-          printf '\nERROR: ClickHouse not reachable after 3 min — aborting deploy.\n'; exit 1
-        fi
-        printf '\r  not ready (%ds remaining)...' "$_q3_remaining"
-        sleep 10
-      done
+  printf '[quick] ARN: %s\n' "$APP_RUNNER_ARN"
+  ! _ecr_image_exists "latest" && { printf 'ERROR: no latest image in ECR — push to GitHub and wait for Actions build first.\n'; exit 1; }
+
+  printf '[quick] Checking NEXT_PUBLIC_DIAG_LOGS build-arg...\n'
+  if ! _ensure_diag_build_arg; then
+    _quick_wait_ecr_image "$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+  fi
+
+  local _HEAD_SHA
+  _HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+  ! _ecr_image_exists "$_HEAD_SHA" && _quick_wait_ecr_image "$_HEAD_SHA"
+
+  _quick_wait_apprunner_idle
+  _quick_ch_wait_if_needed
+
+  printf '[quick] Starting App Runner deployment...\n'
+  aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
+  _quick_wait_apprunner_running
+  printf '  Startup instrumentation complete — Redis and ClickHouse connections pre-warmed.\n'
+
+  if [[ -n "${CF_DIST_ID:-}" ]]; then
+    printf '[quick] Invalidating CloudFront cache...\n'
+    aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
+      --query 'Invalidation.Id' --output text
+  fi
+
+  local _AR_SVC_URL
+  _AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+    --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+  [[ -n "$_AR_SVC_URL" ]] && CDN_URL="https://${_AR_SVC_URL}"
+
+  _ch_wait_ready "[quick]" "${_CH_PREFLIGHT_URL:-${CDN_URL}}" "${_CH_PREFLIGHT_PASS:-}" 180 abort
+
+  printf '\n  Dashboard: %s\n' "${CDN_URL:-}"
+  exit 0
+}
+
+_quick_wait_ecr_image() {
+  local sha="$1"
+  printf '[quick] Waiting for ECR image %s (up to 15 min)...\n' "$sha"
+  local elapsed=0 manifest
+  until _ecr_image_exists "$sha"; do
+    if (( elapsed >= 900 )); then
+      local repo
+      repo="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
+        | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
+      printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "${repo:-}"
+      exit 1
     fi
+    sleep 30; elapsed=$(( elapsed + 30 ))
+    printf '  ...%ds elapsed\n' "$elapsed"
+  done
+  printf '  Image %s ready — re-tagging as latest.\n' "$sha"
+  manifest="$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+    --image-ids "imageTag=${sha}" --query 'images[0].imageManifest' --output text 2>/dev/null)"
+  aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+    --image-manifest "$manifest" >/dev/null 2>&1 || true
+}
 
-    printf '\n  Dashboard: %s\n' "${CDN_URL:-$_QUICK_BASE}"
-    exit 0
-    ;;
-  *) printf 'Invalid choice.\n'; exit 1 ;;
-esac
+_quick_wait_apprunner_idle() {
+  printf '[quick] Checking App Runner state...\n'
+  local status
+  status="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+    --query 'Service.Status' --output text)"
+  [[ "$status" != "OPERATION_IN_PROGRESS" ]] && { [[ "$status" == "RUNNING" ]] || { printf 'ERROR: App Runner in unexpected state: %s\n' "$status"; exit 1; }; return; }
+  printf '  Deployment already in progress — waiting for it to finish before starting ours...\n'
+  local t0=$(date +%s)
+  while [[ "$status" == "OPERATION_IN_PROGRESS" ]]; do
+    sleep 20
+    status="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+    printf '\r  %s... (%ds)' "$status" $(( $(date +%s) - t0 ))
+  done
+  printf '\n'
+  [[ "$status" == "RUNNING" ]] || { printf 'ERROR: App Runner in unexpected state: %s\n' "$status"; exit 1; }
+}
 
-CREDS_FILE="$ROOT_DIR/.clickhouse-creds"
+_quick_wait_apprunner_running() {
+  local t0=$(date +%s) status
+  while true; do
+    status="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+    if [[ "$status" == "RUNNING" ]]; then printf '\r  Running (%ds).  \n' $(( $(date +%s) - t0 )); break; fi
+    if [[ "$status" == "UPDATE_FAILED" ]]; then printf '\nERROR: App Runner %s.\n' "$status"; exit 1; fi
+    printf '\r  %s... (%ds)' "$status" $(( $(date +%s) - t0 ))
+    sleep 20
+  done
+}
+
+_quick_ch_wait_if_needed() {
+  [[ "$_CH_PREWARMED" -eq 1 ]] && return 0
+  [[ -z "$_CH_PREFLIGHT_URL" || -z "$_CH_PREFLIGHT_PASS" ]] && return 0
+  _ch_wait_ready "[quick]" "$_CH_PREFLIGHT_URL" "$_CH_PREFLIGHT_PASS" 180 abort
+  _CH_PREWARMED=1
+}
+
+# ── Option 2: cloud deploy ────────────────────────────────────────────────────
 
 _prompt_creds() {
   printf 'Do you have an existing ClickHouse Cloud service? [Y/n]: '
@@ -423,27 +479,25 @@ _prompt_creds() {
   fi
 }
 
-USE_CH_API=0
-
-if [[ -n "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
-  USE_CH_API=1
-elif [[ -n "${CLICKHOUSE_URL:-}" && -n "${CLICKHOUSE_PASSWORD:-}" ]]; then
-  USE_CH_API=0
-elif [[ -f "$CREDS_FILE" ]]; then
-  source "$CREDS_FILE"
+_load_ch_creds() {
   if [[ -n "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
     USE_CH_API=1
-    printf 'Loaded API key from .clickhouse-creds. Use it? [Y/n]: '
-  else
+  elif [[ -n "${CLICKHOUSE_URL:-}" && -n "${CLICKHOUSE_PASSWORD:-}" ]]; then
     USE_CH_API=0
-    printf 'Loaded saved endpoint: %s. Use it? [Y/n]: ' "${CLICKHOUSE_URL:-}"
-  fi
-  read -r USE_SAVED; USE_SAVED="${USE_SAVED:-Y}"
-  if [[ ! "$USE_SAVED" =~ ^[Yy] ]]; then
-    unset CLICKHOUSE_CLOUD_KEY CLICKHOUSE_URL CLICKHOUSE_PASSWORD
-    _prompt_creds
-  elif [[ "$USE_CH_API" == "0" ]]; then
-    if [[ -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
+  elif [[ -f "$CREDS_FILE" ]]; then
+    source "$CREDS_FILE"
+    if [[ -n "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
+      USE_CH_API=1
+      printf 'Loaded API key from .clickhouse-creds. Use it? [Y/n]: '
+    else
+      USE_CH_API=0
+      printf 'Loaded saved endpoint: %s. Use it? [Y/n]: ' "${CLICKHOUSE_URL:-}"
+    fi
+    read -r USE_SAVED; USE_SAVED="${USE_SAVED:-Y}"
+    if [[ ! "$USE_SAVED" =~ ^[Yy] ]]; then
+      unset CLICKHOUSE_CLOUD_KEY CLICKHOUSE_URL CLICKHOUSE_PASSWORD
+      _prompt_creds
+    elif [[ "$USE_CH_API" == "0" && -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
       printf 'ClickHouse password: '
       read -rs CLICKHOUSE_PASSWORD; printf '\n'
       export CLICKHOUSE_PASSWORD
@@ -451,534 +505,379 @@ elif [[ -f "$CREDS_FILE" ]]; then
         "$CLICKHOUSE_URL" "${CLICKHOUSE_USER:-default}" "$CLICKHOUSE_PASSWORD" > "$CREDS_FILE"
       chmod 600 "$CREDS_FILE"
     fi
+  else
+    _prompt_creds
   fi
-else
-  _prompt_creds
-fi
+}
 
-for dep in aws terraform; do
-  command -v "$dep" >/dev/null 2>&1 || { printf 'ERROR: %s not found.\n' "$dep"; exit 1; }
-done
+_check_deps() {
+  for dep in aws terraform; do
+    command -v "$dep" >/dev/null 2>&1 || { printf 'ERROR: %s not found.\n' "$dep"; exit 1; }
+  done
+}
 
-printf '[1/5] Checking AWS credentials...\n'
-aws sts get-caller-identity >/dev/null
-printf '  OK\n'
+_sync_aws_gh_secrets() {
+  printf '[1/5] Checking AWS credentials...\n'
+  aws sts get-caller-identity >/dev/null
+  printf '  OK\n'
 
-_GH_REPO="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
-  | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
-if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
-  printf '  Syncing AWS credentials to GitHub Actions secrets (%s)...\n' "$_GH_REPO"
-  _AWS_REGION="$(aws configure get region 2>/dev/null || echo "us-east-1")"
-  aws configure get aws_access_key_id     | gh secret set AWS_ACCESS_KEY_ID     --repo "$_GH_REPO"
-  aws configure get aws_secret_access_key | gh secret set AWS_SECRET_ACCESS_KEY --repo "$_GH_REPO"
-  printf '%s' "$_AWS_REGION"              | gh secret set AWS_REGION            --repo "$_GH_REPO"
-fi
+  _GH_REPO="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null \
+    | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)$|\1|')"
+  if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+    printf '  Syncing AWS credentials to GitHub Actions secrets (%s)...\n' "$_GH_REPO"
+    local _AWS_REGION
+    _AWS_REGION="$(aws configure get region 2>/dev/null || echo "us-east-1")"
+    aws configure get aws_access_key_id     | gh secret set AWS_ACCESS_KEY_ID     --repo "$_GH_REPO"
+    aws configure get aws_secret_access_key | gh secret set AWS_SECRET_ACCESS_KEY --repo "$_GH_REPO"
+    printf '%s' "$_AWS_REGION"              | gh secret set AWS_REGION            --repo "$_GH_REPO"
+  fi
+}
 
-printf '[2/5] Resolving ClickHouse endpoint...\n'
-if [[ "$USE_CH_API" == "1" ]]; then
-  CH_ORG_ID="${CLICKHOUSE_ORG_ID:-}"
-  CH_SERVICE_NAME="${CLICKHOUSE_SERVICE_NAME:-$PROJECT_NAME}"
-  CH_REGION="${CLICKHOUSE_CLOUD_REGION:-aws-us-east-1}"
-  CH_TIER="${CLICKHOUSE_CLOUD_TIER:-development}"
+_resolve_ch_endpoint() {
+  printf '[2/5] Resolving ClickHouse endpoint...\n'
+  local CH_PASS_LOCAL
+  if [[ "$USE_CH_API" == "1" ]]; then
+    local CH_ORG_ID CH_SERVICE_NAME CH_REGION CH_TIER CH_HOST
+    CH_ORG_ID="${CLICKHOUSE_ORG_ID:-}"
+    CH_SERVICE_NAME="${CLICKHOUSE_SERVICE_NAME:-$PROJECT_NAME}"
+    CH_REGION="${CLICKHOUSE_CLOUD_REGION:-aws-us-east-1}"
+    CH_TIER="${CLICKHOUSE_CLOUD_TIER:-development}"
 
-  _ch_api() { local m="$1" p="$2"; shift 2
-    curl -fsSL -X "$m" -H "Authorization: Basic $(printf '%s' "$CLICKHOUSE_CLOUD_KEY" | base64)" \
-      -H "Content-Type: application/json" "https://api.clickhouse.cloud/v1${p}" "$@"; }
+    _ch_api() { local m="$1" p="$2"; shift 2
+      curl -fsSL -X "$m" -H "Authorization: Basic $(printf '%s' "$CLICKHOUSE_CLOUD_KEY" | base64)" \
+        -H "Content-Type: application/json" "https://api.clickhouse.cloud/v1${p}" "$@"; }
 
-  [[ -z "$CH_ORG_ID" ]] && CH_ORG_ID="$(_ch_api GET /organizations | python3 -c \
-    "import sys,json;orgs=json.load(sys.stdin).get('result',[]); print(orgs[0]['id'] if orgs else '')" 2>/dev/null || true)"
-  [[ -z "$CH_ORG_ID" ]] && { printf 'ERROR: could not determine ClickHouse org ID.\n'; exit 1; }
+    [[ -z "$CH_ORG_ID" ]] && CH_ORG_ID="$(_ch_api GET /organizations | python3 -c \
+      "import sys,json;orgs=json.load(sys.stdin).get('result',[]); print(orgs[0]['id'] if orgs else '')" 2>/dev/null || true)"
+    [[ -z "$CH_ORG_ID" ]] && { printf 'ERROR: could not determine ClickHouse org ID.\n'; exit 1; }
 
-  EXISTING="$(_ch_api GET "/organizations/${CH_ORG_ID}/services" | python3 -c "
+    local EXISTING
+    EXISTING="$(_ch_api GET "/organizations/${CH_ORG_ID}/services" | python3 -c "
 import sys,json
 for s in json.load(sys.stdin).get('result',[]):
     if s.get('name')=='${CH_SERVICE_NAME}': print(json.dumps(s)); break
 " 2>/dev/null || true)"
 
-  if [[ -z "$EXISTING" ]]; then
-    printf '  Creating new ClickHouse Cloud service...\n'
-    CREATED="$(_ch_api POST "/organizations/${CH_ORG_ID}/services" \
-      -d "{\"name\":\"${CH_SERVICE_NAME}\",\"provider\":\"aws\",\"region\":\"${CH_REGION}\",\"tier\":\"${CH_TIER}\"}")"
-    CH_HOST="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['endpoints'][0]['hostname'])" 2>/dev/null)"
-    CH_PASS="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['password'])" 2>/dev/null)"
+    if [[ -z "$EXISTING" ]]; then
+      printf '  Creating new ClickHouse Cloud service...\n'
+      local CREATED
+      CREATED="$(_ch_api POST "/organizations/${CH_ORG_ID}/services" \
+        -d "{\"name\":\"${CH_SERVICE_NAME}\",\"provider\":\"aws\",\"region\":\"${CH_REGION}\",\"tier\":\"${CH_TIER}\"}")"
+      CH_HOST="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['endpoints'][0]['hostname'])" 2>/dev/null)"
+      CH_PASS_LOCAL="$(printf '%s' "$CREATED" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['password'])" 2>/dev/null)"
+    else
+      CH_HOST="$(printf '%s' "$EXISTING" | python3 -c "import sys,json;ep=json.load(sys.stdin).get('endpoints',[]); print(ep[0]['hostname'] if ep else '')" 2>/dev/null)"
+      local CH_SVC_ID CH_STATE
+      CH_SVC_ID="$(printf '%s' "$EXISTING" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)"
+      CH_STATE="$(printf '%s' "$EXISTING" | python3 -c "import sys,json;print(json.load(sys.stdin).get('state',''))" 2>/dev/null)"
+      CH_PASS_LOCAL="${CLICKHOUSE_PASSWORD:-}"
+      if [[ "$CH_STATE" == "idle" || "$CH_STATE" == "stopped" ]]; then
+        printf '  Resuming paused service...\n'
+        _ch_api PATCH "/organizations/${CH_ORG_ID}/services/${CH_SVC_ID}/state" -d '{"command":"start"}' >/dev/null
+      fi
+    fi
+
+    [[ -z "$CH_HOST" ]] && { printf 'ERROR: could not determine ClickHouse host.\n'; exit 1; }
+    [[ -z "$CH_PASS_LOCAL" ]] && { printf 'ERROR: CLICKHOUSE_PASSWORD required.\n'; exit 1; }
+    CLICKHOUSE_URL="https://${CH_HOST}:8443"
   else
-    CH_HOST="$(printf '%s' "$EXISTING" | python3 -c "import sys,json;ep=json.load(sys.stdin).get('endpoints',[]); print(ep[0]['hostname'] if ep else '')" 2>/dev/null)"
-    CH_SVC_ID="$(printf '%s' "$EXISTING" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)"
-    CH_STATE="$(printf '%s' "$EXISTING" | python3 -c "import sys,json;print(json.load(sys.stdin).get('state',''))" 2>/dev/null)"
-    CH_PASS="${CLICKHOUSE_PASSWORD:-}"
-    if [[ "$CH_STATE" == "idle" || "$CH_STATE" == "stopped" ]]; then
-      printf '  Resuming paused service...\n'
-      _ch_api PATCH "/organizations/${CH_ORG_ID}/services/${CH_SVC_ID}/state" -d '{"command":"start"}' >/dev/null
+    CH_PASS_LOCAL="${CLICKHOUSE_PASSWORD}"
+  fi
+
+  CH_PASS="$CH_PASS_LOCAL"
+  printf '  Endpoint: %s\n' "$CLICKHOUSE_URL"
+  export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
+  export TF_VAR_clickhouse_password="$CH_PASS"
+
+  if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+    printf '  Syncing ClickHouse credentials to GitHub Actions secrets...\n'
+    printf '%s' "$CLICKHOUSE_URL"             | gh secret set CLICKHOUSE_URL          --repo "$_GH_REPO"
+    printf '%s' "${CLICKHOUSE_USER:-default}" | gh secret set CLICKHOUSE_USER         --repo "$_GH_REPO"
+    printf '%s' "$CH_PASS"                    | gh secret set CLICKHOUSE_PASSWORD     --repo "$_GH_REPO"
+    printf '%s' "${_DIAG_LOGS}"               | gh secret set NEXT_PUBLIC_DIAG_LOGS   --repo "$_GH_REPO"
+  fi
+  export TF_VAR_next_public_diag_logs="${_DIAG_LOGS}"
+}
+
+_load_redis_creds() {
+  local REDIS_CREDS_FILE="$ROOT_DIR/.redis-creds"
+  if [[ -n "${REDIS_URL:-}" ]]; then
+    printf '  Using REDIS_URL from environment.\n'
+  elif [[ -f "$REDIS_CREDS_FILE" ]]; then
+    REDIS_URL="$(grep '^REDIS_URL=' "$REDIS_CREDS_FILE" 2>/dev/null | head -1 | cut -d'=' -f2-)"
+    local _REDIS_DISPLAY
+    _REDIS_DISPLAY="$(printf '%s' "${REDIS_URL:-}" | sed 's|:\([^:@]*\)@|:***@|')"
+    printf '  Loaded Redis URL from .redis-creds: %s. Use it? [Y/n]: ' "$_REDIS_DISPLAY"
+    read -r USE_REDIS_SAVED; USE_REDIS_SAVED="${USE_REDIS_SAVED:-Y}"
+    [[ ! "$USE_REDIS_SAVED" =~ ^[Yy] ]] && unset REDIS_URL
+  fi
+  if [[ -z "${REDIS_URL:-}" ]]; then
+    printf 'Redis URL (rediss://default:TOKEN@host:6380, or press Enter to skip): '
+    read -rs REDIS_URL; printf '\n'
+    if [[ -n "$REDIS_URL" ]]; then
+      printf 'REDIS_URL=%s\n' "$REDIS_URL" > "$REDIS_CREDS_FILE"
+      chmod 600 "$REDIS_CREDS_FILE"
+      printf '  Saved to .redis-creds\n'
     fi
   fi
-
-  [[ -z "$CH_HOST" ]] && { printf 'ERROR: could not determine ClickHouse host.\n'; exit 1; }
-  [[ -z "$CH_PASS" ]] && { printf 'ERROR: CLICKHOUSE_PASSWORD required.\n'; exit 1; }
-  CLICKHOUSE_URL="https://${CH_HOST}:8443"
-else
-  CH_PASS="${CLICKHOUSE_PASSWORD}"
-fi
-
-printf '  Endpoint: %s\n' "$CLICKHOUSE_URL"
-export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
-export TF_VAR_clickhouse_password="$CH_PASS"
-
-if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
-  printf '  Syncing ClickHouse credentials to GitHub Actions secrets...\n'
-  printf '%s' "$CLICKHOUSE_URL"             | gh secret set CLICKHOUSE_URL          --repo "$_GH_REPO"
-  printf '%s' "${CLICKHOUSE_USER:-default}" | gh secret set CLICKHOUSE_USER         --repo "$_GH_REPO"
-  printf '%s' "$CH_PASS"                    | gh secret set CLICKHOUSE_PASSWORD     --repo "$_GH_REPO"
-  printf '%s' "${_DIAG_LOGS}"               | gh secret set NEXT_PUBLIC_DIAG_LOGS   --repo "$_GH_REPO"
-fi
-export TF_VAR_next_public_diag_logs="${_DIAG_LOGS}"
-
-REDIS_CREDS_FILE="$ROOT_DIR/.redis-creds"
-if [[ -n "${REDIS_URL:-}" ]]; then
-  printf '  Using REDIS_URL from environment.\n'
-elif [[ -f "$REDIS_CREDS_FILE" ]]; then
-  REDIS_URL="$(grep '^REDIS_URL=' "$REDIS_CREDS_FILE" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-  _REDIS_DISPLAY="$(printf '%s' "${REDIS_URL:-}" | sed 's|:\([^:@]*\)@|:***@|')"
-  printf '  Loaded Redis URL from .redis-creds: %s. Use it? [Y/n]: ' "$_REDIS_DISPLAY"
-  read -r USE_REDIS_SAVED; USE_REDIS_SAVED="${USE_REDIS_SAVED:-Y}"
-  if [[ ! "$USE_REDIS_SAVED" =~ ^[Yy] ]]; then
-    unset REDIS_URL
+  export TF_VAR_redis_url="${REDIS_URL:-}"
+  if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${REDIS_URL:-}" ]]; then
+    printf '%s' "$REDIS_URL" | gh secret set REDIS_URL --repo "$_GH_REPO"
   fi
-fi
-if [[ -z "${REDIS_URL:-}" ]]; then
-  printf 'Redis URL (rediss://default:TOKEN@host:6380, or press Enter to skip): '
-  read -rs REDIS_URL; printf '\n'
-  if [[ -n "$REDIS_URL" ]]; then
-    printf 'REDIS_URL=%s\n' "$REDIS_URL" > "$REDIS_CREDS_FILE"
-    chmod 600 "$REDIS_CREDS_FILE"
-    printf '  Saved to .redis-creds\n'
-  fi
-fi
-export TF_VAR_redis_url="${REDIS_URL:-}"
-if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${REDIS_URL:-}" ]]; then
-  printf '%s' "$REDIS_URL" | gh secret set REDIS_URL --repo "$_GH_REPO"
-fi
+}
 
-TS_CREDS_FILE="$ROOT_DIR/.typesense-creds"
-if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
-  printf '  Using Typesense credentials from environment.\n'
-elif [[ -f "$TS_CREDS_FILE" ]]; then
-  source "$TS_CREDS_FILE"
-  printf '  Loaded Typesense URL from .typesense-creds: %s. Use it? [Y/n]: ' "${TYPESENSE_URL:-}"
-  read -r USE_TS_SAVED; USE_TS_SAVED="${USE_TS_SAVED:-Y}"
-  if [[ ! "$USE_TS_SAVED" =~ ^[Yy] ]]; then
-    unset TYPESENSE_URL TYPESENSE_API_KEY
-  else
-    printf '  Use saved API key? [Y/n]: '
-    read -r USE_TS_KEY; USE_TS_KEY="${USE_TS_KEY:-Y}"
-    if [[ ! "$USE_TS_KEY" =~ ^[Yy] ]]; then
+_load_typesense_creds() {
+  local TS_CREDS_FILE="$ROOT_DIR/.typesense-creds"
+  if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
+    printf '  Using Typesense credentials from environment.\n'
+  elif [[ -f "$TS_CREDS_FILE" ]]; then
+    source "$TS_CREDS_FILE"
+    printf '  Loaded Typesense URL from .typesense-creds: %s. Use it? [Y/n]: ' "${TYPESENSE_URL:-}"
+    read -r USE_TS_SAVED; USE_TS_SAVED="${USE_TS_SAVED:-Y}"
+    if [[ ! "$USE_TS_SAVED" =~ ^[Yy] ]]; then
+      unset TYPESENSE_URL TYPESENSE_API_KEY
+    else
+      printf '  Use saved API key? [Y/n]: '
+      read -r USE_TS_KEY; USE_TS_KEY="${USE_TS_KEY:-Y}"
+      if [[ ! "$USE_TS_KEY" =~ ^[Yy] ]]; then
+        printf 'Typesense Admin API Key: '
+        read -rs TYPESENSE_API_KEY; printf '\n'
+        printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
+        chmod 600 "$TS_CREDS_FILE"
+        printf '  Saved to .typesense-creds\n'
+      fi
+    fi
+  fi
+  if [[ -z "${TYPESENSE_URL:-}" ]]; then
+    printf 'Typesense URL (e.g. https://xxx.a1.typesense.net, or press Enter to skip): '
+    read -r TYPESENSE_URL; printf '\n'
+    if [[ -n "$TYPESENSE_URL" ]]; then
       printf 'Typesense Admin API Key: '
       read -rs TYPESENSE_API_KEY; printf '\n'
-      printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
-      chmod 600 "$TS_CREDS_FILE"
-      printf '  Saved to .typesense-creds\n'
+      printf 'Save credentials? [Y/n]: '
+      read -r SAVE_TS_CREDS; SAVE_TS_CREDS="${SAVE_TS_CREDS:-Y}"
+      if [[ "$SAVE_TS_CREDS" =~ ^[Yy] ]]; then
+        printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
+        chmod 600 "$TS_CREDS_FILE"
+        printf '  Saved to .typesense-creds\n'
+      fi
     fi
   fi
-fi
-if [[ -z "${TYPESENSE_URL:-}" ]]; then
-  printf 'Typesense URL (e.g. https://xxx.a1.typesense.net, or press Enter to skip): '
-  read -r TYPESENSE_URL; printf '\n'
-  if [[ -n "$TYPESENSE_URL" ]]; then
-    printf 'Typesense Admin API Key: '
-    read -rs TYPESENSE_API_KEY; printf '\n'
-    printf 'Save credentials? [Y/n]: '
-    read -r SAVE_TS_CREDS; SAVE_TS_CREDS="${SAVE_TS_CREDS:-Y}"
-    if [[ "$SAVE_TS_CREDS" =~ ^[Yy] ]]; then
-      printf 'TYPESENSE_URL=%s\nTYPESENSE_API_KEY=%s\n' "$TYPESENSE_URL" "$TYPESENSE_API_KEY" > "$TS_CREDS_FILE"
-      chmod 600 "$TS_CREDS_FILE"
-      printf '  Saved to .typesense-creds\n'
-    fi
+  export TYPESENSE_URL="${TYPESENSE_URL:-}"
+  export TYPESENSE_API_KEY="${TYPESENSE_API_KEY:-}"
+  export TF_VAR_typesense_url="${TYPESENSE_URL:-}"
+  export TF_VAR_typesense_api_key="${TYPESENSE_API_KEY:-}"
+  if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${TYPESENSE_URL:-}" ]]; then
+    printf '%s' "$TYPESENSE_URL"     | gh secret set TYPESENSE_URL     --repo "$_GH_REPO"
+    printf '%s' "$TYPESENSE_API_KEY" | gh secret set TYPESENSE_API_KEY --repo "$_GH_REPO"
   fi
-fi
-export TYPESENSE_URL="${TYPESENSE_URL:-}"
-export TYPESENSE_API_KEY="${TYPESENSE_API_KEY:-}"
-export TF_VAR_typesense_url="${TYPESENSE_URL:-}"
-export TF_VAR_typesense_api_key="${TYPESENSE_API_KEY:-}"
-if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" && -n "${TYPESENSE_URL:-}" ]]; then
-  printf '%s' "$TYPESENSE_URL"     | gh secret set TYPESENSE_URL     --repo "$_GH_REPO"
-  printf '%s' "$TYPESENSE_API_KEY" | gh secret set TYPESENSE_API_KEY --repo "$_GH_REPO"
-fi
+}
 
-printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
-cd "$INFRA_DIR"
-terraform init -input=false -upgrade >/dev/null
-printf '  Pruning stale state...\n'
+_provision_infra() {
+  printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
+  cd "$INFRA_DIR"
+  terraform init -input=false -upgrade >/dev/null
+  printf '  Pruning stale state...\n'
+  terraform state rm aws_codebuild_project.app           2>/dev/null || true
+  terraform state rm aws_iam_role_policy.codebuild       2>/dev/null || true
+  terraform state rm aws_iam_role.codebuild              2>/dev/null || true
+  terraform state rm aws_s3_bucket.codebuild_src         2>/dev/null || true
 
-terraform state rm aws_codebuild_project.app                            2>/dev/null || true
-terraform state rm aws_iam_role_policy.codebuild                        2>/dev/null || true
-terraform state rm aws_iam_role.codebuild                               2>/dev/null || true
-terraform state rm aws_s3_bucket.codebuild_src                          2>/dev/null || true
-
-_STATE_FILE="$INFRA_DIR/terraform.tfstate"
-if [[ -f "$_STATE_FILE" ]]; then
-  python3 -c "
+  local _STATE_FILE="$INFRA_DIR/terraform.tfstate"
+  if [[ -f "$_STATE_FILE" ]]; then
+    python3 -c "
 import json
 with open('$_STATE_FILE') as f: s = json.load(f)
 for k in ('codebuild_source_bucket', 'codebuild_project_name'):
     s.get('outputs', {}).pop(k, None)
 with open('$_STATE_FILE', 'w') as f: json.dump(s, f, indent=2)
 " 2>/dev/null || true
-fi
+  fi
 
-ECR_IMAGE_EXISTS="$(aws ecr describe-images \
-  --repository-name "ch-dash-app" \
-  --image-ids imageTag=latest \
-  --query 'imageDetails[0].imageDigest' \
-  --output text 2>/dev/null || true)"
+  local ECR_IMAGE_EXISTS
+  ECR_IMAGE_EXISTS="$(aws ecr describe-images \
+    --repository-name "ch-dash-app" --image-ids imageTag=latest \
+    --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
 
-if [[ -z "$ECR_IMAGE_EXISTS" || "$ECR_IMAGE_EXISTS" == "None" ]]; then
-  printf '  First deploy — provisioning ECR before image build.\n'
-  terraform apply -auto-approve -input=false \
-    -target=aws_ecr_repository.app \
-    -target=aws_ecr_lifecycle_policy.app \
-    -target=aws_iam_role.apprunner_ecr \
-    -target=aws_iam_role_policy_attachment.apprunner_ecr \
-    -target=aws_apprunner_auto_scaling_configuration_version.app \
-    -target=aws_s3_bucket.maintenance \
-    -target=aws_s3_bucket_public_access_block.maintenance \
-    -target=aws_s3_bucket_website_configuration.maintenance \
-    -target=aws_s3_bucket_policy.maintenance \
-    -target=aws_s3_object.maintenance_html
-  FIRST_DEPLOY=1
-else
-  terraform apply -auto-approve -input=false
-  FIRST_DEPLOY=0
-fi
+  if [[ -z "$ECR_IMAGE_EXISTS" || "$ECR_IMAGE_EXISTS" == "None" ]]; then
+    printf '  First deploy — provisioning ECR before image build.\n'
+    terraform apply -auto-approve -input=false \
+      -target=aws_ecr_repository.app \
+      -target=aws_ecr_lifecycle_policy.app \
+      -target=aws_iam_role.apprunner_ecr \
+      -target=aws_iam_role_policy_attachment.apprunner_ecr \
+      -target=aws_apprunner_auto_scaling_configuration_version.app \
+      -target=aws_s3_bucket.maintenance \
+      -target=aws_s3_bucket_public_access_block.maintenance \
+      -target=aws_s3_bucket_website_configuration.maintenance \
+      -target=aws_s3_bucket_policy.maintenance \
+      -target=aws_s3_object.maintenance_html
+    FIRST_DEPLOY=1
+  else
+    terraform apply -auto-approve -input=false
+    FIRST_DEPLOY=0
+  fi
 
-printf '[deploy] Verifying NEXT_PUBLIC_DIAG_LOGS build-arg...\n'
-_ensure_diag_build_arg || true
+  printf '[deploy] Verifying NEXT_PUBLIC_DIAG_LOGS build-arg...\n'
+  _ensure_diag_build_arg || true
+}
 
-printf '[4/5] Verifying image in ECR...\n'
-_REMOTE_SHA="$(git -C "$ROOT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7)"
-_DEPLOY_TAG="${_REMOTE_SHA:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")}"
-printf '  Checking ECR for image %s...\n' "$_DEPLOY_TAG"
-if ! _ecr_image_exists "$_DEPLOY_TAG"; then
-  if _ecr_image_exists "latest"; then
-    _GH_BUILD_ACTIVE=0
-    if command -v gh >/dev/null 2>&1 && [[ -n "${_GH_REPO:-}" ]]; then
-      _GH_RUN_STATUS="$(gh run list --repo "$_GH_REPO" --limit 5 --json headSha,status \
-        --jq ".[] | select((.status == \"in_progress\") or (.status == \"queued\")) | select(.headSha | startswith(\"${_DEPLOY_TAG}\")) | .status" \
-        2>/dev/null | head -1 || echo '')"
-      [[ -n "$_GH_RUN_STATUS" ]] && _GH_BUILD_ACTIVE=1
-    fi
-    if [[ "$_GH_BUILD_ACTIVE" -eq 1 ]]; then
-      printf '  GH Actions is building %s — not in ECR yet.\n\n' "$_DEPLOY_TAG"
-      printf '  [1] Wait for build to complete then continue\n'
-      printf '  [2] Exit now and re-run deploy later\n\n'
-      printf '  Choice [1/2, default 1]: '
-      read -r _GH_WAIT_CHOICE
-      if [[ "${_GH_WAIT_CHOICE:-1}" == "2" ]]; then
-        printf '  Exiting. Re-run deploy.sh once GH Actions completes.\n'
-        exit 0
-      fi
-      printf '  Polling ECR for %s every 30s (up to 15 min)...\n' "$_DEPLOY_TAG"
-      _ecr_elapsed=0
-      until _ecr_image_exists "$_DEPLOY_TAG"; do
-        if (( _ecr_elapsed >= 900 )); then
-          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "$_GH_REPO"
+_verify_ecr_image() {
+  printf '[4/5] Verifying image in ECR...\n'
+  local _REMOTE_SHA
+  _REMOTE_SHA="$(git -C "$ROOT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7)"
+  _DEPLOY_TAG="${_REMOTE_SHA:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")}"
+  printf '  Checking ECR for image %s...\n' "$_DEPLOY_TAG"
+
+  if ! _ecr_image_exists "$_DEPLOY_TAG"; then
+    if _ecr_image_exists "latest"; then
+      _verify_ecr_handle_latest_fallback
+    else
+      printf '  No image in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n'
+      local elapsed=0
+      until _ecr_image_exists "latest"; do
+        if (( elapsed >= 600 )); then
+          printf '  Timed out. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n'
           exit 1
         fi
-        sleep 30; _ecr_elapsed=$(( _ecr_elapsed + 30 ))
-        printf '  ...%ds elapsed\n' "$_ecr_elapsed"
+        sleep 15; elapsed=$(( elapsed + 15 ))
+        printf '  ...%ds\n' "$elapsed"
       done
-      printf '  Image %s now in ECR.\n' "$_DEPLOY_TAG"
-    else
-      printf '  SHA %s not in ECR (code unchanged since last build) — using latest.\n' "$_DEPLOY_TAG"
       _DEPLOY_TAG=latest
     fi
-  else
-    printf '  No image in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n'
-    _ecr_elapsed=0
-    until _ecr_image_exists "latest"; do
-      if (( _ecr_elapsed >= 600 )); then
-        printf '  Timed out. Check Actions: https://github.com/bganguly/clickhouse-dashboard/actions\n'
+  fi
+
+  printf '  Image %s found in ECR.\n' "$_DEPLOY_TAG"
+  local _MANIFEST
+  _MANIFEST=$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+    --image-ids "imageTag=${_DEPLOY_TAG}" --query 'images[0].imageManifest' \
+    --output text 2>/dev/null)
+  if [[ "$_DEPLOY_TAG" != "latest" ]]; then
+    aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+      --image-manifest "$_MANIFEST" >/dev/null 2>&1 \
+      && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
+  fi
+}
+
+_verify_ecr_handle_latest_fallback() {
+  local _GH_BUILD_ACTIVE=0
+  if command -v gh >/dev/null 2>&1 && [[ -n "${_GH_REPO:-}" ]]; then
+    local _GH_RUN_STATUS
+    _GH_RUN_STATUS="$(gh run list --repo "$_GH_REPO" --limit 5 --json headSha,status \
+      --jq ".[] | select((.status == \"in_progress\") or (.status == \"queued\")) | select(.headSha | startswith(\"${_DEPLOY_TAG}\")) | .status" \
+      2>/dev/null | head -1 || echo '')"
+    [[ -n "$_GH_RUN_STATUS" ]] && _GH_BUILD_ACTIVE=1
+  fi
+  if [[ "$_GH_BUILD_ACTIVE" -eq 1 ]]; then
+    printf '  GH Actions is building %s — not in ECR yet.\n\n' "$_DEPLOY_TAG"
+    printf '  [1] Wait for build to complete then continue\n'
+    printf '  [2] Exit now and re-run deploy later\n\n'
+    printf '  Choice [1/2, default 1]: '
+    read -r _GH_WAIT_CHOICE
+    if [[ "${_GH_WAIT_CHOICE:-1}" == "2" ]]; then
+      printf '  Exiting. Re-run deploy.sh once GH Actions completes.\n'; exit 0
+    fi
+    printf '  Polling ECR for %s every 30s (up to 15 min)...\n' "$_DEPLOY_TAG"
+    local elapsed=0
+    until _ecr_image_exists "$_DEPLOY_TAG"; do
+      if (( elapsed >= 900 )); then
+        printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "$_GH_REPO"
         exit 1
       fi
-      sleep 15; _ecr_elapsed=$(( _ecr_elapsed + 15 ))
-      printf '  ...%ds\n' "$_ecr_elapsed"
+      sleep 30; elapsed=$(( elapsed + 30 ))
+      printf '  ...%ds elapsed\n' "$elapsed"
     done
+    printf '  Image %s now in ECR.\n' "$_DEPLOY_TAG"
+  else
+    printf '  SHA %s not in ECR (code unchanged since last build) — using latest.\n' "$_DEPLOY_TAG"
     _DEPLOY_TAG=latest
   fi
-fi
-printf '  Image %s found in ECR.\n' "$_DEPLOY_TAG"
-_MANIFEST=$(aws ecr batch-get-image --repository-name "ch-dash-app" \
-  --image-ids "imageTag=${_DEPLOY_TAG}" --query 'images[0].imageManifest' \
-  --output text 2>/dev/null)
-if [[ "$_DEPLOY_TAG" != "latest" ]]; then
-  aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
-    --image-manifest "$_MANIFEST" >/dev/null 2>&1 \
-    && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
-fi
+}
 
-printf '[5/5] Deploying to App Runner...\n'
-cd "$INFRA_DIR"
-_AR_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
-_TAINTED=0
-if [[ -n "$_AR_ARN" ]]; then
-  _AR_REGION="$(printf '%s' "$_AR_ARN" | cut -d: -f4)"
-  _AR_STATUS="$(aws apprunner describe-service --service-arn "$_AR_ARN" \
-    --region "$_AR_REGION" --query 'Service.Status' --output text 2>/dev/null || true)"
-  if [[ "$_AR_STATUS" == "CREATE_FAILED" ]]; then
-    printf '  App Runner in CREATE_FAILED — tainting for recreation...\n'
-    terraform taint aws_apprunner_service.app
-    _TAINTED=1
+_deploy_app_runner() {
+  printf '[5/5] Deploying to App Runner...\n'
+  cd "$INFRA_DIR"
+  local _AR_ARN _AR_REGION _AR_STATUS _TAINTED=0
+  _AR_ARN="$(terraform output -raw apprunner_service_arn 2>/dev/null || true)"
+  if [[ -n "$_AR_ARN" ]]; then
+    _AR_REGION="$(printf '%s' "$_AR_ARN" | cut -d: -f4)"
+    _AR_STATUS="$(aws apprunner describe-service --service-arn "$_AR_ARN" \
+      --region "$_AR_REGION" --query 'Service.Status' --output text 2>/dev/null || true)"
+    if [[ "$_AR_STATUS" == "CREATE_FAILED" ]]; then
+      printf '  App Runner in CREATE_FAILED — tainting for recreation...\n'
+      terraform taint aws_apprunner_service.app
+      _TAINTED=1
+    fi
   fi
-fi
-if [[ "$_TAINTED" -eq 1 ]]; then
-  terraform apply -auto-approve -input=false
-fi
-printf '  Reading Terraform outputs...\n'
-APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
-CDN_URL="$(terraform output -raw cdn_url)"
+  [[ "$_TAINTED" -eq 1 ]] && terraform apply -auto-approve -input=false
 
-if [[ "$FIRST_DEPLOY" == "0" ]]; then
-  _PRE2_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-  if [[ "$_PRE2_STATUS" == "OPERATION_IN_PROGRESS" ]]; then
+  printf '  Reading Terraform outputs...\n'
+  APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
+  CDN_URL="$(terraform output -raw cdn_url)"
+  CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
+
+  [[ "$FIRST_DEPLOY" == "0" ]] && _apprunner_deploy_existing
+}
+
+_apprunner_deploy_existing() {
+  local status
+  status="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+  if [[ "$status" == "OPERATION_IN_PROGRESS" ]]; then
     printf '  Deployment already in progress — waiting before starting ours...\n'
-    _pre2_t0=$(date +%s)
-    while [[ "$_PRE2_STATUS" == "OPERATION_IN_PROGRESS" ]]; do
+    local t0=$(date +%s)
+    while [[ "$status" == "OPERATION_IN_PROGRESS" ]]; do
       sleep 20
-      _PRE2_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-      printf '\r  %s... (%ds)' "$_PRE2_STATUS" $(( $(date +%s) - _pre2_t0 ))
+      status="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+      printf '\r  %s... (%ds)' "$status" $(( $(date +%s) - t0 ))
     done
     printf '\n'
   fi
+
   if [[ "$_CH_PREWARMED" -eq 0 ]]; then
-    printf '[5/5] Waiting for ClickHouse before deployment...\n'
-    _ch2_pre_deadline=$(( $(date +%s) + 180 ))
-    while true; do
-      _ch2_pre_ping="$(curl -sf --max-time 8 -u "default:${CH_PASS}" \
-        "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=5" \
-        --data-binary "SELECT 1" 2>/dev/null || echo '')"
-      if [[ "$_ch2_pre_ping" == "1" ]]; then
-        printf '  ClickHouse ready.\n'; break
-      fi
-      _ch2_pre_remaining=$(( _ch2_pre_deadline - $(date +%s) ))
-      if (( _ch2_pre_remaining <= 0 )); then
-        printf '\nERROR: ClickHouse not reachable after 3 min — aborting deploy.\n'; exit 1
-      fi
-      printf '\r  not ready (%ds remaining)...' "$_ch2_pre_remaining"
-      sleep 10
-    done
+    _ch_wait_ready "[5/5]" "$CLICKHOUSE_URL" "$CH_PASS" 180 abort
   else
     printf '[5/5] ClickHouse confirmed reachable (pre-flight check passed).\n'
   fi
+
   aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
-fi
-
-_ar2_t0=$(date +%s)
-while true; do
-  SVC_STATUS="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
-  if [[ "$SVC_STATUS" == "RUNNING" ]]; then printf '\r  Running (%ds).  \n' $(( $(date +%s) - _ar2_t0 )); break; fi
-  if [[ "$SVC_STATUS" == "CREATE_FAILED" || "$SVC_STATUS" == "UPDATE_FAILED" ]]; then
-    printf '\nERROR: App Runner %s.\n' "$SVC_STATUS"; exit 1; fi
-  printf '\r  %s... (%ds)' "$SVC_STATUS" $(( $(date +%s) - _ar2_t0 ))
-  sleep 20
-done
-printf '  Startup instrumentation complete — Redis and ClickHouse connections pre-warmed.\n'
-
-_poll_update_mutation() {
-  local t0 elapsed row is_done left failed
-  t0=$(date +%s)
-  for _w in $(seq 1 12); do
-    sleep 5
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    [[ -n "$row" ]] && break
-    printf '\r  waiting for UPDATE mutation to register (%ds)...' $(( _w * 5 ))
-  done
-  printf '\n'
+  local t0=$(date +%s) svc_status
   while true; do
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    is_done="$(printf '%s' "$row" | cut -f1)"
-    left="$(printf '%s' "$row" | cut -f2)"
-    failed="$(printf '%s' "$row" | cut -f3)"
-    if [[ "$is_done" == "1" ]]; then
-      [[ -n "$failed" ]] && { printf '\n  ERROR: UPDATE mutation failed on part: %s\n' "$failed"; return 1; }
-      printf '\r  done — searchText backfill complete.\n'; return 0
+    svc_status="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" --query 'Service.Status' --output text)"
+    if [[ "$svc_status" == "RUNNING" ]]; then printf '\r  Running (%ds).  \n' $(( $(date +%s) - t0 )); break; fi
+    if [[ "$svc_status" == "CREATE_FAILED" || "$svc_status" == "UPDATE_FAILED" ]]; then
+      printf '\nERROR: App Runner %s.\n' "$svc_status"; exit 1
     fi
-    elapsed=$(( $(date +%s) - t0 ))
-    if (( elapsed > 1200 )); then
-      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
-    fi
-    printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
-    sleep 10
+    printf '\r  %s... (%ds)' "$svc_status" $(( $(date +%s) - t0 ))
+    sleep 20
   done
+  printf '  Startup instrumentation complete — Redis and ClickHouse connections pre-warmed.\n'
 }
 
-_poll_materialize_idx() {
-  local t0 elapsed total left row is_done failed
-  t0=$(date +%s); total=0
-  for _w in $(seq 1 12); do
-    sleep 5
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    [[ -n "$row" ]] && break
-    printf '\r  waiting for mutation to register (%ds)...' $(( _w * 5 ))
-  done
-  printf '\n'
-  while true; do
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_search_fulltext%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    is_done="$(printf '%s' "$row" | cut -f1)"
-    left="$(printf '%s' "$row" | cut -f2)"
-    failed="$(printf '%s' "$row" | cut -f3)"
-    if [[ "$is_done" == "1" ]]; then
-      [[ -n "$failed" ]] && { printf '\n  ERROR: mutation failed on part: %s\n' "$failed"; return 1; }
-      printf '\r  done — index fully materialized.\n'; return 0
-    fi
-    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
-    elapsed=$(( $(date +%s) - t0 ))
-    if (( elapsed > 1200 )); then
-      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
-    fi
-    printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
-    sleep 10
-  done
+_run_db_checks() {
+  _ch_wait_ready "[deploy]" "$CLICKHOUSE_URL" "$CH_PASS" 180 skip
+
+  _db_check_searchtext_case
+  _db_check_notes
+  _db_check_search_index
+  _db_check_notes_ngram_idx
+  _db_check_ocf
+  _db_check_ocf_idx
+  _db_check_daily_order_count
+  _db_check_daily_search_token_summary
+  _db_check_items_column
+  _db_check_search_vocabulary
+  _db_check_typesense
 }
 
-_poll_ocf_mutation() {
-  local t0 elapsed row is_done left failed
-  t0=$(date +%s)
-  for _w in $(seq 1 12); do
-    sleep 5
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    [[ -n "$row" ]] && break
-    printf '\r  waiting for OCF UPDATE mutation to register (%ds)...' $(( _w * 5 ))
-  done
-  printf '\n'
-  while true; do
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%UPDATE searchText%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    is_done="$(printf '%s' "$row" | cut -f1)"
-    left="$(printf '%s' "$row" | cut -f2)"
-    failed="$(printf '%s' "$row" | cut -f3)"
-    if [[ "$is_done" == "1" ]]; then
-      [[ -n "$failed" ]] && { printf '\n  ERROR: OCF mutation failed on part: %s\n' "$failed"; return 1; }
-      printf '\r  done — order_category_facts.searchText backfill complete.\n'; return 0
-    fi
-    elapsed=$(( $(date +%s) - t0 ))
-    if (( elapsed > 1200 )); then
-      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
-    fi
-    printf '\r  parts remaining: %s  elapsed: %ds' "${left:-?}" "$elapsed"
-    sleep 10
-  done
-}
+_db_check_searchtext_case() {
+  printf '[deploy] Checking searchText case...\n'
+  local _SEARCH_FIX
+  _SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT if(lower(customerFirstName) != substring(searchText, 1, length(customerFirstName)), 1, 0) FROM orders LIMIT 1" \
+    2>/dev/null || echo 0)"
+  [[ "${_SEARCH_FIX:-0}" -eq 0 ]] && return 0
 
-_poll_notes_ngram_idx() {
-  local t0 elapsed total left row is_done failed
-  t0=$(date +%s); total=0
-  for _w in $(seq 1 12); do
-    sleep 5
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_notes_ngram%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    [[ -n "$row" ]] && break
-    printf '\r  waiting for idx_notes_ngram mutation to register (%ds)...' $(( _w * 5 ))
-  done
-  printf '\n'
-  while true; do
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='orders' AND command LIKE '%MATERIALIZE INDEX%idx_notes_ngram%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    is_done="$(printf '%s' "$row" | cut -f1)"
-    left="$(printf '%s' "$row" | cut -f2)"
-    failed="$(printf '%s' "$row" | cut -f3)"
-    if [[ "$is_done" == "1" ]]; then
-      [[ -n "$failed" ]] && { printf '\n  ERROR: idx_notes_ngram mutation failed on part: %s\n' "$failed"; return 1; }
-      printf '\r  done — idx_notes_ngram materialized.\n'; return 0
-    fi
-    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
-    elapsed=$(( $(date +%s) - t0 ))
-    if (( elapsed > 1200 )); then
-      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
-    fi
-    printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
-    sleep 10
-  done
-}
-
-_poll_ocf_idx() {
-  local t0 elapsed total left row is_done failed
-  t0=$(date +%s); total=0
-  for _w in $(seq 1 12); do
-    sleep 5
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%MATERIALIZE INDEX%idx_ocf_search%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    [[ -n "$row" ]] && break
-    printf '\r  waiting for idx_ocf_search mutation to register (%ds)...' $(( _w * 5 ))
-  done
-  printf '\n'
-  while true; do
-    row="$(curl -sf -u "default:${CH_PASS}" \
-      "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-      --data-binary "SELECT is_done, parts_to_do, latest_failed_part FROM system.mutations WHERE table='order_category_facts' AND command LIKE '%MATERIALIZE INDEX%idx_ocf_search%' ORDER BY create_time DESC LIMIT 1" \
-      2>/dev/null || echo '')"
-    is_done="$(printf '%s' "$row" | cut -f1)"
-    left="$(printf '%s' "$row" | cut -f2)"
-    failed="$(printf '%s' "$row" | cut -f3)"
-    if [[ "$is_done" == "1" ]]; then
-      [[ -n "$failed" ]] && { printf '\n  ERROR: OCF index mutation failed on part: %s\n' "$failed"; return 1; }
-      printf '\r  done — idx_ocf_search materialized.\n'; return 0
-    fi
-    [[ $total -eq 0 && "${left:-0}" -gt 0 ]] && total=$left
-    elapsed=$(( $(date +%s) - t0 ))
-    if (( elapsed > 1200 )); then
-      printf '\n  timed out after 20 min — mutation did not appear in system.mutations (may have completed instantly).\n'; return 0
-    fi
-    printf '\r  parts remaining: %s / %s  elapsed: %ds' "${left:-?}" "${total:-?}" "$elapsed"
-    sleep 10
-  done
-}
-
-printf '[deploy] Waiting for ClickHouse to be reachable...\n'
-_ch_deadline=$(( $(date +%s) + 180 ))
-_ch_attempt=0
-while true; do
-  _ch_ping="$(curl -sf -u "default:${CH_PASS}" \
-    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=5" \
-    --data-binary "SELECT 1" 2>/dev/null || echo '')"
-  if [[ "$_ch_ping" == "1" ]]; then
-    printf '  ready.\n'; break
-  fi
-  if (( $(date +%s) > _ch_deadline )); then
-    printf '  ClickHouse not reachable after 3 min — skipping DB checks.\n'
-    exit 0
-  fi
-  _ch_attempt=$(( _ch_attempt + 1 ))
-  printf '\r  not ready (attempt %d)...' "$_ch_attempt"
-  sleep 5
-done
-
-printf '[deploy] Checking searchText case...\n'
-_SEARCH_FIX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT if(lower(customerFirstName) != substring(searchText, 1, length(customerFirstName)), 1, 0) FROM orders LIMIT 1" \
-  2>/dev/null || echo 0)"
-if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
   printf '  Mixed-case searchText detected — submitting UPDATE...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders UPDATE searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), if(coalesce(notes, '') = '', '', concat(' ', coalesce(notes, ''))), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE lower(customerFirstName) != substring(searchText, 1, length(customerFirstName))" \
@@ -987,77 +886,90 @@ if [[ "${_SEARCH_FIX:-0}" -eq 1 ]]; then
   printf '  Re-baking S3 dump with corrected data...\n'
   CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}" CLICKHOUSE_PASSWORD="$CH_PASS" \
     bash "$ROOT_DIR/scripts/bake-ch-dump.sh"
-fi
+}
 
-printf '[deploy] Checking notes content...\n'
-_NULL_NOTES="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT countIf(notes IS NULL) FROM orders" \
-  2>/dev/null || echo 0)"
-if [[ "${_NULL_NOTES:-0}" -gt 0 ]]; then
+_db_check_notes() {
+  printf '[deploy] Checking notes content...\n'
+  local _NULL_NOTES
+  _NULL_NOTES="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT countIf(notes IS NULL) FROM orders" \
+    2>/dev/null || echo 0)"
+  [[ "${_NULL_NOTES:-0}" -eq 0 ]] && return 0
+
   printf '  %s rows with NULL notes — backfilling...\n' "$_NULL_NOTES"
-  _NOTES_POOL="'please leave at front door ring bell twice','gift wrapping requested include birthday card','fragile items handle with extreme care','corporate bulk order for quarterly offsite event','express shipping required before the conference','leave with building concierge if not home','signature required upon delivery no exceptions','urgent replacement for previously damaged shipment','perishable contents keep refrigerated at all times','eco friendly packaging only no plastic wrap','annual office supply subscription renewal invoice','school supply order for upcoming fall semester','bridal shower gift please include congratulations card','rush order needed before saturday morning delivery','holiday promotional bundle seasonal discount applied','wholesale distributor recurring weekly standing order','loyalty rewards redemption free shipping included','priority processing customer complaint credit applied','temperature sensitive store below forty degrees fahrenheit','military veteran discount applied thank you for service'"
+  local _NOTES_POOL
+  _NOTES_POOL="$(_sql_array "${DATA_DIR}/notes.txt")"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders UPDATE notes = arrayElement([${_NOTES_POOL}], toUInt32(intHash32(orderId) % 20) + 1), searchText = concat(lower(customerFirstName), ' ', lower(customerLastName), ' ', toString(orderId), ' ', arrayElement([${_NOTES_POOL}], toUInt32(intHash32(orderId) % 20) + 1), if(length(customerFirstName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerFirstName), arrayMap(i -> lower(substring(customerFirstName, 1, i)), range(1, length(customerFirstName) + 1))), ' ')), ''), if(length(customerLastName) > 3, concat(' ', arrayStringConcat(arrayFilter(x -> length(x) >= 3 AND length(x) < length(customerLastName), arrayMap(i -> lower(substring(customerLastName, 1, i)), range(1, length(customerLastName) + 1))), ' ')), '')) WHERE notes IS NULL" \
     2>/dev/null || true
   _poll_update_mutation
-fi
+}
 
-printf '[deploy] Checking search index...\n'
-_IDX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT countIf(has(skip_indices, 'idx_search_fulltext')), count() FROM system.parts WHERE table='orders' AND active=1" \
-  2>/dev/null || echo '0	1')"
-_IDX_PARTS="$(printf '%s' "$_IDX" | cut -f1)"
-_TOT_PARTS="$(printf '%s' "$_IDX" | cut -f2)"
-if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -ne "${_TOT_PARTS}" ]]; then
+_db_check_search_index() {
+  printf '[deploy] Checking search index...\n'
+  local _IDX _IDX_PARTS _TOT_PARTS
+  _IDX="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT countIf(has(skip_indices, 'idx_search_fulltext')), count() FROM system.parts WHERE table='orders' AND active=1" \
+    2>/dev/null || echo '0	1')"
+  _IDX_PARTS="$(printf '%s' "$_IDX" | cut -f1)"
+  _TOT_PARTS="$(printf '%s' "$_IDX" | cut -f2)"
+  [[ "${_TOT_PARTS:-0}" -le 0 || "${_IDX_PARTS:-0}" -eq "${_TOT_PARTS}" ]] && return 0
   printf '  %s / %s parts indexed — materializing...\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_search_fulltext" 2>/dev/null || true
   _poll_materialize_idx
-fi
+}
 
-printf '[deploy] Checking notes ngram index...\n'
-_NGRAM_IDX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT countIf(has(skip_indices, 'idx_notes_ngram')), count() FROM system.parts WHERE table='orders' AND active=1" \
-  2>/dev/null || echo '0	1')"
-_NGRAM_PARTS="$(printf '%s' "$_NGRAM_IDX" | cut -f1)"
-_NGRAM_TOT="$(printf '%s' "$_NGRAM_IDX" | cut -f2)"
-if [[ "${_NGRAM_TOT:-0}" -gt 0 && "${_NGRAM_PARTS:-0}" -ne "${_NGRAM_TOT}" ]]; then
-  printf '  %s / %s parts indexed — materializing idx_notes_ngram...\n' "${_NGRAM_PARTS:-0}" "${_NGRAM_TOT:-?}"
+_db_check_notes_ngram_idx() {
+  printf '[deploy] Checking notes ngram index...\n'
+  local _IDX _IDX_PARTS _TOT_PARTS
+  _IDX="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT countIf(has(skip_indices, 'idx_notes_ngram')), count() FROM system.parts WHERE table='orders' AND active=1" \
+    2>/dev/null || echo '0	1')"
+  _IDX_PARTS="$(printf '%s' "$_IDX" | cut -f1)"
+  _TOT_PARTS="$(printf '%s' "$_IDX" | cut -f2)"
+  [[ "${_TOT_PARTS:-0}" -le 0 || "${_IDX_PARTS:-0}" -eq "${_TOT_PARTS}" ]] && return 0
+  printf '  %s / %s parts indexed — materializing idx_notes_ngram...\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
     --data-binary "ALTER TABLE orders MATERIALIZE INDEX idx_notes_ngram" 2>/dev/null || true
   _poll_notes_ngram_idx
-fi
+}
 
-printf '[deploy] Checking order_category_facts...\n'
-_FACTS_OK="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT if(countIf(searchText != '') > 0, 1, 0) FROM order_category_facts" \
-  2>/dev/null || echo 0)"
-_FACTS_NOTES_OK="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT countIf(hasToken(searchText, 'conference')) FROM (SELECT searchText FROM order_category_facts LIMIT 500000)" \
-  2>/dev/null || echo 0)"
-_OCF_COUNT="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT count() FROM order_category_facts" \
-  2>/dev/null || echo 0)"
-_ORDERS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT count() FROM orders" \
-  2>/dev/null || echo 0)"
-_FACTS_OVERSIZED="$(awk "BEGIN{print (${_OCF_COUNT:-0}+0 > (${_ORDERS_COUNT:-1}+0) * 1.2) ? 1 : 0}")"
-_OCF_REBUILT=0
-if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVERSIZED:-0}" -eq 1 ]]; then
+_db_check_ocf() {
+  printf '[deploy] Checking order_category_facts...\n'
+  local _FACTS_OK _FACTS_NOTES_OK _OCF_COUNT _ORDERS_COUNT _FACTS_OVERSIZED
+  _FACTS_OK="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT if(countIf(searchText != '') > 0, 1, 0) FROM order_category_facts" \
+    2>/dev/null || echo 0)"
+  _FACTS_NOTES_OK="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT countIf(hasToken(searchText, 'conference')) FROM (SELECT searchText FROM order_category_facts LIMIT 500000)" \
+    2>/dev/null || echo 0)"
+  _OCF_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo 0)"
+  _ORDERS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT count() FROM orders" 2>/dev/null || echo 0)"
+  _FACTS_OVERSIZED="$(awk "BEGIN{print (${_OCF_COUNT:-0}+0 > (${_ORDERS_COUNT:-1}+0) * 1.2) ? 1 : 0}")"
+
+  [[ "${_FACTS_OK:-0}" -ne 0 && "${_FACTS_NOTES_OK:-0}" -ne 0 && "${_FACTS_OVERSIZED:-0}" -eq 0 ]] && return 0
+
   if [[ "${_FACTS_OVERSIZED:-0}" -eq 1 ]]; then
     printf '  order_category_facts has %s rows vs %s orders — rebuilding from items array...\n' "${_OCF_COUNT}" "${_ORDERS_COUNT}"
   else
     printf '  Truncating and re-inserting order_category_facts (includes searchText)...\n'
   fi
+  _db_rebuild_ocf
+}
 
+_db_rebuild_ocf() {
   printf '  [%s] Truncating chart summary tables...\n' "$(date +'%H:%M:%S')"
+  local _SUMMARY_TABLE
   for _SUMMARY_TABLE in daily_summary daily_status_category_summary daily_filter_category_summary daily_customer_category_summary; do
     printf '    %s...' "${_SUMMARY_TABLE}"
     curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
@@ -1073,28 +985,23 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
       --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
 
   printf '  [%s] Starting OCF INSERT from orders ARRAY JOIN items (~2 h) — progress every 30 s...\n' "$(date +'%H:%M:%S')"
-  (
-    _CH_URL="${CLICKHOUSE_URL}"
-    _CH_PASS="${CH_PASS}"
+  ( local _CH_URL="${CLICKHOUSE_URL}" _CH_PASS="${CH_PASS}"
     while true; do
       sleep 30
+      local _OCF_NOW _PROC
       _OCF_NOW="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
         --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
       _PROC="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
         --data-binary "SELECT round(elapsed,0), read_rows, written_rows FROM system.processes WHERE query LIKE 'INSERT INTO order_category_facts%' LIMIT 1" 2>/dev/null || echo '')"
       if [[ -n "${_PROC}" ]]; then
         printf '  [%s] INSERT running — elapsed=%ss  read=%s  written=%s  |  OCF so far: %s rows\n' \
-          "$(date +'%H:%M:%S')" \
-          "$(printf '%s' "${_PROC}" | cut -f1)" \
-          "$(printf '%s' "${_PROC}" | cut -f2)" \
-          "$(printf '%s' "${_PROC}" | cut -f3)" \
-          "${_OCF_NOW}"
+          "$(date +'%H:%M:%S')" "$(printf '%s' "${_PROC}" | cut -f1)" \
+          "$(printf '%s' "${_PROC}" | cut -f2)" "$(printf '%s' "${_PROC}" | cut -f3)" "${_OCF_NOW}"
       else
         printf '  [%s] INSERT no longer in system.processes  |  OCF: %s rows\n' "$(date +'%H:%M:%S')" "${_OCF_NOW}"
       fi
-    done
-  ) &
-  _OCF_PROG_PID=$!
+    done ) &
+  local _OCF_PROG_PID=$!
 
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "INSERT INTO order_category_facts (orderId, date, placedAt, customerId, regionId, regionCode, status, orderTotal, categoryId, categoryName, totalItems, totalRevenue, searchText) SELECT o.orderId, toDate(o.placedAt), o.placedAt, o.customerId, o.regionId, o.regionCode, o.status, o.total, item.categoryId, item.categoryName, item.quantity, toDecimal64(toFloat64(item.quantity) * toFloat64(item.unitPrice), 2), o.searchText FROM orders AS o ARRAY JOIN o.items AS item WHERE notEmpty(o.items) SETTINGS max_execution_time=7200" \
@@ -1103,11 +1010,12 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
   kill "${_OCF_PROG_PID}" 2>/dev/null || true
   wait "${_OCF_PROG_PID}" 2>/dev/null || true
 
-  _OCF_FINAL="$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-    --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
-  printf '  [%s] OCF INSERT complete — %s rows\n' "$(date +'%H:%M:%S')" "${_OCF_FINAL}"
+  printf '  [%s] OCF INSERT complete — %s rows\n' "$(date +'%H:%M:%S')" \
+    "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+      --data-binary "SELECT count() FROM order_category_facts" 2>/dev/null || echo '?')"
 
   printf '  [%s] Forcing merge of chart summary tables (OPTIMIZE FINAL)...\n' "$(date +'%H:%M:%S')"
+  local _SROW
   for _SUMMARY_TABLE in daily_summary daily_status_category_summary daily_filter_category_summary daily_customer_category_summary; do
     printf '    [%s] %s...' "$(date +'%H:%M:%S')" "${_SUMMARY_TABLE}"
     curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=300" --max-time 360 \
@@ -1118,105 +1026,107 @@ if [[ "${_FACTS_OK:-0}" -eq 0 || "${_FACTS_NOTES_OK:-0}" -eq 0 || "${_FACTS_OVER
   done
   printf '  [%s] Summary tables merged — fastPath chart queries should now be <100 ms.\n' "$(date +'%H:%M:%S')"
   _OCF_REBUILT=1
-fi
+}
 
-printf '[deploy] Checking idx_ocf_search index...\n'
-_OCF_IDX="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
-  --data-binary "SELECT countIf(has(skip_indices, 'idx_ocf_search')), count() FROM system.parts WHERE table='order_category_facts' AND active=1" \
-  2>/dev/null || echo '0	1')"
-_OCF_IDX_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f1)"
-_OCF_TOT_PARTS="$(printf '%s' "$_OCF_IDX" | cut -f2)"
-if [[ "${_OCF_TOT_PARTS:-0}" -gt 0 && "${_OCF_IDX_PARTS:-0}" -ne "${_OCF_TOT_PARTS}" ]]; then
-  printf '  %s / %s parts indexed — materializing idx_ocf_search (~10 min for 50M rows)...\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
-    --data-binary "ALTER TABLE order_category_facts MATERIALIZE INDEX idx_ocf_search" 2>/dev/null || true
-  _poll_ocf_idx
-else
-  printf '  idx_ocf_search fully materialized (%s / %s parts) — skipping.\n' "${_OCF_IDX_PARTS:-0}" "${_OCF_TOT_PARTS:-?}"
-fi
+_db_check_ocf_idx() {
+  printf '[deploy] Checking idx_ocf_search index...\n'
+  local _IDX _IDX_PARTS _TOT_PARTS
+  _IDX="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" \
+    --data-binary "SELECT countIf(has(skip_indices, 'idx_ocf_search')), count() FROM system.parts WHERE table='order_category_facts' AND active=1" \
+    2>/dev/null || echo '0	1')"
+  _IDX_PARTS="$(printf '%s' "$_IDX" | cut -f1)"
+  _TOT_PARTS="$(printf '%s' "$_IDX" | cut -f2)"
+  if [[ "${_TOT_PARTS:-0}" -gt 0 && "${_IDX_PARTS:-0}" -ne "${_TOT_PARTS}" ]]; then
+    printf '  %s / %s parts indexed — materializing idx_ocf_search (~10 min for 50M rows)...\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
+    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?mutations_sync=0" \
+      --data-binary "ALTER TABLE order_category_facts MATERIALIZE INDEX idx_ocf_search" 2>/dev/null || true
+    _poll_ocf_idx
+  else
+    printf '  idx_ocf_search fully materialized (%s / %s parts) — skipping.\n' "${_IDX_PARTS:-0}" "${_TOT_PARTS:-?}"
+  fi
+}
 
-printf '[deploy] Checking daily_order_count...\n'
-curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
-  --data-binary "CREATE TABLE IF NOT EXISTS daily_order_count (date Date, regionId UInt32, regionCode LowCardinality(String), orderCount UInt64) ENGINE = SummingMergeTree(orderCount) ORDER BY (date, regionId)" \
-  2>/dev/null || true
-curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
-  --data-binary "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_order_count TO daily_order_count AS SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders" \
-  2>/dev/null || true
-_DOC_COUNT="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT sum(orderCount) FROM daily_order_count" \
-  2>/dev/null || echo 0)"
-if [[ "${_DOC_COUNT:-0}" -eq 0 || "${_OCF_REBUILT:-0}" -eq 1 ]]; then
-  printf '  [%s] Backfilling daily_order_count from orders (~30s)...\n' "$(date +'%H:%M:%S')"
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
-    --data-binary "TRUNCATE TABLE daily_order_count" 2>/dev/null || true
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=600" --max-time 660 \
-    --data-binary "INSERT INTO daily_order_count (date, regionId, regionCode, orderCount) SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders SETTINGS max_execution_time=600" \
+_db_check_daily_order_count() {
+  printf '[deploy] Checking daily_order_count...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary "CREATE TABLE IF NOT EXISTS daily_order_count (date Date, regionId UInt32, regionCode LowCardinality(String), orderCount UInt64) ENGINE = SummingMergeTree(orderCount) ORDER BY (date, regionId)" \
     2>/dev/null || true
-  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
-    --data-binary "OPTIMIZE TABLE daily_order_count FINAL" 2>/dev/null || true
-  printf '  [%s] daily_order_count ready: %s orders\n' "$(date +'%H:%M:%S')" \
-    "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT sum(orderCount) FROM daily_order_count" 2>/dev/null || echo '?')"
-else
-  printf '  daily_order_count has %s orders — skipping.\n' "${_DOC_COUNT}"
-fi
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_order_count TO daily_order_count AS SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders" \
+    2>/dev/null || true
+  local _DOC_COUNT
+  _DOC_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT sum(orderCount) FROM daily_order_count" 2>/dev/null || echo 0)"
+  if [[ "${_DOC_COUNT:-0}" -eq 0 || "${_OCF_REBUILT:-0}" -eq 1 ]]; then
+    printf '  [%s] Backfilling daily_order_count from orders (~30s)...\n' "$(date +'%H:%M:%S')"
+    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
+      --data-binary "TRUNCATE TABLE daily_order_count" 2>/dev/null || true
+    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=600" --max-time 660 \
+      --data-binary "INSERT INTO daily_order_count (date, regionId, regionCode, orderCount) SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders SETTINGS max_execution_time=600" \
+      2>/dev/null || true
+    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
+      --data-binary "OPTIMIZE TABLE daily_order_count FINAL" 2>/dev/null || true
+    printf '  [%s] daily_order_count ready: %s orders\n' "$(date +'%H:%M:%S')" \
+      "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT sum(orderCount) FROM daily_order_count" 2>/dev/null || echo '?')"
+  else
+    printf '  daily_order_count has %s orders — skipping.\n' "${_DOC_COUNT}"
+  fi
+}
 
-printf '[deploy] Checking daily_search_token_summary...\n'
-curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
-  --data-binary "CREATE TABLE IF NOT EXISTS daily_search_token_summary (token LowCardinality(String), date Date, categoryName LowCardinality(String), orderCount UInt32, orderTotal Float64) ENGINE = MergeTree() ORDER BY (token, date, categoryName)" \
-  2>/dev/null || true
-_DSTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT count() FROM daily_search_token_summary" \
-  2>/dev/null || echo 0)"
-if [[ "${_DSTS_COUNT:-0}" -eq 0 || "${_OCF_REBUILT:-0}" -eq 1 ]]; then
+_db_check_daily_search_token_summary() {
+  printf '[deploy] Checking daily_search_token_summary...\n'
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary "CREATE TABLE IF NOT EXISTS daily_search_token_summary (token LowCardinality(String), date Date, categoryName LowCardinality(String), orderCount UInt32, orderTotal Float64) ENGINE = MergeTree() ORDER BY (token, date, categoryName)" \
+    2>/dev/null || true
+  local _DSTS_COUNT
+  _DSTS_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT count() FROM daily_search_token_summary" 2>/dev/null || echo 0)"
+  [[ "${_DSTS_COUNT:-0}" -ne 0 && "${_OCF_REBUILT:-0}" -eq 0 ]] && { printf '  daily_search_token_summary has %s rows — skipping.\n' "${_DSTS_COUNT}"; return 0; }
+
   printf '  [%s] Populating daily_search_token_summary from order_category_facts (~30 min)...\n' "$(date +'%H:%M:%S')"
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=60" \
     --data-binary "TRUNCATE TABLE daily_search_token_summary" 2>/dev/null || true
-  (
-    _CH_URL="${CLICKHOUSE_URL}"
-    _CH_PASS="${CH_PASS}"
+
+  ( local _CH_URL="${CLICKHOUSE_URL}" _CH_PASS="${CH_PASS}"
     while true; do
       sleep 30
-      _DSTS_NOW="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
+      local _NOW _PROC
+      _NOW="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
         --data-binary "SELECT count() FROM daily_search_token_summary" 2>/dev/null || echo '?')"
       _PROC="$(curl -sf -u "default:${_CH_PASS}" "${_CH_URL}/?default_format=TabSeparated&max_execution_time=5" \
         --data-binary "SELECT round(elapsed,0), read_rows, written_rows FROM system.processes WHERE query LIKE 'INSERT INTO daily_search_token_summary%' LIMIT 1" 2>/dev/null || echo '')"
       if [[ -n "${_PROC}" ]]; then
         printf '  [%s] token INSERT running — elapsed=%ss  read=%s  written=%s  |  rows so far: %s\n' \
-          "$(date +'%H:%M:%S')" \
-          "$(printf '%s' "${_PROC}" | cut -f1)" \
-          "$(printf '%s' "${_PROC}" | cut -f2)" \
-          "$(printf '%s' "${_PROC}" | cut -f3)" \
-          "${_DSTS_NOW}"
+          "$(date +'%H:%M:%S')" "$(printf '%s' "${_PROC}" | cut -f1)" \
+          "$(printf '%s' "${_PROC}" | cut -f2)" "$(printf '%s' "${_PROC}" | cut -f3)" "${_NOW}"
       else
-        printf '  [%s] token INSERT no longer in system.processes  |  rows: %s\n' "$(date +'%H:%M:%S')" "${_DSTS_NOW}"
+        printf '  [%s] token INSERT no longer in system.processes  |  rows: %s\n' "$(date +'%H:%M:%S')" "${_NOW}"
       fi
-    done
-  ) &
-  _DSTS_PROG_PID=$!
+    done ) &
+  local _PROG_PID=$!
 
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "INSERT INTO daily_search_token_summary (token, date, categoryName, orderCount, orderTotal) SELECT tok AS token, date, categoryName, count() AS orderCount, sum(toFloat64(totalRevenue)) AS orderTotal FROM order_category_facts ARRAY JOIN splitByNonAlpha(lower(searchText)) AS tok WHERE length(tok) >= 2 GROUP BY tok, date, categoryName SETTINGS max_execution_time=7200" \
     2>/dev/null || true
 
-  kill "${_DSTS_PROG_PID}" 2>/dev/null || true
-  wait "${_DSTS_PROG_PID}" 2>/dev/null || true
-
+  kill "${_PROG_PID}" 2>/dev/null || true
+  wait "${_PROG_PID}" 2>/dev/null || true
   printf '  [%s] daily_search_token_summary populated: %s rows\n' "$(date +'%H:%M:%S')" \
     "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT count() FROM daily_search_token_summary" 2>/dev/null || echo '?')"
-else
-  printf '  daily_search_token_summary has %s rows — skipping.\n' "${_DSTS_COUNT}"
-fi
+}
 
-_ITEMS_MIGRATION_PENDING=0
-printf '[deploy] Checking items column on orders...\n'
-_ITEMS_POPULATED="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=60" \
-  --data-binary "SELECT countIf(notEmpty(items)) FROM (SELECT items FROM orders LIMIT 1000000)" \
-  2>/dev/null || echo 0)"
-if [[ "${_ITEMS_POPULATED:-0}" -eq 0 ]]; then
+_db_check_items_column() {
+  printf '[deploy] Checking items column on orders...\n'
+  local _ITEMS_POPULATED
+  _ITEMS_POPULATED="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=60" \
+    --data-binary "SELECT countIf(notEmpty(items)) FROM (SELECT items FROM orders LIMIT 1000000)" \
+    2>/dev/null || echo 0)"
+  [[ "${_ITEMS_POPULATED:-0}" -ne 0 ]] && return 0
+
   printf '  items column empty — submitting background migration (~2 h for 50M rows)...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
     --data-binary "ALTER TABLE orders ADD COLUMN IF NOT EXISTS items Array(Tuple(categoryId UInt32, categoryName LowCardinality(String), productId UInt32, productName String, productSku LowCardinality(String), quantity UInt32, unitPrice Float64, discount Float64)) DEFAULT []" \
@@ -1226,24 +1136,28 @@ if [[ "${_ITEMS_POPULATED:-0}" -eq 0 ]]; then
     2>/dev/null || true
   printf '  mutation submitted (non-blocking).\n'
   _ITEMS_MIGRATION_PENDING=1
-fi
+}
 
-printf '[deploy] Checking search_vocabulary...\n'
-_VOCAB_COUNT="$(curl -sf -u "default:${CH_PASS}" \
-  "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
-  --data-binary "SELECT count() FROM search_vocabulary" \
-  2>/dev/null || echo 0)"
-if [[ "${_VOCAB_COUNT:-0}" -eq 0 ]]; then
+_db_check_search_vocabulary() {
+  printf '[deploy] Checking search_vocabulary...\n'
+  local _VOCAB_COUNT
+  _VOCAB_COUNT="$(curl -sf -u "default:${CH_PASS}" \
+    "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=30" \
+    --data-binary "SELECT count() FROM search_vocabulary" 2>/dev/null || echo 0)"
+  [[ "${_VOCAB_COUNT:-0}" -ne 0 ]] && return 0
+
   printf '  Populating search_vocabulary from orders.searchText...\n'
   curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=7200" --max-time 7260 \
     --data-binary "INSERT INTO search_vocabulary (token, doc_freq) SELECT token, count() AS doc_freq FROM (SELECT arrayJoin(splitByNonAlpha(lower(searchText))) AS token FROM orders) WHERE length(token) >= 2 AND NOT match(token, '^[0-9]+\$') GROUP BY token HAVING doc_freq >= 10" \
     2>/dev/null || true
   printf '  search_vocabulary populated: %s tokens\n' \
     "$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?default_format=TabSeparated&max_execution_time=10" --data-binary "SELECT count() FROM search_vocabulary" 2>/dev/null || echo '?')"
-fi
+}
 
-if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
+_db_check_typesense() {
+  [[ -z "${TYPESENSE_URL:-}" || -z "${TYPESENSE_API_KEY:-}" ]] && return 0
   printf '[deploy] Checking Typesense collection...\n'
+  local _TS_COL
   _TS_COL="$(curl -sf -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
     "${TYPESENSE_URL}/collections/vocabulary" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('num_documents',0))" 2>/dev/null || echo '')"
   if [[ -z "$_TS_COL" ]]; then
@@ -1256,94 +1170,122 @@ if [[ -n "${TYPESENSE_URL:-}" && -n "${TYPESENSE_API_KEY:-}" ]]; then
     _TS_COL=0
   fi
   printf '  Typesense vocabulary collection: %s tokens\n' "${_TS_COL:-0}"
-  _TS_SEED_NEEDED=0
-  if [[ "${_TS_COL:-0}" -lt 1000 ]]; then
-    _TS_SEED_NEEDED=1
-  fi
-  if [[ "$_TS_SEED_NEEDED" -eq 1 ]]; then
-    printf '  Seeding Typesense vocabulary from search_vocabulary...\n'
-    _SEED_FILE="${ROOT_DIR}/.ts_seed.jsonl"
-    curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
-      --data-binary "SELECT token AS id, token, toInt32(doc_freq) AS doc_freq FROM search_vocabulary FORMAT JSONEachRow" \
-      > "$_SEED_FILE" 2>/dev/null || true
-    if [[ -s "$_SEED_FILE" ]]; then
-      _TS_IMPORT_RESP="$(curl -sf -X POST "${TYPESENSE_URL}/collections/vocabulary/documents/import?action=upsert" \
-        -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
-        -H "Content-Type: text/plain" \
-        --data-binary "@${_SEED_FILE}" 2>/dev/null | tail -1 || echo '')"
-      _TS_COUNT="$(curl -sf -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
-        "${TYPESENSE_URL}/collections/vocabulary" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('num_documents',0))" 2>/dev/null || echo '?')"
-      printf '  Seeding complete — %s tokens indexed\n' "${_TS_COUNT}"
-    else
-      printf '  Seed skipped (search_vocabulary empty — run deploy again after vocab is populated).\n'
-    fi
-    rm -f "$_SEED_FILE"
+  [[ "${_TS_COL:-0}" -ge 1000 ]] && { printf '  Typesense vocabulary already seeded — skipping.\n'; return 0; }
+
+  printf '  Seeding Typesense vocabulary from search_vocabulary...\n'
+  local _SEED_FILE="${ROOT_DIR}/.ts_seed.jsonl"
+  curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=120" \
+    --data-binary "SELECT token AS id, token, toInt32(doc_freq) AS doc_freq FROM search_vocabulary FORMAT JSONEachRow" \
+    > "$_SEED_FILE" 2>/dev/null || true
+  if [[ -s "$_SEED_FILE" ]]; then
+    curl -sf -X POST "${TYPESENSE_URL}/collections/vocabulary/documents/import?action=upsert" \
+      -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
+      -H "Content-Type: text/plain" \
+      --data-binary "@${_SEED_FILE}" 2>/dev/null | tail -1 >/dev/null || true
+    local _TS_COUNT
+    _TS_COUNT="$(curl -sf -H "X-TYPESENSE-API-KEY: ${TYPESENSE_API_KEY}" \
+      "${TYPESENSE_URL}/collections/vocabulary" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('num_documents',0))" 2>/dev/null || echo '?')"
+    printf '  Seeding complete — %s tokens indexed\n' "${_TS_COUNT}"
   else
-    printf '  Typesense vocabulary already seeded — skipping.\n'
+    printf '  Seed skipped (search_vocabulary empty — run deploy again after vocab is populated).\n'
   fi
-fi
+  rm -f "$_SEED_FILE"
+}
 
-CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
-if [[ -n "$CF_DIST_ID" ]]; then
-  printf '  Invalidating CloudFront cache...\n'
-  aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
-    --query 'Invalidation.Id' --output text
-fi
+_finalize_deploy() {
+  if [[ -n "${CF_DIST_ID:-}" ]]; then
+    printf '  Invalidating CloudFront cache...\n'
+    aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
+      --query 'Invalidation.Id' --output text
+  fi
 
-printf '\n  Dashboard: %s\n' "$CDN_URL"
-printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
+  printf '\n  Dashboard: %s\n' "$CDN_URL"
+  printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
 
-if [[ "$_OCF_REBUILT" -eq 1 ]]; then
-  printf '\n  ── OCF rebuilt from items array ──────────────────────────────────────\n'
-  printf '  order_category_facts now has 1 row per order (~50 M). Verify:\n\n'
-  printf '    SELECT count() FROM order_category_facts;\n'
-  printf '    -- Expected: ~50 M  (was ~150 M when built from order_items)\n\n'
-  printf '    SELECT count(), categoryName\n'
-  printf '    FROM order_category_facts\n'
-  printf '    WHERE hasToken(searchText, '"'"'exceptions'"'"')\n'
-  printf '    GROUP BY categoryName\n'
-  printf '    ORDER BY count() DESC\n'
-  printf '    LIMIT 5;\n'
-  printf '    -- Should return results in < 2 s (was ~5 s before rebuild).\n'
-  printf '  ──────────────────────────────────────────────────────────────────────\n'
-fi
+  if [[ "$_OCF_REBUILT" -eq 1 ]]; then
+    printf '\n  ── OCF rebuilt from items array ──────────────────────────────────────\n'
+    printf '  order_category_facts now has 1 row per order (~50 M). Verify:\n\n'
+    printf '    SELECT count() FROM order_category_facts;\n'
+    printf '    -- Expected: ~50 M  (was ~150 M when built from order_items)\n\n'
+    printf '    SELECT count(), categoryName\n'
+    printf '    FROM order_category_facts\n'
+    printf '    WHERE hasToken(searchText, '"'"'exceptions'"'"')\n'
+    printf '    GROUP BY categoryName\n'
+    printf '    ORDER BY count() DESC\n'
+    printf '    LIMIT 5;\n'
+    printf '    -- Should return results in < 2 s (was ~5 s before rebuild).\n'
+    printf '  ──────────────────────────────────────────────────────────────────────\n'
+  fi
 
-if [[ "$_ITEMS_MIGRATION_PENDING" -eq 1 ]]; then
-  printf '\n  ── Background migration in progress ──────────────────────────────────\n'
-  printf '  orders.items backfill is running (~2 h). Run this SQL to monitor:\n\n'
-  printf '    SELECT is_done,\n'
-  printf '           parts_to_do          AS parts_left,\n'
-  printf '           latest_fail_reason   AS last_error\n'
-  printf '    FROM system.mutations\n'
-  printf '    WHERE table = '"'"'orders'"'"'\n'
-  printf '      AND command LIKE '"'"'%%UPDATE items%%'"'"'\n'
-  printf '    ORDER BY create_time DESC\n'
-  printf '    LIMIT 1;\n\n'
-  printf '  Chart queries for partial-match terms (except, conferenc) will return\n'
-  printf '  empty until is_done = 1. Whole-token searches (cassin, etc.) are\n'
-  printf '  unaffected — they hit OCF directly.\n'
-  printf '  ──────────────────────────────────────────────────────────────────────\n'
-fi
-printf '\n'
+  if [[ "$_ITEMS_MIGRATION_PENDING" -eq 1 ]]; then
+    printf '\n  ── Background migration in progress ──────────────────────────────────\n'
+    printf '  orders.items backfill is running (~2 h). Run this SQL to monitor:\n\n'
+    printf '    SELECT is_done,\n'
+    printf '           parts_to_do          AS parts_left,\n'
+    printf '           latest_fail_reason   AS last_error\n'
+    printf '    FROM system.mutations\n'
+    printf '    WHERE table = '"'"'orders'"'"'\n'
+    printf '      AND command LIKE '"'"'%%UPDATE items%%'"'"'\n'
+    printf '    ORDER BY create_time DESC\n'
+    printf '    LIMIT 1;\n\n'
+    printf '  Chart queries for partial-match terms (except, conferenc) will return\n'
+    printf '  empty until is_done = 1. Whole-token searches (cassin, etc.) are\n'
+    printf '  unaffected — they hit OCF directly.\n'
+    printf '  ──────────────────────────────────────────────────────────────────────\n'
+  fi
+  printf '\n'
 
-if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
-  printf '%s' "$CDN_URL" | gh secret set APP_URL --repo "$_GH_REPO"
-  printf '  [keepalive] APP_URL secret updated → %s\n' "$CDN_URL"
-fi
+  if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+    printf '%s' "$CDN_URL" | gh secret set APP_URL --repo "$_GH_REPO"
+    printf '  [keepalive] APP_URL secret updated → %s\n' "$CDN_URL"
+  fi
 
-if [[ -f "$ROOT_DIR/README.md" ]]; then
-  python3 - "$CDN_URL" "$ROOT_DIR/README.md" <<'PYEOF'
+  if [[ -f "$ROOT_DIR/README.md" ]]; then
+    python3 - "$CDN_URL" "$ROOT_DIR/README.md" <<'PYEOF'
 import re, sys
 url, path = sys.argv[1], sys.argv[2]
 content = open(path).read()
 content = re.sub(r'(\| \*\*Dashboard\*\* \| )(https?://\S+)( \|)', r'\g<1>' + url + r'\g<3>', content)
 open(path, 'w').write(content)
 PYEOF
-  git -C "$ROOT_DIR" add README.md
-  if ! git -C "$ROOT_DIR" diff --cached --quiet; then
-    git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${CDN_URL}" && git -C "$ROOT_DIR" push origin HEAD:main
+    git -C "$ROOT_DIR" add README.md
+    if ! git -C "$ROOT_DIR" diff --cached --quiet; then
+      git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${CDN_URL}" && git -C "$ROOT_DIR" push origin HEAD:main
+    fi
   fi
-fi
 
-PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
-[[ -x "$PORTFOLIO_SCRIPT" ]] && bash "$PORTFOLIO_SCRIPT" clickhouse "$CDN_URL"
+  local PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
+  [[ -x "$PORTFOLIO_SCRIPT" ]] && bash "$PORTFOLIO_SCRIPT" clickhouse "$CDN_URL"
+}
+
+_deploy_cloud() {
+  _load_ch_creds
+  _check_deps
+  _sync_aws_gh_secrets
+  _resolve_ch_endpoint
+  _load_redis_creds
+  _load_typesense_creds
+  _provision_infra
+  _verify_ecr_image
+  _deploy_app_runner
+  _run_db_checks
+  _finalize_deploy
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+_run_preflight
+
+printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
+printf '  [1] Local  — npm run dev (port 3004)\n'
+printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
+printf '  [3] %s\n\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
+printf 'Choice [1/2/3, default %s]: ' "$_DEFAULT_CHOICE"
+read -r DEPLOY_TARGET
+
+case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
+  1) _deploy_local ;;
+  2) _deploy_cloud ;;
+  3) _deploy_quick ;;
+  *) printf 'Invalid choice.\n'; exit 1 ;;
+esac
