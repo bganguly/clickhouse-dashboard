@@ -189,8 +189,8 @@ resource "aws_cloudfront_distribution" "app" {
     max_ttl                = 300
     forwarded_values {
       query_string = true
-      headers      = ["Authorization", "Content-Type", "Origin", "X-Forwarded-For", "Accept"]
-      cookies { forward = "all" }
+      headers      = ["Content-Type", "Origin"]
+      cookies { forward = "none" }
     }
   }
 

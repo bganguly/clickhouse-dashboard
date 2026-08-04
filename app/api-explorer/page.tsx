@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { diag } from "@/lib/diag";
 
 const PORTFOLIO_URL = "https://bganguly.github.io/?open=nextjs";
 
@@ -190,15 +191,21 @@ function CustomerTable({ rows }: { rows: OrderRow[] }) {
 
 async function fetchTimed(path: string) {
   const t0 = performance.now();
+  if (diag) console.log(`[api-explorer] → ${path}`);
   const res = await fetch(path);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = await res.json();
-  return {
-    json,
-    ms: Math.round(performance.now() - t0),
-    src: res.headers.get("X-Cache-Source"),
-    cdn: res.headers.get("X-Cache"),
-  };
+  const ms  = Math.round(performance.now() - t0);
+  const src = res.headers.get("X-Cache-Source");
+  const cdn = res.headers.get("X-Cache");
+  if (diag) {
+    const cdnTag = cdn?.startsWith("Hit")  ? "cdn=Hit"
+                 : cdn?.startsWith("Miss") ? `cdn=Miss src=${src ?? "?"}`
+                 : src                     ? `src=${src}`
+                 : "";
+    console.log(`[api-explorer] ← ${path} fetch=${ms}ms ${cdnTag}`);
+  }
+  return { json, ms, src, cdn };
 }
 
 // ── Card shell ────────────────────────────────────────────────────────────────
