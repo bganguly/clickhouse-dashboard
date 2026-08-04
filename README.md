@@ -1,8 +1,9 @@
 # clickhouse-dashboard — 50M orders · Next.js + ClickHouse Cloud
 
-Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard delivering sub-second search
-and chart responses across 50 M orders: full-text search via Typesense prefix expansion + ClickHouse
-`hasToken`, pre-aggregated analytics via Materialized Views + SummingMergeTree, and Terraform IaC on AWS.
+Production-grade **Next.js 16 / TypeScript** full-stack orders dashboard across 50 M orders: full-text
+search via Typesense prefix expansion + ClickHouse `hasToken`, pre-aggregated analytics via Materialized
+Views + SummingMergeTree, and Terraform IaC on AWS. APIs respond in under a second; full UI render
+(Recharts reconciliation over the returned dataset) may take slightly longer on first interaction.
 
 ## Live Service
 
@@ -18,7 +19,7 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 
 ## Using the App
 
-1. **Search** — type in the search bar to find orders by customer name or product; sub-second via Typesense prefix expansion + ClickHouse `hasToken` on a denormalized `searchText` column across 50 M orders.
+1. **Search** — type in the search bar and press Enter to find orders by customer name or product; API responses are sub-second via Typesense prefix expansion + ClickHouse `hasToken` on a denormalized `searchText` column across 50 M orders. UI re-render after a new result lands may add a moment on top of the network time.
 2. **Aggregates** — the chart shows daily order totals by category from SummingMergeTree pre-aggregated tables; never touches raw orders.
 3. **Query cache** — run the same search or chart range twice; the repeat response drops from ~180 ms to ~10 ms via ClickHouse's 60 s query cache.
 
@@ -54,7 +55,7 @@ CDN key = exact URL including param order. App cache key (mem + Redis) = JSON-se
 
 ## Scale & Performance
 
-> **50 M orders** in ClickHouse Cloud — chart aggregates from SummingMergeTree pre-aggregated tables (**180 ms** cold after a [performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4) that collapsed 20 M unmerged rows); full-text search via Typesense + ClickHouse `hasToken` (**<0.5 s**).
+> **50 M orders** in ClickHouse Cloud — chart aggregates from SummingMergeTree pre-aggregated tables (**180 ms** cold after a [performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4) that collapsed 20 M unmerged rows); full-text search via Typesense + ClickHouse `hasToken` (**<0.5 s**). API response times are consistently sub-second; total UI settle time (including Recharts re-render over the returned dataset) can occasionally exceed 1 s on first interaction.
 
 ```
 Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud

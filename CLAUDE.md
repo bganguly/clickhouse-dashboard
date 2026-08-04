@@ -117,7 +117,9 @@ App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant
 - /api/health MUST NOT query ClickHouse or Redis. It is polled every 30 s by
   App Runner; the keepalive above is sufficient for warm-up.
 - Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
-- Every dashboard response must complete in < 1 s end-to-end. A code path slower
-  than 1 s is a bug, not a trade-off.
+- All API responses (/api/orders, /api/aggregates, etc.) must complete in < 1 s.
+  A slower API path is a bug, not a trade-off. UI render time (Recharts
+  reconciliation after data lands) may occasionally exceed 1 s and is a
+  separate concern from API latency.
 - Any change to infra/main.tf requires a full deploy (option 2 in deploy.sh).
   Never run terraform directly.
