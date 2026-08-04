@@ -99,11 +99,11 @@ Instrumentation (startup, not on the hot path) is listed last.
 One row per API endpoint. CDN key = exact URL string (param order matters).
 App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant).
 
-| Endpoint | CDN canonical URL | App cache key (mem Map + Redis, same key) | API Explorer constraint |
-|---|---|---|---|
-| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}` | omit from/to — main UI sends no date by default, so keys have from:null, to:null |
-| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `data:{q, status, regionCode, minTotal, maxTotal, topCategories}` | include `q=` even when empty; include from/to (route rejects requests without them) |
-| `/api/customers` | `q=<t>&limit=20` | `cust:{q, limit, cursor, regionId}` | no main-UI equivalent; warms its own entries |
+| Endpoint | CDN canonical URL | App / in-mem key | Redis | API Explorer constraint |
+|---|---|---|---|---|
+| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}` | same | omit from/to — main UI sends no date by default, so keys have from:null, to:null |
+| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `data:{q, status, regionCode, minTotal, maxTotal, topCategories}` | same | include `q=` even when empty; include from/to (route rejects requests without them) |
+| `/api/customers` | `q=<t>&limit=20` | `cust:{q, limit, cursor, regionId}` | same | no main-UI equivalent; warms its own entries |
 
 ### DB (ClickHouse Cloud — reached only after all cache misses)
 - The free tier has a strict compute quota. Never add ClickHouse queries to any
