@@ -18,22 +18,7 @@ import {
 const DEFAULT_TOP_CATEGORIES = 5;
 const OTHER_BUCKET = "Others";
 export const DATASET_START = "2024-07-17";
-
-let _cachedMaxDate: string | null = null;
-
-export async function getDatasetMaxDate(): Promise<string> {
-  if (_cachedMaxDate) return _cachedMaxDate;
-  try {
-    const rows = await query<{ max_date: string }>(
-      "SELECT toString(max(date)) AS max_date FROM daily_summary",
-      {},
-      AGG_CACHE,
-    );
-    const d = rows[0]?.max_date?.slice(0, 10);
-    if (d) { _cachedMaxDate = d; return d; }
-  } catch {}
-  return todayDateString();
-}
+export const DATASET_END   = "2026-07-17";
 
 const AGG_CACHE: ClickHouseSettings = {
   use_query_cache: 1,
@@ -487,15 +472,14 @@ function capToTopCategories(day: DailyAggregate, topN: number): DailyAggregate {
 
 void (process.env.CLICKHOUSE_URL && (async () => {
   try {
-    const maxDate = await getDatasetMaxDate();
-    const d = new Date(`${maxDate}T00:00:00Z`);
+    const d = new Date(`${DATASET_END}T00:00:00Z`);
     d.setUTCDate(d.getUTCDate() - 90);
     const ninetyDaysAgo = d.toISOString().slice(0, 10);
     await Promise.all([
-      getDailyAggregates({ from: DATASET_START, to: maxDate, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getDailyAggregates({ from: ninetyDaysAgo, to: maxDate, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getExactAggregateTotal({ from: DATASET_START, to: maxDate, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getExactAggregateTotal({ from: ninetyDaysAgo, to: maxDate, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getDailyAggregates({ from: DATASET_START, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getDailyAggregates({ from: ninetyDaysAgo, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getExactAggregateTotal({ from: DATASET_START, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getExactAggregateTotal({ from: ninetyDaysAgo, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
     ]);
   } catch {}
 })());
