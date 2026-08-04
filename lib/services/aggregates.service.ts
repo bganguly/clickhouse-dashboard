@@ -472,6 +472,35 @@ function capToTopCategories(day: DailyAggregate, topN: number): DailyAggregate {
   return { ...day, categories };
 }
 
+export async function warmChartSvgs(): Promise<void> {
+  try {
+    const { renderChartSvg } = await import("@/lib/chart-svg-renderer");
+    const { setChartSvg, setChartSvgStatus } = await import("@/lib/chart-svg-cache");
+    const rows = await query<{ token: string }>(
+      "SELECT token FROM search_vocabulary ORDER BY doc_freq DESC LIMIT 100"
+    );
+    const tokens = ["", ...rows.map((r) => r.token)];
+    const total = tokens.length;
+    let ready = 0;
+    const today = todayDateString();
+    for (const token of tokens) {
+      try {
+        const data = await getDailyAggregates({
+          from: "2024-07-17", to: today,
+          q: token || null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4,
+        });
+        const svg = renderChartSvg(data, 4);
+        if (svg) {
+          await setChartSvg(token, svg);
+          ready++;
+          if (ready % 10 === 0) await setChartSvgStatus(ready, total);
+        }
+      } catch {}
+    }
+    await setChartSvgStatus(ready, total);
+  } catch {}
+}
+
 void (process.env.CLICKHOUSE_URL && (async () => {
   try {
     const today = todayDateString();

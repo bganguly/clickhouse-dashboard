@@ -16,4 +16,6 @@ export async function register() {
   setInterval(() => {
     query("SELECT 1").catch(() => {});
   }, CH_KEEPALIVE_MS);
+
+  void import("@/lib/services/aggregates.service").then(({ warmChartSvgs }) => warmChartSvgs().catch(() => {}));
 }

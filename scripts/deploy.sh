@@ -1202,6 +1202,27 @@ _finalize_deploy() {
   printf '\n  Dashboard: %s\n' "$CDN_URL"
   printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
 
+  if [[ -n "${CDN_URL:-}" ]]; then
+    printf '\n  Waiting for chart SVG pre-render (up to 5 min)...\n'
+    local _svg_deadline=$(( $(date +%s) + 300 ))
+    local _svg_ready=0 _svg_total=100
+    while [[ $(date +%s) -lt $_svg_deadline ]]; do
+      local _svg_json
+      _svg_json=$(curl -sf "${CDN_URL}/api/chart-svg?status=1" 2>/dev/null || echo "{}")
+      _svg_ready=$(printf '%s' "$_svg_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ready', 0))" 2>/dev/null || echo 0)
+      _svg_total=$(printf '%s' "$_svg_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total', 100))" 2>/dev/null || echo 100)
+      printf '  SVG cache: %s / %s ready\n' "$_svg_ready" "$_svg_total"
+      if [[ "$_svg_ready" -ge "$_svg_total" && "$_svg_total" -gt 0 ]]; then
+        printf '  SVG pre-render complete.\n'
+        break
+      fi
+      sleep 5
+    done
+    if [[ "$_svg_ready" -lt "$_svg_total" ]]; then
+      printf '  SVG pre-render incomplete (%s/%s) — page will warm on first load.\n' "$_svg_ready" "$_svg_total"
+    fi
+  fi
+
   if [[ "$_OCF_REBUILT" -eq 1 ]]; then
     printf '\n  ── OCF rebuilt from items array ──────────────────────────────────────\n'
     printf '  order_category_facts now has 1 row per order (~50 M). Verify:\n\n'
