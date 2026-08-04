@@ -272,9 +272,16 @@ function SearchTable({
         });
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
         const _src = res.headers.get("X-Cache-Source") ?? "?";
-        const _xcache = res.headers.get("X-Cache") ?? "";
-        const _cdn = _xcache ? ` cdn=${_xcache.split(" ")[0]}` : "";
-        if (diag) console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms src=${_src}${_cdn}`);
+        const _cdnRaw = res.headers.get("X-Cache") ?? "";
+        const _cacheLabel = _cdnRaw.startsWith("Hit")
+          ? "cdn=Hit"
+          : _cdnRaw.startsWith("Miss")
+            ? _src === "mem"   ? "cdn=Miss mem=Hit"
+            : _src === "redis" ? "cdn=Miss mem=Miss redis=Hit"
+            : _src === "ch"    ? "cdn=Miss mem=Miss redis=Miss"
+            : `cdn=Miss src=${_src}`
+          : `src=${_src}`;
+        if (diag) console.log(`[perf:client] ← /api/orders fetch=${fetchMs}ms counter=${searchPerf.counter()}ms ${_cacheLabel}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const jsonT0 = performance.now();
         const json: SearchResponse = await res.json();

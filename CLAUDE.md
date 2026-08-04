@@ -59,21 +59,11 @@ Materialized Views fire on INSERT into order_category_facts (written by createOr
 
 ## Constraints — ask before violating any of these
 
-Ordered from closest to the app outward: instrumentation → CDN → cache → DB.
+Ordered as an incoming request encounters each layer: CDN → in-process mem → Redis → DB.
+Instrumentation (startup, not on the hot path) is listed last.
 
-### Instrumentation (in-process, startup)
-- instrumentation.ts runs SELECT 1 every 8 min to keep ClickHouse warm. Do not
-  add a second keepalive or shorten this interval without approval.
-- /api/health MUST NOT query ClickHouse or Redis. It is polled every 30 s by
-  App Runner; the keepalive above is sufficient for warm-up.
-- Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
-- Every dashboard response must complete in < 1 s end-to-end. A code path slower
-  than 1 s is a bug, not a trade-off.
-- Any change to infra/main.tf requires a full deploy (option 2 in deploy.sh).
-  Never run terraform directly.
-
-### CDN (CloudFront — outermost layer before the app)
-- CloudFront is used as a caching layer for API responses, not just static assets.
+### CDN (CloudFront — outermost, first layer an incoming request hits)
+- CloudFront is a caching layer for API responses, not just static assets.
   Cache-Control headers on /api/orders and /api/aggregates must not be removed or
   reduced without approval.
 - Never introduce approximate or estimated values (counts, totals) in place of exact
@@ -88,21 +78,57 @@ Ordered from closest to the app outward: instrumentation → CDN → cache → D
   If you change how Chart.tsx or SearchTable.tsx builds its URL, update the
   fire-and-forget URLs in api-explorer/page.tsx to match.
 
-### Cache (Redis — between app and DB)
+### In-process cache (mem Map — first app-level layer after a CDN miss)
+- Two separate Maps: search-cache.ts (orders rows + counts), aggregates-cache.ts
+  (chart series + totals). Both capped at MAX_ENTRIES = 500.
+- Cache keys are JSON-serialised param objects — URL param order is irrelevant.
+- Large aggregated datasets belong here, NOT in Redis.
+- Never change the topCategories / topN cache key or default without explicit approval.
+
+### Redis (L2 cache — reached only after an in-process miss)
+- Upstash Redis instance is in us-east-1, same region as App Runner. Cross-region
+  latency is not a concern. Do not change the region without approval.
 - Upstash free tier hard limit: 256 MB. Safe operating budget: ≤ 150 MB.
-- Redis is for small, bounded payloads only (row lists, IDs, counts).
-- Never cache large aggregated datasets (charts, multi-dimensional rollups) in Redis.
-  Large aggregates belong in in-process Maps with a MAX_ENTRIES bound.
+- Redis is for small, bounded payloads only (row lists, IDs, counts). Never cache
+  large aggregated datasets in Redis.
 - Cache warmup must be strictly bounded: top-100 tokens max per warmup phase.
 - TTLs: list/row caches ≤ 5 min, aggregate/chart caches ≤ 10 min.
-- Before adding a new cache layer or raising a token limit, estimate per-entry byte size
-  × number of entries and confirm it fits within 150 MB.
-- The Upstash instance must be in us-east-1 (same region as App Runner).
-- Never change the topCategories or topN cache key, default value, or lookup logic
-  without explicit user approval.
+- Before adding a new cache layer or raising a token limit, estimate per-entry byte
+  size × number of entries and confirm it fits within 150 MB.
 
-### DB (ClickHouse Cloud — furthest from the app)
+### Cache key reference
+
+CDN key = exact URL string (param order matters):
+
+    /api/orders:     q=<term>&page=1&pageSize=20&sort=placedAt&dir=desc&from=2024-07-17&to=<today>
+    /api/aggregates: from=2024-07-17&to=<today>&topCategories=4[&q=<term>]   ← q always last
+
+In-process Map + Redis key = JSON-serialised param object (param order irrelevant):
+
+    Data                 Key prefix + fields                                       from/to?
+    ─────────────────────────────────────────────────────────────────────────────────────────
+    Orders rows          search:rows:{q, page, pageSize, sort, dir, from, to, …}  YES
+    Orders count         search:count:{q, statuses, regionCodes, from, to, …}     YES
+    Aggregates series    agg:data:{q, status, topCategories, …}                   NO
+    Aggregates total     agg:total:{q, status, topCategories, …}                  NO
+
+Aggregates keys omit from/to intentionally — the same series is reused across date
+ranges when q/filters/topN are identical. Orders keys include from/to because the
+result rows change with the date window.
+
+### DB (ClickHouse Cloud — reached only after all cache misses)
 - The free tier has a strict compute quota. Never add ClickHouse queries to any
   code path called more than once per minute without explicit approval.
 - Before switching a query from a pre-aggregated table to a live GROUP BY, stop and
   confirm the performance trade-off is acceptable.
+
+### Instrumentation (startup — not on the hot request path)
+- instrumentation.ts runs SELECT 1 every 8 min to keep ClickHouse warm. Do not
+  add a second keepalive or shorten this interval without approval.
+- /api/health MUST NOT query ClickHouse or Redis. It is polled every 30 s by
+  App Runner; the keepalive above is sufficient for warm-up.
+- Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
+- Every dashboard response must complete in < 1 s end-to-end. A code path slower
+  than 1 s is a bug, not a trade-off.
+- Any change to infra/main.tf requires a full deploy (option 2 in deploy.sh).
+  Never run terraform directly.

@@ -44,13 +44,30 @@ function Loading() {
   );
 }
 
-function MetaBar({ ms, label }: { ms: number; label: string }) {
+function MetaBar({ ms, label, src, cdn }: { ms: number; label: string; src?: string|null; cdn?: string|null }) {
+  const cdnHit  = cdn?.startsWith("Hit");
+  const cdnMiss = cdn?.startsWith("Miss");
+  const cacheLabel = cdnHit
+    ? "cdn=Hit"
+    : cdnMiss
+      ? src === "mem"   ? "cdn=Miss · mem=Hit"
+      : src === "redis" ? "cdn=Miss · mem=Miss · redis=Hit"
+      : src === "ch"    ? "cdn=Miss · mem=Miss · redis=Miss"
+      : src             ? `cdn=Miss · src=${src}`
+      :                   "cdn=Miss"
+    : src ? `src=${src}` : null;
   return (
-    <div className="flex items-center gap-3 mb-4">
+    <div className="flex items-center gap-3 mb-4 flex-wrap">
       <span className="text-[11px] px-2 py-1 rounded-full font-mono inline-flex items-center gap-1" style={timingStyle(ms)}>
         ⚡ {ms}ms
       </span>
       <span className="text-xs" style={{ color:"#71717a" }}>{label}</span>
+      {cacheLabel && (
+        <span className="text-[11px] font-mono px-2 py-0.5 rounded-full"
+          style={{ background:"rgba(129,140,248,0.08)", border:"1px solid rgba(129,140,248,0.2)", color:"#818cf8" }}>
+          {cacheLabel}
+        </span>
+      )}
     </div>
   );
 }
@@ -176,7 +193,12 @@ async function fetchTimed(path: string) {
   const res = await fetch(path);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = await res.json();
-  return { json, ms: Math.round(performance.now() - t0) };
+  return {
+    json,
+    ms: Math.round(performance.now() - t0),
+    src: res.headers.get("X-Cache-Source"),
+    cdn: res.headers.get("X-Cache"),
+  };
 }
 
 // ── Card shell ────────────────────────────────────────────────────────────────
@@ -254,7 +276,7 @@ function mono(label: string, val: string) {
 
 function OrdersCard() {
   const [loading, setLoading] = useState(false);
-  const [res, setRes]         = useState<{ json: unknown; ms: number } | null>(null);
+  const [res, setRes]         = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]         = useState<unknown>(null);
   const [countTotal, setCountTotal]   = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
@@ -294,7 +316,7 @@ function OrdersCard() {
       {loading && <Loading />}
       {!!err  && <ErrMsg err={err} />}
       {res    && <>
-        <MetaBar ms={res.ms} label={countLabel} />
+        <MetaBar ms={res.ms} label={countLabel} src={res.src} cdn={res.cdn} />
         {rows.length > 0 && <OrderTable rows={rows} />}
         <RawJson data={res.json} />
       </>}
@@ -305,7 +327,7 @@ function OrdersCard() {
 function SearchCard() {
   const [q, setQ]         = useState("");
   const [loading, setL]   = useState(false);
-  const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
+  const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
   const [countTotal, setCountTotal]     = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
@@ -354,7 +376,7 @@ function SearchCard() {
       {loading && <Loading />}
       {!!err   && <ErrMsg err={err} />}
       {res     && <>
-        <MetaBar ms={res.ms} label={countLabel} />
+        <MetaBar ms={res.ms} label={countLabel} src={res.src} cdn={res.cdn} />
         {rows.length > 0 ? <OrderTable rows={rows} /> : <p className="text-xs" style={{ color:"#71717a" }}>No results.</p>}
         <RawJson data={res.json} />
       </>}
@@ -412,7 +434,7 @@ function AggregatesCard() {
   const [from, setFrom]   = useState("2024-07-17");
   const [to,   setTo]     = useState(today);
   const [loading, setL]   = useState(false);
-  const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
+  const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
 
   async function run() {
@@ -447,7 +469,7 @@ function AggregatesCard() {
       {loading && <Loading />}
       {!!err   && <ErrMsg err={err} />}
       {res && rows.length > 0 && <>
-        <MetaBar ms={res.ms} label={`${rows.length} day${rows.length!==1?"s":""} · ${from} → ${to}`} />
+        <MetaBar ms={res.ms} label={`${rows.length} day${rows.length!==1?"s":""} · ${from} → ${to}`} src={res.src} cdn={res.cdn} />
         <AggSummary rows={rows} from={from} to={to} />
         <RawJson data={res.json} />
       </>}
@@ -459,7 +481,7 @@ function AggregatesCard() {
 function CustomersCard() {
   const [q, setQ]         = useState("");
   const [loading, setL]   = useState(false);
-  const [res, setRes]     = useState<{ json: unknown; ms: number } | null>(null);
+  const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
 
   async function run() {
@@ -486,7 +508,7 @@ function CustomersCard() {
       {loading && <Loading />}
       {!!err   && <ErrMsg err={err} />}
       {res     && <>
-        <MetaBar ms={res.ms} label={`${rows.length} customer${rows.length!==1?"s":""} returned`} />
+        <MetaBar ms={res.ms} label={`${rows.length} customer${rows.length!==1?"s":""} returned`} src={res.src} cdn={res.cdn} />
         {rows.length > 0 ? <CustomerTable rows={rows} /> : <p className="text-xs" style={{ color:"#71717a" }}>No results.</p>}
         <RawJson data={res.json} />
       </>}
@@ -504,7 +526,7 @@ function BrushCard() {
   const [brushData, setBD]  = useState<BrushDay[]>([]);
   const [brushL, setBL]     = useState(0);
   const [brushR, setBR]     = useState(1);
-  const [brushRes, setBRes] = useState<{ json:unknown; ms:number; from:string; to:string }|null>(null);
+  const [brushRes, setBRes] = useState<{ json:unknown; ms:number; src:string|null; cdn:string|null; from:string; to:string }|null>(null);
   const [fetching, setF]    = useState(false);
 
   // Refs to avoid stale closures inside pointer handlers
@@ -535,12 +557,12 @@ function BrushCard() {
     const today = new Date().toISOString().slice(0,10);
     const ago   = "2020-01-01";
     try {
-      const { json, ms } = await fetchTimed(`/api/aggregates?from=${ago}&to=${today}&topCategories=1`);
+      const { json, ms, src, cdn } = await fetchTimed(`/api/aggregates?from=${ago}&to=${today}&topCategories=1`);
       const raw  = (json as Record<string,unknown>).data ?? json;
       const data = Array.isArray(raw) ? raw as BrushDay[] : [];
       if (!data.length) throw new Error("no data");
       setBD(data); setBL(0); setBR(1); setPhase("chart");
-      setBRes({ json, ms, from: data[0].date, to: data[data.length-1].date });
+      setBRes({ json, ms, src, cdn, from: data[0].date, to: data[data.length-1].date });
     } catch { setPhase("error"); }
   }
 
@@ -648,7 +670,7 @@ function BrushCard() {
               </div>
             ) : (
               <>
-                <MetaBar ms={brushRes.ms} label={`${bRows.length} day${bRows.length!==1?"s":""} · ${brushRes.from} → ${brushRes.to}`} />
+                <MetaBar ms={brushRes.ms} label={`${bRows.length} day${bRows.length!==1?"s":""} · ${brushRes.from} → ${brushRes.to}`} src={brushRes.src} cdn={brushRes.cdn} />
                 <div className="grid grid-cols-3 gap-3">
                   {[
                     { l:"Orders",       v:bOrders.toLocaleString(),  c:"#f4f4f5" },

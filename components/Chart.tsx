@@ -284,9 +284,16 @@ function Chart({
           signal: controller.signal,
         });
         const _aggSrc = res.headers.get("X-Cache-Source") ?? "?";
-        const _aggXcache = res.headers.get("X-Cache") ?? "";
-        const _aggCdn = _aggXcache ? ` cdn=${_aggXcache.split(" ")[0]}` : "";
-        if (diag) console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms src=${_aggSrc}${_aggCdn}`);
+        const _aggCdnRaw = res.headers.get("X-Cache") ?? "";
+        const _aggCacheLabel = _aggCdnRaw.startsWith("Hit")
+          ? "cdn=Hit"
+          : _aggCdnRaw.startsWith("Miss")
+            ? _aggSrc === "mem"   ? "cdn=Miss mem=Hit"
+            : _aggSrc === "redis" ? "cdn=Miss mem=Miss redis=Hit"
+            : _aggSrc === "ch"    ? "cdn=Miss mem=Miss redis=Miss"
+            : `cdn=Miss src=${_aggSrc}`
+          : `src=${_aggSrc}`;
+        if (diag) console.log(`[perf:client] ← /api/aggregates fetch=${(performance.now() - aggT0).toFixed(1)}ms counter=${searchPerf.counter()}ms ${_aggCacheLabel}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const aggJsonT0 = performance.now();
         const json: AggregatesResponse = await res.json();
