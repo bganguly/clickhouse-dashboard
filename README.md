@@ -22,6 +22,25 @@ and chart responses across 50 M orders: full-text search via Typesense prefix ex
 2. **Aggregates** — the chart shows daily order totals by category from SummingMergeTree pre-aggregated tables; never touches raw orders.
 3. **Query cache** — run the same search or chart range twice; the repeat response drops from ~180 ms to ~10 ms via ClickHouse's 60 s query cache.
 
+### Three-tier response cache
+
+Every `/api/orders` and `/api/aggregates` response passes through three cache layers before hitting ClickHouse:
+
+```
+CloudFront CDN  →  in-process Map (mem, Node.js process)  →  Upstash Redis  →  ClickHouse
+  s-maxage=300       MAX_ENTRIES=500, TTL=90d                  TTL=90d
+```
+
+Cache key constraints:
+
+| Endpoint | App cache key fields | CDN key |
+|---|---|---|
+| `/api/orders` | `q`, `page`, `pageSize`, `sort`, `dir`, `status`, `regionCode`, `from`, `to`, `minTotal`, `maxTotal` (all serialized; nulls for absent filters) | full URL including query string |
+| `/api/aggregates` | `q`, `topCategories` only — **`from`/`to` are intentionally excluded** so all date ranges sharing the same query share one cache entry | full URL including query string (so `q=` must be present to match the main chart's CDN key) |
+| `/api/customers` | `q`, `limit`, `cursor`, `regionId` | full URL |
+
+**API Explorer cache alignment**: the Orders and Search cards omit `from`/`to` to match the main dashboard's unfiltered cache keys (`from: null, to: null`). The Aggregates card includes `q=` so its CDN key matches the main chart. The Customers and Brush cards have no main-dashboard equivalent and warm their own independent cache entries.
+
 ---
 
 | Area | Stack / Detail |
