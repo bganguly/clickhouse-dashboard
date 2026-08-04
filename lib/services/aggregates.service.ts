@@ -475,9 +475,13 @@ function capToTopCategories(day: DailyAggregate, topN: number): DailyAggregate {
 void (process.env.CLICKHOUSE_URL && (async () => {
   try {
     const today = todayDateString();
+    const d = new Date(); d.setDate(d.getDate() - 90);
+    const ninetyDaysAgo = d.toISOString().slice(0, 10);
     await Promise.all([
-      getDailyAggregates({ from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getExactAggregateTotal({ from: "2020-01-01", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: DEFAULT_TOP_CATEGORIES }),
+      getDailyAggregates({ from: "2024-07-17", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getDailyAggregates({ from: ninetyDaysAgo, to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getExactAggregateTotal({ from: "2024-07-17", to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: DEFAULT_TOP_CATEGORIES }),
+      getExactAggregateTotal({ from: ninetyDaysAgo, to: today, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: DEFAULT_TOP_CATEGORIES }),
     ]);
   } catch {}
 })());

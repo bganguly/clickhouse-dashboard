@@ -377,6 +377,19 @@ export default function FilterSidebar({
         <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
           Placed date
         </legend>
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-500">
+          <input
+            type="checkbox"
+            checked={value.from === "2024-07-17"}
+            onChange={(e) =>
+              e.target.checked
+                ? patch({ from: "2024-07-17", to: "" })
+                : patch({ from: "", to: "" })
+            }
+            className="h-3.5 w-3.5 rounded accent-indigo-500"
+          />
+          All time
+        </label>
         <label className="block text-xs text-gray-500">
           From
           <input

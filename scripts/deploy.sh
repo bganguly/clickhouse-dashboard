@@ -1202,6 +1202,17 @@ _finalize_deploy() {
   printf '\n  Dashboard: %s\n' "$CDN_URL"
   printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
 
+  if [[ -n "${CDN_URL:-}" ]]; then
+    printf '\n  Priming CDN cache for default 90-day view...\n'
+    local _today _from90
+    _today=$(python3 -c "from datetime import date; print(date.today().isoformat())")
+    _from90=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=90)).isoformat())")
+    curl -sf "${CDN_URL}/api/aggregates?q=&from=${_from90}&to=${_today}&topCategories=4" >/dev/null \
+      && printf '  aggregates (90d): primed\n' || printf '  aggregates (90d): skipped (not ready)\n'
+    curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_today}&facets=1" >/dev/null \
+      && printf '  orders (90d):     primed\n' || printf '  orders (90d):     skipped (not ready)\n'
+  fi
+
   if [[ "$_OCF_REBUILT" -eq 1 ]]; then
     printf '\n  ── OCF rebuilt from items array ──────────────────────────────────────\n'
     printf '  order_category_facts now has 1 row per order (~50 M). Verify:\n\n'

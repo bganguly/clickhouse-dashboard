@@ -186,7 +186,10 @@ function compactBrushDate(value: string): string {
 }
 
 function defaultRange(): { from: string; to: string } {
-  return { from: "2024-07-17", to: isoDay(new Date()) };
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - 90);
+  return { from: isoDay(from), to: isoDay(to) };
 }
 
 function Chart({
@@ -229,6 +232,8 @@ function Chart({
   const chartRef = useRef<HTMLElement | null>(null);
   const onRangeChangeRef = useRef(onRangeChange);
   useEffect(() => { onRangeChangeRef.current = onRangeChange; });
+  const rangeRef = useRef(range);
+  useEffect(() => { rangeRef.current = range; }, [range]);
   // onRangeChange is an independent side-channel (e.g. syncing the brushed
   // window into the shared filters so the list narrows too) — it does NOT
   // imply controlled mode. Only supplying controlledData does.
@@ -590,11 +595,11 @@ function Chart({
       }
       const from = String(buckets[startIndex].date);
       const to = String(buckets[endIndex].date);
-      if (from === range.from && to === range.to) return;
+      if (from === rangeRef.current.from && to === rangeRef.current.to) return;
       setRange({ from, to });
       pendingDragRef.current = { from, to };
     },
-    [buckets, range.from, range.to],
+    [buckets],
   );
 
   return (
