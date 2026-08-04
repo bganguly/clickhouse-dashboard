@@ -99,7 +99,7 @@ Instrumentation (startup, not on the hot path) is listed last.
 One row per API endpoint. CDN key = exact URL string (param order matters).
 App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant).
 
-| Endpoint | CDN canonical URL | App cache key fields | API Explorer constraint |
+| Endpoint | CDN canonical URL | App cache key (mem Map + Redis, same key) | API Explorer constraint |
 |---|---|---|---|
 | `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}` | omit from/to — main UI sends no date by default, so keys have from:null, to:null |
 | `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `data:{q, status, regionCode, minTotal, maxTotal, topCategories}` | include `q=` even when empty; include from/to (route rejects requests without them) |
