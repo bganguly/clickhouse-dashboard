@@ -137,12 +137,8 @@ export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?:
     to: input.to || (input.from ? todayDateString() : input.to),
   };
 
-  const resolvedTopN =
-    query_in.topCategories != null && query_in.topCategories > 0
-      ? Math.trunc(query_in.topCategories)
-      : DEFAULT_TOP_CATEGORIES;
-  const { ...totalKeyFields } = query_in;
-  const inProcKey = `total:${JSON.stringify({ ...totalKeyFields, topCategories: resolvedTopN })}`;
+  const { topCategories: _tc, ...totalKeyFields } = query_in;
+  const inProcKey = `total:${JSON.stringify(totalKeyFields)}`;
   const _totalT0 = Date.now();
   const _totalSrc = { value: "ch" };
   const cachedTotal = await aggCacheGet<number>(inProcKey, _totalSrc);
