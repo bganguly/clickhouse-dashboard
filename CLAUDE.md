@@ -119,10 +119,17 @@ App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant
   the 90-day window ending at DATASET_END = "2026-07-17"). If the default date
   range ever changes, update both IIFEs and the cache key reference table above to
   match, or cache misses will appear on every cold start.
-- The orders IIFE also extracts deduplicated tokens (firstName, lastName, note words
-  ≥ 3 chars) from page-1 results and warms each token search (up to 100) with the
-  same date range. If the default date range changes, this token warmup must also
-  use the new from/to so token searches hit mem/Redis rather than falling through to CH.
+- The orders IIFE also extracts deduplicated tokens from page-1 results and warms each
+  token search with the same date range. If the default date range changes, this token
+  warmup must also use the new from/to so token searches hit mem/Redis rather than
+  falling through to CH.
+- Token extraction MUST use a two-pass approach: collect all firstName/lastName tokens
+  first (across all 20 orders), then append unique note words (≥ 3 chars, non-numeric)
+  that are not already in the name set. Do NOT interleave note words with names in a
+  single pass — that causes orders near the end of page-1 to have their customer names
+  crowded out by note words from earlier orders. The correct deduplicated set is ~108
+  tokens (40 names + 68 unique note words). Any refactor that produces significantly
+  fewer tokens is a regression.
 - /api/health MUST NOT query ClickHouse or Redis. It is polled every 30 s by
   App Runner; the keepalive above is sufficient for warm-up.
 - Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
