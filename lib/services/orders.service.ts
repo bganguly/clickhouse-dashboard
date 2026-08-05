@@ -506,18 +506,19 @@ void (process.env.CLICKHOUSE_URL && (async () => {
       listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: DATASET_START, to: DATASET_END }),
     ]);
 
-    const tokens = new Set<string>();
+    const names = new Set<string>();
+    const noteWords = new Set<string>();
     for (const order of page1.data) {
-      if (order.customer.firstName) tokens.add(order.customer.firstName.toLowerCase());
-      if (order.customer.lastName)  tokens.add(order.customer.lastName.toLowerCase());
+      if (order.customer.firstName) names.add(order.customer.firstName.toLowerCase());
+      if (order.customer.lastName)  names.add(order.customer.lastName.toLowerCase());
       if (order.notes) {
         for (const w of order.notes.split(/\s+/)) {
-          if (w.length >= 3 && !/^\d+$/.test(w)) tokens.add(w.toLowerCase());
+          if (w.length >= 3 && !/^\d+$/.test(w)) noteWords.add(w.toLowerCase());
         }
       }
     }
-
-    const tokenList = [...tokens].slice(0, 100);
+    const tokenSet = new Set([...names, ...[...noteWords].filter(w => !names.has(w))]);
+    const tokenList = [...tokenSet];
     console.log(`[orders:warmup] extracted ${tokenList.length} tokens from 90-day page-1 (${from90}→${DATASET_END}): ${tokenList.join(", ")}`);
 
     const layerCounts: Record<string, number> = {};
