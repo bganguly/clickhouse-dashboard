@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
 CREDS_FILE="$ROOT_DIR/.clickhouse-creds"
+EC2_CREDS_FILE="$ROOT_DIR/.ec2-creds"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -18,12 +19,28 @@ _tf_state="$INFRA_DIR/terraform.tfstate"
 _aws_deployed=0
 [[ -f "$_tf_state" ]] && _aws_deployed=1 || true
 
+_ec2_deployed=0; _EC2_INSTANCE_ID=""; _EC2_SG_ID=""
+if [[ -f "$EC2_CREDS_FILE" ]]; then
+  _ec2_deployed=1
+  _EC2_INSTANCE_ID="$(grep '^EC2_INSTANCE_ID=' "$EC2_CREDS_FILE" 2>/dev/null | cut -d= -f2-)"
+  _EC2_SG_ID="$(grep '^EC2_SG_ID=' "$EC2_CREDS_FILE" 2>/dev/null | cut -d= -f2-)"
+fi
+
+_warn_cloud_url=""
+if (( _ec2_deployed )); then
+  _warn_cloud_url="$(grep '^CH_CLOUD_URL_PREV=' "$EC2_CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
+else
+  _ch_cur="$(grep '^CLICKHOUSE_URL=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  [[ "$_ch_cur" == https://* ]] && _warn_cloud_url="$_ch_cur"
+fi
+
 printf '\n=== clickhouse-dashboard teardown ===\n\n'
 printf '  [1] Local  — stop npm dev process'
 (( _local_running )) && printf ' [running]' || printf ' [not detected]'
 printf '\n'
-printf '  [2] Cloud  — destroy AWS App Runner + ECR + CodeBuild + CDN'
+printf '  [2] Cloud  — destroy AWS App Runner + ECR + CDN'
 (( _aws_deployed )) && printf ' [deployed]' || printf ' [not deployed]'
+(( _ec2_deployed )) && printf ' + EC2 ClickHouse [%s]' "${_EC2_INSTANCE_ID:-?}"
 printf '\n'
 printf '\nChoice [1/2, default 2]: '
 read -r _MODE
@@ -97,8 +114,8 @@ ECR_REPO_NAME="${NAME_PREFIX}-app"
 printf '\n  This will destroy:\n'
 printf '    App Runner service\n'
 printf '    ECR repository: %s\n' "$ECR_REPO_NAME"
-printf '    CodeBuild project + S3 source bucket\n'
 printf '    CloudFront CDN + S3 maintenance bucket\n'
+(( _ec2_deployed )) && printf '    EC2 ClickHouse %s — DATA PERMANENTLY DELETED (no backup)\n' "${_EC2_INSTANCE_ID:-?}"
 printf '\n  Proceed? [Y/n]: '
 read -r _CONFIRM
 [[ "${_CONFIRM:-y}" =~ ^[Yy]$ ]] || { red 'Aborted.'; exit 1; }
@@ -124,7 +141,43 @@ fi
 bold 'Running terraform destroy...'
 terraform destroy -auto-approve -input=false
 
+if (( _ec2_deployed )); then
+  if [[ -n "$_EC2_INSTANCE_ID" ]]; then
+    bold 'Terminating EC2 ClickHouse instance...'
+    aws ec2 terminate-instances --instance-ids "$_EC2_INSTANCE_ID" --no-cli-pager >/dev/null
+    aws ec2 wait instance-terminated --instance-ids "$_EC2_INSTANCE_ID"
+    green "  EC2 instance $_EC2_INSTANCE_ID terminated"
+  fi
+  if [[ -n "$_EC2_SG_ID" ]]; then
+    aws ec2 delete-security-group --group-id "$_EC2_SG_ID" --no-cli-pager 2>/dev/null \
+      && green "  Security group $_EC2_SG_ID deleted" || dim "  Security group $_EC2_SG_ID already gone"
+  fi
+  rm -f "$EC2_CREDS_FILE"
+  green '  .ec2-creds removed'
+fi
+
 rm -f "$CREDS_FILE"
 green '  .clickhouse-creds removed'
 green '\nAWS infrastructure torn down.'
 printf '  Redeploy: ./scripts/deploy.sh\n'
+
+_warned=0
+if [[ -n "$_warn_cloud_url" ]]; then
+  (( _warned == 0 )) && printf '\n'
+  printf '\033[33m  WARNING: external services may still be running and incurring costs:\033[0m\n'
+  printf '\033[33m    ClickHouse Cloud: %s\033[0m\n' "$_warn_cloud_url"
+  _warned=1
+fi
+_ts_url="$(grep '^TYPESENSE_URL=' "$ROOT_DIR/.typesense-creds" 2>/dev/null | cut -d= -f2- || true)"
+if [[ -n "$_ts_url" ]]; then
+  (( _warned == 0 )) && printf '\n' && printf '\033[33m  WARNING: external services may still be running and incurring costs:\033[0m\n'
+  printf '\033[33m    Typesense: %s\033[0m\n' "$_ts_url"
+  _warned=1
+fi
+_redis_url="$(grep '^REDIS_URL=' "$ROOT_DIR/.redis-creds" 2>/dev/null | cut -d= -f2- || true)"
+if [[ -n "$_redis_url" ]]; then
+  (( _warned == 0 )) && printf '\n' && printf '\033[33m  WARNING: external services may still be running and incurring costs:\033[0m\n'
+  _redis_host="$(printf '%s' "$_redis_url" | sed 's|.*@||;s|:.*||')"
+  printf '\033[33m    Redis: %s\033[0m\n' "$_redis_host"
+  _warned=1
+fi

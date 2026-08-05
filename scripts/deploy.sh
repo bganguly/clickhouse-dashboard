@@ -1290,6 +1290,175 @@ _deploy_cloud() {
   _finalize_deploy
 }
 
+# ── Option 4: EC2-hosted ClickHouse ──────────────────────────────────────────
+
+_ec2_ch_run() {
+  local url="$1" pass="$2" sql="$3" timeout="${4:-60}"
+  curl -sf -u "default:${pass}" "${url}/?max_execution_time=${timeout}" \
+    --data-binary "$sql" 2>/dev/null
+}
+
+_ec2_provision() {
+  printf '[ec2] Checking AWS credentials...\n'
+  aws sts get-caller-identity >/dev/null
+
+  EC2_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+
+  printf '[ec2] Creating security group...\n'
+  EC2_SG_ID="$(aws ec2 create-security-group \
+    --group-name 'ch-dash-clickhouse' \
+    --description 'ClickHouse for ch-dash' \
+    --query 'GroupId' --output text)"
+  aws ec2 authorize-security-group-ingress \
+    --group-id "$EC2_SG_ID" \
+    --protocol tcp --port 8123 --cidr 0.0.0.0/0 >/dev/null
+  printf '  SG %s — port 8123 open\n' "$EC2_SG_ID"
+
+  local _UD_FILE
+  _UD_FILE="$(mktemp /tmp/ch-ec2-ud-XXXX.sh)"
+  cat > "$_UD_FILE" <<USERDATA
+#!/bin/bash
+set -e
+yum install -y yum-utils
+yum-config-manager --add-repo https://packages.clickhouse.com/rpm/clickhouse.repo
+yum install -y clickhouse-server clickhouse-client
+mkdir -p /etc/clickhouse-server/config.d /etc/clickhouse-server/users.d
+printf '<clickhouse><listen_host>0.0.0.0</listen_host></clickhouse>' \
+  > /etc/clickhouse-server/config.d/network.xml
+printf '<clickhouse><users><default><password>${EC2_PASS}</password></default></users></clickhouse>' \
+  > /etc/clickhouse-server/users.d/password.xml
+systemctl enable clickhouse-server
+systemctl start clickhouse-server
+USERDATA
+
+  printf '[ec2] Launching t3.medium (100 GB gp3)...\n'
+  local _JSON
+  _JSON="$(aws ec2 run-instances \
+    --image-id resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+    --instance-type t3.medium \
+    --security-group-ids "$EC2_SG_ID" \
+    --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":100,"VolumeType":"gp3"}}]' \
+    --user-data "file://${_UD_FILE}" \
+    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=ch-dash-clickhouse}]' \
+    --query 'Instances[0]' --output json)"
+  EC2_INSTANCE_ID="$(printf '%s' "$_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['InstanceId'])")"
+  rm -f "$_UD_FILE"
+
+  printf '[ec2] Waiting for instance running (%s)...\n' "$EC2_INSTANCE_ID"
+  aws ec2 wait instance-running --instance-ids "$EC2_INSTANCE_ID"
+  EC2_IP="$(aws ec2 describe-instances \
+    --instance-ids "$EC2_INSTANCE_ID" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
+  printf '[ec2] Instance at %s — waiting for ClickHouse (~3 min)...\n' "$EC2_IP"
+  _ch_wait_ready "[ec2]" "http://${EC2_IP}:8123" "$EC2_PASS" 360 abort
+  _ec2_run_ddl
+}
+
+_ec2_run_ddl() {
+  printf '[ec2] Creating schema...\n'
+  local _U="http://${EC2_IP}:8123" _P="$EC2_PASS"
+  _ec2_ddl() { _ec2_ch_run "$_U" "$_P" "$1" 60 >/dev/null; }
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS categories (categoryId UInt32, name LowCardinality(String), slug LowCardinality(String), parentId Nullable(UInt32), createdAt DateTime64(3,'UTC')) ENGINE=MergeTree() ORDER BY categoryId"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS regions (regionId UInt32, code LowCardinality(String), name String, country String, timezone String) ENGINE=MergeTree() ORDER BY regionId"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS customers (customerId UInt64, email String, firstName String, lastName String, phone Nullable(String), regionId UInt32, createdAt DateTime64(3,'UTC')) ENGINE=MergeTree() ORDER BY customerId"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS products (productId UInt32, sku String, name String, description Nullable(String), price Decimal(10,2), cost Decimal(10,2), stock UInt32, categoryId UInt32, createdAt DateTime64(3,'UTC')) ENGINE=MergeTree() ORDER BY productId"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS orders (orderId UInt64, customerId UInt64, regionId UInt32, regionCode LowCardinality(String), customerFirstName String, customerLastName String, customerEmail String, status LowCardinality(String), total Decimal(12,2), currency LowCardinality(String), notes Nullable(String), searchText String, placedAt DateTime64(3,'UTC'), itemCount UInt32 DEFAULT 0, items Array(Tuple(categoryId UInt32, categoryName LowCardinality(String), productId UInt32, productName String, productSku LowCardinality(String), quantity UInt32, unitPrice Float64, discount Float64)) DEFAULT []) ENGINE=MergeTree() ORDER BY (placedAt, orderId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS order_items (itemId UInt64, orderId UInt64, productId UInt32, productName String, productSku LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), quantity UInt32, unitPrice Decimal(10,2), discount Decimal(5,2)) ENGINE=MergeTree() ORDER BY (orderId, itemId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS order_category_facts (orderId UInt64, date Date, placedAt DateTime64(3,'UTC'), customerId UInt64, regionId UInt32, regionCode LowCardinality(String), status LowCardinality(String), orderTotal Decimal(12,2), categoryId UInt32, categoryName LowCardinality(String), totalItems UInt32, totalRevenue Decimal(14,2), searchText String DEFAULT '') ENGINE=MergeTree() ORDER BY (date, orderId, categoryId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS daily_summary (date Date, categoryId UInt32, categoryName LowCardinality(String), regionId UInt32, regionCode LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE=SummingMergeTree((totalOrders,totalRevenue,totalItems)) ORDER BY (date,regionId,categoryId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS daily_filter_category_summary (date Date, regionId UInt32, regionCode LowCardinality(String), status LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE=SummingMergeTree((totalOrders,totalRevenue,totalItems)) ORDER BY (date,regionId,status,categoryId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS daily_status_category_summary (date Date, status LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE=SummingMergeTree((totalOrders,totalRevenue,totalItems)) ORDER BY (date,status,categoryId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS daily_customer_category_summary (date Date, customerId UInt64, regionId UInt32, regionCode LowCardinality(String), status LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE=SummingMergeTree((totalOrders,totalRevenue,totalItems)) ORDER BY (date,customerId,regionId,status,categoryId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS daily_order_count (date Date, regionId UInt32, regionCode LowCardinality(String), orderCount UInt64) ENGINE=SummingMergeTree(orderCount) ORDER BY (date,regionId)"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS search_vocabulary (token LowCardinality(String), doc_freq UInt64) ENGINE=MergeTree ORDER BY token"
+  _ec2_ddl "CREATE TABLE IF NOT EXISTS daily_search_token_summary (token LowCardinality(String), date Date, categoryName LowCardinality(String), orderCount UInt32, orderTotal Float64) ENGINE=MergeTree() ORDER BY (token,date,categoryName)"
+  printf '  Schema ready.\n'
+}
+
+_ec2_transfer_data() {
+  local _src_url _src_pass _cloud_host
+  _src_url="$(grep '^CLICKHOUSE_URL=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2-)"
+  _src_pass="$(grep '^CLICKHOUSE_PASSWORD=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2-)"
+  [[ -z "$_src_url" || -z "$_src_pass" ]] && { printf 'ERROR: no Cloud credentials in .clickhouse-creds\n'; exit 1; }
+  _cloud_host="$(printf '%s' "$_src_url" | sed 's|https://||; s|:.*||')"
+  local _eu="http://${EC2_IP}:8123"
+
+  _xfer() {
+    local _tbl="$1" _timeout="${2:-3600}"
+    printf '[ec2] Transferring %-44s' "${_tbl}..."
+    local _t0 _cnt
+    _t0=$(date +%s)
+    _ec2_ch_run "$_eu" "$EC2_PASS" \
+      "INSERT INTO ${_tbl} SELECT * FROM remoteSecure('${_cloud_host}:9440', default.${_tbl}, 'default', '${_src_pass}')" \
+      "$_timeout" >/dev/null || true
+    _cnt="$(_ec2_ch_run "$_eu" "$EC2_PASS" "SELECT count() FROM ${_tbl}" 10 || echo '?')"
+    printf '%s rows (%ds)\n' "${_cnt:-?}" $(( $(date +%s) - _t0 ))
+  }
+
+  _xfer categories  120; _xfer regions 120; _xfer customers 300; _xfer products 120
+  _xfer search_vocabulary 120; _xfer daily_search_token_summary 600
+  _xfer orders 7200; _xfer order_items 7200; _xfer order_category_facts 7200
+  _xfer daily_summary 600; _xfer daily_filter_category_summary 600
+  _xfer daily_status_category_summary 600; _xfer daily_customer_category_summary 600
+  _xfer daily_order_count 300
+
+  printf '[ec2] OPTIMIZE FINAL on SummingMergeTree tables...\n'
+  local _st
+  for _st in daily_summary daily_filter_category_summary daily_status_category_summary daily_customer_category_summary daily_order_count; do
+    printf '  %s...' "$_st"
+    _ec2_ch_run "$_eu" "$EC2_PASS" "OPTIMIZE TABLE ${_st} FINAL" 300 >/dev/null || true
+    printf ' done\n'
+  done
+}
+
+_deploy_ec2_ch() {
+  printf 'EC2 ClickHouse already exists? [y/N]: '
+  read -r _EC2_EXISTS
+
+  EC2_IP=""; EC2_PASS=""; EC2_INSTANCE_ID=""; EC2_SG_ID=""
+
+  if [[ ! "${_EC2_EXISTS:-N}" =~ ^[Yy] ]]; then
+    _check_deps
+    _ec2_provision
+    _ec2_transfer_data
+  else
+    printf 'EC2 IP or hostname: '
+    read -r EC2_IP
+    printf 'ClickHouse password: '
+    read -rs EC2_PASS; printf '\n'
+    if [[ -f "$ROOT_DIR/.ec2-creds" ]]; then
+      EC2_INSTANCE_ID="$(grep '^EC2_INSTANCE_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+      EC2_SG_ID="$(grep '^EC2_SG_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+    fi
+  fi
+
+  local _OLD_CLOUD_URL
+  _OLD_CLOUD_URL="$(grep '^CLICKHOUSE_URL=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
+
+  printf 'EC2_INSTANCE_ID=%s\nEC2_PUBLIC_IP=%s\nEC2_SG_ID=%s\nCH_CLOUD_URL_PREV=%s\n' \
+    "$EC2_INSTANCE_ID" "$EC2_IP" "$EC2_SG_ID" "${_OLD_CLOUD_URL:-}" > "$ROOT_DIR/.ec2-creds"
+  chmod 600 "$ROOT_DIR/.ec2-creds"
+
+  printf 'CLICKHOUSE_URL=http://%s:8123\nCLICKHOUSE_USER=default\nCLICKHOUSE_PASSWORD=%s\n' \
+    "$EC2_IP" "$EC2_PASS" > "$CREDS_FILE"
+  chmod 600 "$CREDS_FILE"
+
+  export CLICKHOUSE_URL="http://${EC2_IP}:8123"
+  export CLICKHOUSE_PASSWORD="$EC2_PASS"
+  export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
+  export TF_VAR_clickhouse_password="$EC2_PASS"
+  export CH_PASS="$EC2_PASS"
+
+  _sync_aws_gh_secrets
+  _load_redis_creds
+  _load_typesense_creds
+  _provision_infra
+  _verify_ecr_image
+  _deploy_app_runner
+  _run_db_checks
+  _finalize_deploy
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 _run_preflight
@@ -1297,13 +1466,15 @@ _run_preflight
 printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
-printf '  [3] %s\n\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
-printf 'Choice [1/2/3, default %s]: ' "$_DEFAULT_CHOICE"
+printf '  [3] %s\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
+printf '  [4] EC2    — self-hosted ClickHouse on EC2 (~$38/mo vs ~$330/mo Cloud)\n\n'
+printf 'Choice [1/2/3/4, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
 
 case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
   1) _deploy_local ;;
   2) _deploy_cloud ;;
   3) _deploy_quick ;;
+  4) _deploy_ec2_ch ;;
   *) printf 'Invalid choice.\n'; exit 1 ;;
 esac
