@@ -495,7 +495,31 @@ export function isPureDateRangeQuery(q: string | undefined, filters: ResolvedFil
 
 void (process.env.CLICKHOUSE_URL && (async () => {
   try {
-    await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc" });
+    const DATASET_END  = "2026-07-17";
+    const DATASET_START = "2024-07-17";
+    const d = new Date(`${DATASET_END}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 90);
+    const from90 = d.toISOString().slice(0, 10);
+
+    const [page1] = await Promise.all([
+      listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END }),
+      listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: DATASET_START, to: DATASET_END }),
+    ]);
+
+    const tokens = new Set<string>();
+    for (const order of page1.data) {
+      if (order.customer.firstName) tokens.add(order.customer.firstName.toLowerCase());
+      if (order.customer.lastName)  tokens.add(order.customer.lastName.toLowerCase());
+      if (order.notes) {
+        for (const w of order.notes.split(/\s+/)) {
+          if (w.length >= 3 && !/^\d+$/.test(w)) tokens.add(w.toLowerCase());
+        }
+      }
+    }
+
+    for (const tok of [...tokens].slice(0, 100)) {
+      await listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END });
+    }
   } catch {}
 })());
 
