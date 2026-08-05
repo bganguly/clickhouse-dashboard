@@ -5,6 +5,14 @@ import { diag } from "@/lib/diag";
 
 const PORTFOLIO_URL = "https://bganguly.github.io/?open=nextjs";
 
+const DATASET_START = "2024-07-17";
+const DATASET_END   = "2026-07-17";
+const FROM_90D = (() => {
+  const d = new Date(`${DATASET_END}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 90);
+  return d.toISOString().slice(0, 10);
+})();
+
 // ── Palette constants (match GCP api-explorer.html) ──────────────────────────
 const S = {
   glass:    { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" },
@@ -291,9 +299,9 @@ function OrdersCard() {
   async function run() {
     setLoading(true); setErr(null); setRes(null); setCountTotal(null);
     try {
-      const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc`);
+      const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${FROM_90D}&to=${DATASET_END}`);
       setRes(result);
-      fetch(`/api/aggregates?q=&from=2024-07-17&to=${new Date().toISOString().slice(0,10)}&topCategories=4`).catch(() => {});
+      fetch(`/api/aggregates?q=&from=${FROM_90D}&to=${DATASET_END}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
         setCountLoading(true);
@@ -344,9 +352,9 @@ function SearchCard() {
     setL(true); setErr(null); setRes(null); setCountTotal(null);
     try {
       const term = q.trim();
-      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc`);
+      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc&from=${FROM_90D}&to=${DATASET_END}`);
       setRes(result);
-      fetch(`/api/aggregates?q=${encodeURIComponent(term)}&from=2024-07-17&to=${new Date().toISOString().slice(0,10)}&topCategories=4`).catch(() => {});
+      fetch(`/api/aggregates?q=${encodeURIComponent(term)}&from=${FROM_90D}&to=${DATASET_END}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
         setCountLoading(true);
@@ -437,12 +445,18 @@ function AggSummary({ rows, from, to }: { rows: Array<Record<string,unknown>>; f
 }
 
 function AggregatesCard() {
-  const today = new Date().toISOString().slice(0,10);
-  const [from, setFrom]   = useState("2024-07-17");
-  const [to,   setTo]     = useState(today);
+  const [allTime, setAllTime] = useState(false);
+  const [from, setFrom]   = useState(FROM_90D);
+  const [to,   setTo]     = useState(DATASET_END);
   const [loading, setL]   = useState(false);
   const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
+
+  function toggleAllTime(next: boolean) {
+    setAllTime(next);
+    setFrom(next ? DATASET_START : FROM_90D);
+    setTo(DATASET_END);
+  }
 
   async function run() {
     if (!from||!to) return;
@@ -470,6 +484,11 @@ function AggregatesCard() {
             <DarkInput type="date" value={to}   onChange={setTo}   style={{ width:150 }} />
           </div>
           {mono("topCategories","4")}
+          <label className="flex items-center gap-1.5 text-[11px] select-none" style={{ color:"#71717a", cursor:"pointer" }}>
+            <input type="checkbox" checked={allTime} onChange={e => toggleAllTime(e.target.checked)}
+              className="h-3 w-3 rounded accent-indigo-500" />
+            All data
+          </label>
         </div>
         <RunBtn onClick={run} loading={loading} />
       </div>
@@ -529,7 +548,8 @@ function CustomersCard() {
 type BrushDay = { date: string; categories?: Record<string,{ totalOrders?:number; totalRevenue?:number }> };
 
 function BrushCard() {
-  const [phase, setPhase] = useState<"init"|"loading"|"chart"|"error">("init");
+  const [phase, setPhase]   = useState<"init"|"loading"|"chart"|"error">("init");
+  const [allTime, setAllTime] = useState(false);
   const [brushData, setBD]  = useState<BrushDay[]>([]);
   const [brushL, setBL]     = useState(0);
   const [brushR, setBR]     = useState(1);
@@ -559,18 +579,22 @@ function BrushCard() {
     } catch {} finally { setF(false); }
   }
 
-  async function initBrush() {
+  async function initBrush(useAllTime = allTime) {
     setPhase("loading");
-    const today = new Date().toISOString().slice(0,10);
-    const ago   = "2020-01-01";
+    const rangeFrom = useAllTime ? DATASET_START : FROM_90D;
     try {
-      const { json, ms, src, cdn } = await fetchTimed(`/api/aggregates?from=${ago}&to=${today}&topCategories=1`);
+      const { json, ms, src, cdn } = await fetchTimed(`/api/aggregates?from=${rangeFrom}&to=${DATASET_END}&topCategories=1`);
       const raw  = (json as Record<string,unknown>).data ?? json;
       const data = Array.isArray(raw) ? raw as BrushDay[] : [];
       if (!data.length) throw new Error("no data");
       setBD(data); setBL(0); setBR(1); setPhase("chart");
       setBRes({ json, ms, src, cdn, from: data[0].date, to: data[data.length-1].date });
     } catch { setPhase("error"); }
+  }
+
+  function toggleAllTime(next: boolean) {
+    setAllTime(next);
+    if (phase === "chart" || phase === "error") initBrush(next);
   }
 
   function makeDrag(side: "l"|"r") {
@@ -611,10 +635,17 @@ function BrushCard() {
       <div className="pt-4">
         {phase==="init" && (
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <p className="text-xs" style={{ color:"#52525b" }}>
-              Loads a year of aggregate data, then drag the handles to re-query any sub-range live.
-            </p>
-            <RunBtn onClick={initBrush} loading={false} />
+            <div className="flex items-center gap-3">
+              <p className="text-xs" style={{ color:"#52525b" }}>
+                Loads aggregate data, then drag the handles to re-query any sub-range live.
+              </p>
+              <label className="flex items-center gap-1.5 text-[11px] select-none whitespace-nowrap" style={{ color:"#71717a", cursor:"pointer" }}>
+                <input type="checkbox" checked={allTime} onChange={e => setAllTime(e.target.checked)}
+                  className="h-3 w-3 rounded accent-indigo-500" />
+                All data
+              </label>
+            </div>
+            <RunBtn onClick={() => initBrush(allTime)} loading={false} />
           </div>
         )}
 
@@ -629,7 +660,14 @@ function BrushCard() {
           <div className="mb-4">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[11px]" style={{ color:"#52525b" }}>Drag handles to re-query any sub-range</span>
-            <RunBtn onClick={initBrush} loading={false} />
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-[11px] select-none" style={{ color:"#71717a", cursor:"pointer" }}>
+                <input type="checkbox" checked={allTime} onChange={e => toggleAllTime(e.target.checked)}
+                  className="h-3 w-3 rounded accent-indigo-500" />
+                All data
+              </label>
+              <RunBtn onClick={() => initBrush(allTime)} loading={false} />
+            </div>
           </div>
             <svg viewBox="0 0 600 80" width="100%" height="80" preserveAspectRatio="none"
               style={{ display:"block", borderRadius:6 }}>
