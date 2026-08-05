@@ -101,8 +101,8 @@ App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant
 
 | Endpoint | CDN canonical URL | App / in-mem key | Redis | API Explorer constraint |
 |---|---|---|---|---|
-| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}` | same | omit from/to — main UI sends no date by default, so keys have from:null, to:null |
-| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `data:{q, status, regionCode, minTotal, maxTotal, topCategories}` | same | include `q=` even when empty; include from/to (route rejects requests without them) |
+| `/api/orders` | `q=<t>&from=<from90>&to=2026-07-17&page=1&pageSize=20&sort=placedAt&dir=desc` | `rows:{q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal}` | same | include from/to — main UI always sends the 90-day window (from=DATASET_END−90d, to=DATASET_END) |
+| `/api/aggregates` | `q=<t>&from=2024-07-17&to=2026-07-17&topCategories=4` | `data:{q, status, regionCode, minTotal, maxTotal, topCategories}` | same | include `q=` even when empty; include from/to (route rejects requests without them) |
 | `/api/customers` | `q=<t>&limit=20` | `cust:{q, limit, cursor, regionId}` | same | no main-UI equivalent; warms its own entries |
 
 ### DB (ClickHouse Cloud — reached only after all cache misses)
@@ -114,6 +114,15 @@ App cache key (mem Map + Redis) = JSON-serialised object (param order irrelevant
 ### Instrumentation (startup — not on the hot request path)
 - instrumentation.ts runs SELECT 1 every 8 min to keep ClickHouse warm. Do not
   add a second keepalive or shorten this interval without approval.
+- The startup IIFEs in aggregates.service.ts and orders.service.ts must warm the
+  exact same from/to date range that the dashboard UI sends by default (currently
+  the 90-day window ending at DATASET_END = "2026-07-17"). If the default date
+  range ever changes, update both IIFEs and the cache key reference table above to
+  match, or cache misses will appear on every cold start.
+- The orders IIFE also extracts deduplicated tokens (firstName, lastName, note words
+  ≥ 3 chars) from page-1 results and warms each token search (up to 100) with the
+  same date range. If the default date range changes, this token warmup must also
+  use the new from/to so token searches hit mem/Redis rather than falling through to CH.
 - /api/health MUST NOT query ClickHouse or Redis. It is polled every 30 s by
   App Runner; the keepalive above is sufficient for warm-up.
 - Do not shorten the App Runner health check interval below 30 s (infra/main.tf).
