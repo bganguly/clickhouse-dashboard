@@ -25,11 +25,12 @@ _GH_REPO=""; _GH_RUN_ST=""
 FIRST_DEPLOY=0; _DEPLOY_TAG=""
 APP_RUNNER_ARN=""; CDN_URL=""; CF_DIST_ID=""
 _OCF_REBUILT=0; _ITEMS_MIGRATION_PENDING=0
+_ECR_REPO="ch-dash-app"; _IS_EC2_STACK=0
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 
 _ecr_image_exists() {
-  aws ecr describe-images --repository-name "ch-dash-app" --image-ids "imageTag=$1" \
+  aws ecr describe-images --repository-name "$_ECR_REPO" --image-ids "imageTag=$1" \
     >/dev/null 2>&1
 }
 
@@ -37,10 +38,10 @@ _ensure_diag_build_arg() {
   if ! _ecr_image_exists "latest"; then return 0; fi
   local _WANT_TAG _LATEST_DIGEST _WANT_DIGEST
   _WANT_TAG="diag-$([[ -n "$_DIAG_LOGS" ]] && echo "1" || echo "0")"
-  _LATEST_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
+  _LATEST_DIGEST="$(aws ecr describe-images --repository-name "$_ECR_REPO" \
     --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' \
     --output text 2>/dev/null || echo 'none')"
-  _WANT_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
+  _WANT_DIGEST="$(aws ecr describe-images --repository-name "$_ECR_REPO" \
     --image-ids "imageTag=${_WANT_TAG}" --query 'imageDetails[0].imageDigest' \
     --output text 2>/dev/null || echo 'missing')"
   if [[ "$_LATEST_DIGEST" != "$_WANT_DIGEST" || "$_WANT_DIGEST" == "missing" ]]; then
@@ -696,7 +697,7 @@ with open('$_STATE_FILE', 'w') as f: json.dump(s, f, indent=2)
 
   local ECR_IMAGE_EXISTS
   ECR_IMAGE_EXISTS="$(aws ecr describe-images \
-    --repository-name "ch-dash-app" --image-ids imageTag=latest \
+    --repository-name "$_ECR_REPO" --image-ids imageTag=latest \
     --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
 
   if [[ -z "$ECR_IMAGE_EXISTS" || "$ECR_IMAGE_EXISTS" == "None" ]]; then
@@ -749,11 +750,11 @@ _verify_ecr_image() {
 
   printf '  Image %s found in ECR.\n' "$_DEPLOY_TAG"
   local _MANIFEST
-  _MANIFEST=$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+  _MANIFEST=$(aws ecr batch-get-image --repository-name "$_ECR_REPO" \
     --image-ids "imageTag=${_DEPLOY_TAG}" --query 'images[0].imageManifest' \
     --output text 2>/dev/null)
   if [[ "$_DEPLOY_TAG" != "latest" ]]; then
-    aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+    aws ecr put-image --repository-name "$_ECR_REPO" --image-tag latest \
       --image-manifest "$_MANIFEST" >/dev/null 2>&1 \
       && printf '  Re-tagged %s as latest.\n' "$_DEPLOY_TAG" || true
   fi
@@ -1253,27 +1254,29 @@ _finalize_deploy() {
   fi
   printf '\n'
 
-  if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
-    printf '%s' "$CDN_URL" | gh secret set APP_URL --repo "$_GH_REPO"
-    printf '  [keepalive] APP_URL secret updated → %s\n' "$CDN_URL"
-  fi
+  if (( _IS_EC2_STACK == 0 )); then
+    if command -v gh >/dev/null 2>&1 && [[ -n "$_GH_REPO" ]]; then
+      printf '%s' "$CDN_URL" | gh secret set APP_URL --repo "$_GH_REPO"
+      printf '  [keepalive] APP_URL secret updated → %s\n' "$CDN_URL"
+    fi
 
-  if [[ -f "$ROOT_DIR/README.md" ]]; then
-    python3 - "$CDN_URL" "$ROOT_DIR/README.md" <<'PYEOF'
+    if [[ -f "$ROOT_DIR/README.md" ]]; then
+      python3 - "$CDN_URL" "$ROOT_DIR/README.md" <<'PYEOF'
 import re, sys
 url, path = sys.argv[1], sys.argv[2]
 content = open(path).read()
 content = re.sub(r'(\| \*\*Dashboard\*\* \| )(https?://\S+)( \|)', r'\g<1>' + url + r'\g<3>', content)
 open(path, 'w').write(content)
 PYEOF
-    git -C "$ROOT_DIR" add README.md
-    if ! git -C "$ROOT_DIR" diff --cached --quiet; then
-      git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${CDN_URL}" && git -C "$ROOT_DIR" push origin HEAD:main
+      git -C "$ROOT_DIR" add README.md
+      if ! git -C "$ROOT_DIR" diff --cached --quiet; then
+        git -C "$ROOT_DIR" commit -m "deploy: update live URL → ${CDN_URL}" && git -C "$ROOT_DIR" push origin HEAD:main
+      fi
     fi
-  fi
 
-  local PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
-  [[ -x "$PORTFOLIO_SCRIPT" ]] && bash "$PORTFOLIO_SCRIPT" clickhouse "$CDN_URL"
+    local PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
+    [[ -x "$PORTFOLIO_SCRIPT" ]] && bash "$PORTFOLIO_SCRIPT" clickhouse "$CDN_URL"
+  fi
 }
 
 _deploy_cloud() {
@@ -1411,6 +1414,26 @@ _ec2_transfer_data() {
   done
 }
 
+_ec2_copy_ecr_image() {
+  printf '[ec2] Copying app image ch-dash-app:latest → %s:latest...\n' "$_ECR_REPO"
+  local _SRC_MANIFEST
+  _SRC_MANIFEST="$(aws ecr batch-get-image \
+    --repository-name 'ch-dash-app' \
+    --image-ids imageTag=latest \
+    --query 'images[0].imageManifest' \
+    --output text 2>/dev/null || true)"
+  if [[ -z "$_SRC_MANIFEST" || "$_SRC_MANIFEST" == "None" ]]; then
+    printf '  ch-dash-app ECR empty — _verify_ecr_image will wait for GH Actions build.\n'
+    return 0
+  fi
+  aws ecr put-image \
+    --repository-name "$_ECR_REPO" \
+    --image-tag latest \
+    --image-manifest "$_SRC_MANIFEST" \
+    >/dev/null 2>&1 \
+    && printf '  Image copied to %s:latest\n' "$_ECR_REPO" || true
+}
+
 _deploy_ec2_ch() {
   printf 'EC2 ClickHouse already exists? [y/N]: '
   read -r _EC2_EXISTS
@@ -1432,31 +1455,51 @@ _deploy_ec2_ch() {
     fi
   fi
 
-  local _OLD_CLOUD_URL
-  _OLD_CLOUD_URL="$(grep '^CLICKHOUSE_URL=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  local _CLOUD_URL
+  _CLOUD_URL="$(grep '^CLICKHOUSE_URL=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
 
-  printf 'EC2_INSTANCE_ID=%s\nEC2_PUBLIC_IP=%s\nEC2_SG_ID=%s\nCH_CLOUD_URL_PREV=%s\n' \
-    "$EC2_INSTANCE_ID" "$EC2_IP" "$EC2_SG_ID" "${_OLD_CLOUD_URL:-}" > "$ROOT_DIR/.ec2-creds"
+  printf 'EC2_INSTANCE_ID=%s\nEC2_PUBLIC_IP=%s\nEC2_SG_ID=%s\nEC2_PASS=%s\nCH_CLOUD_URL_PREV=%s\n' \
+    "$EC2_INSTANCE_ID" "$EC2_IP" "$EC2_SG_ID" "$EC2_PASS" "${_CLOUD_URL:-}" > "$ROOT_DIR/.ec2-creds"
   chmod 600 "$ROOT_DIR/.ec2-creds"
 
   printf 'CLICKHOUSE_URL=http://%s:8123\nCLICKHOUSE_USER=default\nCLICKHOUSE_PASSWORD=%s\n' \
-    "$EC2_IP" "$EC2_PASS" > "$CREDS_FILE"
-  chmod 600 "$CREDS_FILE"
+    "$EC2_IP" "$EC2_PASS" > "$ROOT_DIR/.clickhouse-creds-ec2"
+  chmod 600 "$ROOT_DIR/.clickhouse-creds-ec2"
 
+  _IS_EC2_STACK=1
+  _ECR_REPO="ch-dash-ec2-app"
+  export TF_VAR_name_prefix="ch-dash-ec2"
   export CLICKHOUSE_URL="http://${EC2_IP}:8123"
   export CLICKHOUSE_PASSWORD="$EC2_PASS"
   export TF_VAR_clickhouse_url="$CLICKHOUSE_URL"
   export TF_VAR_clickhouse_password="$EC2_PASS"
   export CH_PASS="$EC2_PASS"
 
+  cd "$INFRA_DIR"
+  terraform workspace new ec2 2>/dev/null || terraform workspace select ec2
+
   _sync_aws_gh_secrets
   _load_redis_creds
   _load_typesense_creds
   _provision_infra
+  _ec2_copy_ecr_image
   _verify_ecr_image
   _deploy_app_runner
   _run_db_checks
+
+  local _EC2_CDN _CLOUD_CDN
+  _EC2_CDN="$(terraform output -raw cdn_url 2>/dev/null || true)"
+  terraform workspace select default >/dev/null 2>&1 || true
+  _CLOUD_CDN="$(terraform output -raw cdn_url 2>/dev/null || true)"
+  terraform workspace select ec2 >/dev/null 2>&1 || true
+
   _finalize_deploy
+
+  terraform workspace select default >/dev/null 2>&1 || true
+
+  printf '\n=== Parallel stacks running ===\n'
+  printf '  ClickHouse Cloud: %s\n' "${_CLOUD_CDN:-[not deployed]}"
+  printf '  EC2 ClickHouse:   %s\n\n' "${_EC2_CDN:-[not deployed]}"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1467,7 +1510,7 @@ printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
 printf '  [3] %s\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
-printf '  [4] EC2    — self-hosted ClickHouse on EC2 (~$38/mo vs ~$330/mo Cloud)\n\n'
+printf '  [4] EC2    — deploy parallel EC2-backed stack (separate URL for side-by-side comparison)\n\n'
 printf 'Choice [1/2/3/4, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
 
