@@ -17,6 +17,8 @@ if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
 _PREFLIGHT_ARN=""; _PREFLIGHT_CDN=""; _PREFLIGHT_CF=""
 _DEFAULT_CHOICE=2; _OPTION3_LABEL=""
 _CH_PREWARMED=0; _CH_PREFLIGHT_URL=""; _CH_PREFLIGHT_PASS=""
+_EC2_PREFLIGHT_IP=""; _EC2_PREFLIGHT_PASS=""; _EC2_PREFLIGHT_STATUS=""
+_EC2_PREFLIGHT_INSTANCE_ID=""; _EC2_PREFLIGHT_SG_ID=""; _OPTION4_LABEL=""
 
 # Globals set during cloud deploy
 CREDS_FILE="$ROOT_DIR/.clickhouse-creds"
@@ -208,6 +210,7 @@ _run_preflight() {
   fi
 
   _ch_preflight_check
+  _ec2_preflight_check
 }
 
 _preflight_check_gh_run() {
@@ -309,6 +312,34 @@ _ch_preflight_check() {
     curl -sf --max-time 60 -u "default:${_CH_PREFLIGHT_PASS}" \
       "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
       --data-binary "SELECT 1" >/dev/null 2>&1 &
+  fi
+}
+
+_ec2_preflight_check() {
+  [[ ! -f "$ROOT_DIR/.ec2-creds" ]] && return 0
+  local _ip _pass
+  _ip="$(grep '^EC2_PUBLIC_IP=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+  _pass="$(grep '^EC2_PASS=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+  [[ -z "$_ip" || -z "$_pass" ]] && return 0
+
+  _EC2_PREFLIGHT_IP="$_ip"
+  _EC2_PREFLIGHT_PASS="$_pass"
+  _EC2_PREFLIGHT_INSTANCE_ID="$(grep '^EC2_INSTANCE_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+  _EC2_PREFLIGHT_SG_ID="$(grep '^EC2_SG_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+
+  printf '[preflight] Checking EC2 ClickHouse (%s)... ' "$_ip"
+  local _ping
+  _ping="$(curl -sf --max-time 8 -u "default:${_pass}" \
+    "http://${_ip}:8123/?default_format=TabSeparated&max_execution_time=5" \
+    --data-binary "SELECT 1" 2>/dev/null || echo '')"
+  if [[ "$_ping" == "1" ]]; then
+    printf 'reachable\n'
+    _EC2_PREFLIGHT_STATUS="reachable"
+    _OPTION4_LABEL="EC2    — existing EC2 ClickHouse at ${_ip} · reachable · redeploy app only"
+  else
+    printf 'NOT reachable\n'
+    _EC2_PREFLIGHT_STATUS="unreachable"
+    _OPTION4_LABEL="EC2    — existing EC2 ClickHouse at ${_ip} · NOT reachable · choose: re-provision or manual entry"
   fi
 }
 
@@ -1435,23 +1466,51 @@ _ec2_copy_ecr_image() {
 }
 
 _deploy_ec2_ch() {
-  printf 'EC2 ClickHouse already exists? [y/N]: '
-  read -r _EC2_EXISTS
-
   EC2_IP=""; EC2_PASS=""; EC2_INSTANCE_ID=""; EC2_SG_ID=""
 
-  if [[ ! "${_EC2_EXISTS:-N}" =~ ^[Yy] ]]; then
-    _check_deps
-    _ec2_provision
-    _ec2_transfer_data
+  if [[ "$_EC2_PREFLIGHT_STATUS" == "reachable" ]]; then
+    printf '[ec2] Found existing EC2 ClickHouse at %s — reachable.\n' "$_EC2_PREFLIGHT_IP"
+    printf '  Use it (redeploy app only)? [Y/n]: '
+    read -r _USE_EXISTING
+    if [[ "${_USE_EXISTING:-Y}" =~ ^[Yy] ]]; then
+      EC2_IP="$_EC2_PREFLIGHT_IP"
+      EC2_PASS="$_EC2_PREFLIGHT_PASS"
+      EC2_INSTANCE_ID="$_EC2_PREFLIGHT_INSTANCE_ID"
+      EC2_SG_ID="$_EC2_PREFLIGHT_SG_ID"
+    else
+      _check_deps; _ec2_provision; _ec2_transfer_data
+    fi
+
+  elif [[ "$_EC2_PREFLIGHT_STATUS" == "unreachable" ]]; then
+    printf '[ec2] Found .ec2-creds (IP: %s) but ClickHouse is NOT reachable.\n' "$_EC2_PREFLIGHT_IP"
+    printf '  [1] Re-provision a fresh EC2 instance (recommended)\n'
+    printf '  [2] Enter IP/password manually (instance may just be slow to respond)\n'
+    printf '  [3] Abort\n'
+    printf '  Choice [1/2/3, default 1]: '
+    read -r _EC2_RECOVERY
+    case "${_EC2_RECOVERY:-1}" in
+      1) _check_deps; _ec2_provision; _ec2_transfer_data ;;
+      2) printf 'EC2 IP or hostname: '; read -r EC2_IP
+         printf 'ClickHouse password: '; read -rs EC2_PASS; printf '\n'
+         EC2_INSTANCE_ID="$_EC2_PREFLIGHT_INSTANCE_ID"
+         EC2_SG_ID="$_EC2_PREFLIGHT_SG_ID" ;;
+      *) printf 'Aborting.\n'; exit 0 ;;
+    esac
+
   else
-    printf 'EC2 IP or hostname: '
-    read -r EC2_IP
-    printf 'ClickHouse password: '
-    read -rs EC2_PASS; printf '\n'
-    if [[ -f "$ROOT_DIR/.ec2-creds" ]]; then
-      EC2_INSTANCE_ID="$(grep '^EC2_INSTANCE_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
-      EC2_SG_ID="$(grep '^EC2_SG_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+    printf 'EC2 ClickHouse already exists? [y/N]: '
+    read -r _EC2_EXISTS
+    if [[ ! "${_EC2_EXISTS:-N}" =~ ^[Yy] ]]; then
+      _check_deps; _ec2_provision; _ec2_transfer_data
+    else
+      printf 'EC2 IP or hostname: '
+      read -r EC2_IP
+      printf 'ClickHouse password: '
+      read -rs EC2_PASS; printf '\n'
+      if [[ -f "$ROOT_DIR/.ec2-creds" ]]; then
+        EC2_INSTANCE_ID="$(grep '^EC2_INSTANCE_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+        EC2_SG_ID="$(grep '^EC2_SG_ID=' "$ROOT_DIR/.ec2-creds" 2>/dev/null | cut -d= -f2-)"
+      fi
     fi
   fi
 
@@ -1510,7 +1569,7 @@ printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
 printf '  [3] %s\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
-printf '  [4] EC2    — deploy parallel EC2-backed stack (separate URL for side-by-side comparison)\n\n'
+printf '  [4] %s\n\n' "${_OPTION4_LABEL:-EC2    — deploy parallel EC2-backed stack (separate URL for side-by-side comparison)}"
 printf 'Choice [1/2/3/4, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
 
