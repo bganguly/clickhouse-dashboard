@@ -1305,7 +1305,7 @@ _ec2_provision() {
   printf '[ec2] Checking AWS credentials...\n'
   aws sts get-caller-identity >/dev/null
 
-  EC2_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+  EC2_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)"
 
   printf '[ec2] Creating security group...\n'
   EC2_SG_ID="$(aws ec2 create-security-group \
