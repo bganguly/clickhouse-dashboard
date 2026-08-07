@@ -501,14 +501,14 @@ void (process.env.CLICKHOUSE_URL && (async () => {
     d.setUTCDate(d.getUTCDate() - 90);
     const from90 = d.toISOString().slice(0, 10);
 
-    const [page1] = await Promise.all([
+    const [page1_90, page1_all] = await Promise.all([
       listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END }),
       listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: DATASET_START, to: DATASET_END }),
     ]);
 
     const names = new Set<string>();
     const noteWords = new Set<string>();
-    for (const order of page1.data) {
+    for (const order of [...page1_90.data, ...page1_all.data]) {
       if (order.customer.firstName) names.add(order.customer.firstName.toLowerCase());
       if (order.customer.lastName)  names.add(order.customer.lastName.toLowerCase());
       if (order.notes) {
@@ -517,19 +517,19 @@ void (process.env.CLICKHOUSE_URL && (async () => {
         }
       }
     }
-    const tokenSet = new Set([...names, ...[...noteWords].filter(w => !names.has(w))]);
-    const tokenList = [...tokenSet];
-    console.log(`[orders:warmup] extracted ${tokenList.length} tokens from 90-day page-1 (${from90}→${DATASET_END}): ${tokenList.join(", ")}`);
+    const tokenList = [...new Set([...names, ...[...noteWords].filter(w => !names.has(w))])].slice(0, 100);
+    console.log(`[orders:warmup] extracted ${tokenList.length} tokens (90d+alltime page-1): ${tokenList.join(", ")}`);
 
     const layerCounts: Record<string, number> = {};
     for (const tok of tokenList) {
       const _diag = { src: "?" };
       await listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END }, _diag);
+      await listOrders({ q: tok, page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: DATASET_START, to: DATASET_END });
       layerCounts[_diag.src] = (layerCounts[_diag.src] ?? 0) + 1;
     }
 
     const summary = Object.entries(layerCounts).map(([k, v]) => `${k}=${v}`).join(" ");
-    console.log(`[orders:warmup] done — ${tokenList.length} tokens warmed: ${summary}`);
+    console.log(`[orders:warmup] done — ${tokenList.length} tokens × 2 date ranges: ${summary}`);
   } catch (e) {
     console.log(`[orders:warmup] error during warmup: ${e}`);
   }

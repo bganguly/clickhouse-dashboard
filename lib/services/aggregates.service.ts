@@ -8,6 +8,7 @@ import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/l
 import * as typesense from "@/lib/typesense";
 import {
   escapeLike,
+  listOrders,
   normalizeStatusList,
   resolveFilters,
   todayDateString,
@@ -474,12 +475,41 @@ void (process.env.CLICKHOUSE_URL && (async () => {
   try {
     const d = new Date(`${DATASET_END}T00:00:00Z`);
     d.setUTCDate(d.getUTCDate() - 90);
-    const ninetyDaysAgo = d.toISOString().slice(0, 10);
+    const from90 = d.toISOString().slice(0, 10);
+
+    const baseInput = { q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 };
     await Promise.all([
-      getDailyAggregates({ from: DATASET_START, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getDailyAggregates({ from: ninetyDaysAgo, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getExactAggregateTotal({ from: DATASET_START, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
-      getExactAggregateTotal({ from: ninetyDaysAgo, to: DATASET_END, q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 }),
+      getDailyAggregates({ ...baseInput, from: from90,        to: DATASET_END }),
+      getDailyAggregates({ ...baseInput, from: DATASET_START, to: DATASET_END }),
+      getExactAggregateTotal({ ...baseInput, from: from90,        to: DATASET_END }),
+      getExactAggregateTotal({ ...baseInput, from: DATASET_START, to: DATASET_END }),
     ]);
+
+    const [page1_90, page1_all] = await Promise.all([
+      listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90,        to: DATASET_END }),
+      listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: DATASET_START, to: DATASET_END }),
+    ]);
+
+    const names = new Set<string>();
+    const noteWords = new Set<string>();
+    for (const order of [...page1_90.data, ...page1_all.data]) {
+      if (order.customer.firstName) names.add(order.customer.firstName.toLowerCase());
+      if (order.customer.lastName)  names.add(order.customer.lastName.toLowerCase());
+      if (order.notes) {
+        for (const w of order.notes.split(/\s+/)) {
+          if (w.length >= 3 && !/^\d+$/.test(w)) noteWords.add(w.toLowerCase());
+        }
+      }
+    }
+    const tokenList = [...new Set([...names, ...[...noteWords].filter(w => !names.has(w))])].slice(0, 100);
+
+    for (const tok of tokenList) {
+      const tokInput = { ...baseInput, q: tok };
+      await getDailyAggregates({    ...tokInput, from: from90,        to: DATASET_END });
+      await getDailyAggregates({    ...tokInput, from: DATASET_START, to: DATASET_END });
+      await getExactAggregateTotal({ ...tokInput, from: from90,        to: DATASET_END });
+      await getExactAggregateTotal({ ...tokInput, from: DATASET_START, to: DATASET_END });
+    }
+    console.log(`[agg:warmup] per-token done — ${tokenList.length} tokens × 2 date ranges`);
   } catch {}
 })());
