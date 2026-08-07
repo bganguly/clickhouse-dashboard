@@ -765,15 +765,17 @@ _verify_ecr_image() {
     if _ecr_image_exists "latest"; then
       _verify_ecr_handle_latest_fallback
     elif [[ "$_IS_EC2_STACK" -eq 1 ]]; then
-      printf '  %s:latest not found — retrying image copy from ch-dash-app...\n' "$_ECR_REPO"
-      if ! _ec2_copy_ecr_image; then
-        printf 'ERROR: could not populate %s:latest. Ensure ch-dash-app has a :latest image in ECR.\n' "$_ECR_REPO"
-        exit 1
-      fi
-      if ! _ecr_image_exists "latest"; then
-        printf 'ERROR: %s:latest still missing after retry. Check ECR permissions.\n' "$_ECR_REPO"
-        exit 1
-      fi
+      _ec2_copy_ecr_image
+      printf '  Waiting for GH Actions to push %s:latest (up to 15 min)...\n' "$_ECR_REPO"
+      local elapsed=0
+      until _ecr_image_exists "latest"; do
+        if (( elapsed >= 900 )); then
+          printf '  Timed out. Check Actions: https://github.com/%s/actions\n' "${_GH_REPO:-bganguly/clickhouse-dashboard}"
+          exit 1
+        fi
+        sleep 15; elapsed=$(( elapsed + 15 ))
+        printf '  ...%ds\n' "$elapsed"
+      done
       _DEPLOY_TAG=latest
     else
       printf '  No image in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n'
@@ -1457,32 +1459,20 @@ _ec2_transfer_data() {
 }
 
 _ec2_copy_ecr_image() {
-  printf '[ec2] Copying app image ch-dash-app:latest → %s:latest...\n' "$_ECR_REPO"
-  local _SRC_MANIFEST _PUT_ERR
-  _SRC_MANIFEST="$(aws ecr batch-get-image \
-    --repository-name 'ch-dash-app' \
-    --image-ids imageTag=latest \
-    --query 'images[0].imageManifest' \
-    --output text 2>/dev/null || true)"
-  if [[ -z "$_SRC_MANIFEST" || "$_SRC_MANIFEST" == "None" ]]; then
-    printf '  ch-dash-app ECR has no :latest — push to GitHub and wait for Actions build first.\n'
-    return 1
-  fi
-  _PUT_ERR="$(aws ecr put-image \
-    --repository-name "$_ECR_REPO" \
-    --image-tag latest \
-    --image-manifest "$_SRC_MANIFEST" \
-    2>&1 >/dev/null || true)"
   if _ecr_image_exists "latest"; then
-    printf '  Image copied to %s:latest\n' "$_ECR_REPO"
+    printf '[ec2] %s:latest already in ECR — skipping.\n' "$_ECR_REPO"
     return 0
   fi
-  if printf '%s' "$_PUT_ERR" | grep -qi 'ImageAlreadyExistsException'; then
-    printf '  %s:latest already exists (same digest).\n' "$_ECR_REPO"
-    return 0
+  printf '[ec2] %s:latest not in ECR — triggering GH Actions to build and push it...\n' "$_ECR_REPO"
+  if command -v gh >/dev/null 2>&1 && [[ -n "${_GH_REPO:-}" ]]; then
+    if gh workflow run deploy.yml --repo "$_GH_REPO" 2>/dev/null; then
+      printf '  Workflow triggered. Waiting for %s:latest to appear...\n' "$_ECR_REPO"
+    else
+      printf '  Could not trigger workflow — push a commit to main or re-run the last Actions job.\n'
+    fi
+  else
+    printf '  gh CLI not available or _GH_REPO unset — push to main to trigger a build.\n'
   fi
-  printf '  put-image error: %s\n' "$_PUT_ERR"
-  return 1
 }
 
 _deploy_ec2_ch() {

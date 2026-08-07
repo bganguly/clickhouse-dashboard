@@ -38,6 +38,12 @@ jobs:
           docker push "$REGISTRY/$REPOSITORY:latest"
           docker push "$REGISTRY/$REPOSITORY:$SHORT_SHA"
           docker push "$REGISTRY/$REPOSITORY:$DIAG_TAG"
+          if aws ecr describe-repositories --repository-names "ch-dash-ec2-app" >/dev/null 2>&1; then
+            docker tag "$REGISTRY/$REPOSITORY:latest" "$REGISTRY/ch-dash-ec2-app:latest"
+            docker tag "$REGISTRY/$REPOSITORY:$SHORT_SHA" "$REGISTRY/ch-dash-ec2-app:$SHORT_SHA"
+            docker push "$REGISTRY/ch-dash-ec2-app:latest"
+            docker push "$REGISTRY/ch-dash-ec2-app:$SHORT_SHA"
+          fi
 
       - name: Run ClickHouse migrations
         env:
