@@ -341,20 +341,29 @@ function OrdersCard() {
 
 function SearchCard() {
   const [q, setQ]         = useState("");
+  const [from, setFrom]   = useState(FROM_90D);
+  const [to,   setTo]     = useState(DATASET_END);
+  const [allTime, setAllTime] = useState(false);
   const [loading, setL]   = useState(false);
   const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
   const [countTotal, setCountTotal]     = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
 
+  function toggleAllTime(next: boolean) {
+    setAllTime(next);
+    setFrom(next ? DATASET_START : FROM_90D);
+    setTo(DATASET_END);
+  }
+
   async function run() {
     if (!q.trim()) return;
     setL(true); setErr(null); setRes(null); setCountTotal(null);
     try {
       const term = q.trim();
-      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc&from=${FROM_90D}&to=${DATASET_END}`);
+      const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc&from=${from}&to=${to}`);
       setRes(result);
-      fetch(`/api/aggregates?q=${encodeURIComponent(term)}&from=${FROM_90D}&to=${DATASET_END}&topCategories=4`).catch(() => {});
+      fetch(`/api/aggregates?q=${encodeURIComponent(term)}&from=${from}&to=${to}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
         setCountLoading(true);
@@ -378,10 +387,22 @@ function SearchCard() {
   return (
     <Card path="/api/orders?q=…" subtitle="Full-text search — Typesense prefix expansion + ClickHouse hasToken">
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <DarkInput value={q} onChange={setQ} placeholder="e.g. murphy, saturday, fragile…"
             onEnter={run} style={{ width:220 }} />
-          {mono("pageSize","10")}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px]" style={{ color:"#52525b" }}>from</span>
+            <DarkInput type="date" value={from} onChange={setFrom} style={{ width:150 }} />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px]" style={{ color:"#52525b" }}>to</span>
+            <DarkInput type="date" value={to} onChange={setTo} style={{ width:150 }} />
+          </div>
+          <label className="flex items-center gap-1.5 text-[11px] select-none" style={{ color:"#71717a", cursor:"pointer" }}>
+            <input type="checkbox" checked={allTime} onChange={e => toggleAllTime(e.target.checked)}
+              className="h-3 w-3 rounded accent-indigo-500" />
+            All time
+          </label>
         </div>
         <RunBtn onClick={run} loading={loading} />
       </div>
@@ -798,8 +819,8 @@ export default function ApiExplorer() {
         <OrdersCard />
         <SearchCard />
         <AggregatesCard />
-        <CustomersCard />
         <BrushCard />
+        <CustomersCard />
       </section>
     </div>
   );
