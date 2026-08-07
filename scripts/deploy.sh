@@ -764,6 +764,17 @@ _verify_ecr_image() {
   if ! _ecr_image_exists "$_DEPLOY_TAG"; then
     if _ecr_image_exists "latest"; then
       _verify_ecr_handle_latest_fallback
+    elif [[ "$_IS_EC2_STACK" -eq 1 ]]; then
+      printf '  %s:latest not found — retrying image copy from ch-dash-app...\n' "$_ECR_REPO"
+      if ! _ec2_copy_ecr_image; then
+        printf 'ERROR: could not populate %s:latest. Ensure ch-dash-app has a :latest image in ECR.\n' "$_ECR_REPO"
+        exit 1
+      fi
+      if ! _ecr_image_exists "latest"; then
+        printf 'ERROR: %s:latest still missing after retry. Check ECR permissions.\n' "$_ECR_REPO"
+        exit 1
+      fi
+      _DEPLOY_TAG=latest
     else
       printf '  No image in ECR yet — waiting for GitHub Actions build (up to 10 min)...\n'
       local elapsed=0
@@ -1447,22 +1458,31 @@ _ec2_transfer_data() {
 
 _ec2_copy_ecr_image() {
   printf '[ec2] Copying app image ch-dash-app:latest → %s:latest...\n' "$_ECR_REPO"
-  local _SRC_MANIFEST
+  local _SRC_MANIFEST _PUT_ERR
   _SRC_MANIFEST="$(aws ecr batch-get-image \
     --repository-name 'ch-dash-app' \
     --image-ids imageTag=latest \
     --query 'images[0].imageManifest' \
     --output text 2>/dev/null || true)"
   if [[ -z "$_SRC_MANIFEST" || "$_SRC_MANIFEST" == "None" ]]; then
-    printf '  ch-dash-app ECR empty — _verify_ecr_image will wait for GH Actions build.\n'
-    return 0
+    printf '  ch-dash-app ECR has no :latest — push to GitHub and wait for Actions build first.\n'
+    return 1
   fi
-  aws ecr put-image \
+  _PUT_ERR="$(aws ecr put-image \
     --repository-name "$_ECR_REPO" \
     --image-tag latest \
     --image-manifest "$_SRC_MANIFEST" \
-    >/dev/null 2>&1 \
-    && printf '  Image copied to %s:latest\n' "$_ECR_REPO" || true
+    2>&1 >/dev/null || true)"
+  if _ecr_image_exists "latest"; then
+    printf '  Image copied to %s:latest\n' "$_ECR_REPO"
+    return 0
+  fi
+  if printf '%s' "$_PUT_ERR" | grep -qi 'ImageAlreadyExistsException'; then
+    printf '  %s:latest already exists (same digest).\n' "$_ECR_REPO"
+    return 0
+  fi
+  printf '  put-image error: %s\n' "$_PUT_ERR"
+  return 1
 }
 
 _deploy_ec2_ch() {
