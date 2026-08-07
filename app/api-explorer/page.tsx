@@ -61,10 +61,10 @@ function MetaBar({ ms, label, src, cdn }: { ms: number; label: string; src?: str
     : cdnMiss
       ? src === "mem"   ? "cdn=Miss · mem=Hit"
       : src === "redis" ? "cdn=Miss · mem=Miss · redis=Hit"
-      : src === "ch"    ? "cdn=Miss · mem=Miss · redis=Miss"
-      : src             ? `cdn=Miss · src=${src}`
+      : src === "ch"    ? "cdn=Miss · mem=Miss · redis=Miss · ch=Hit"
+      : src             ? `cdn=Miss · ${src}=Hit`
       :                   "cdn=Miss"
-    : src ? `src=${src}` : null;
+    : src ? `${src}=Hit` : null;
   return (
     <div className="flex items-center gap-3 mb-4 flex-wrap">
       <span className="text-[11px] px-2 py-1 rounded-full font-mono inline-flex items-center gap-1" style={timingStyle(ms)}>
@@ -466,6 +466,8 @@ function AggSummary({ rows, from, to }: { rows: Array<Record<string,unknown>>; f
 }
 
 function AggregatesCard() {
+  const [q, setQ]         = useState("");
+  const [name, setName]   = useState("");
   const [allTime, setAllTime] = useState(false);
   const [from, setFrom]   = useState(FROM_90D);
   const [to,   setTo]     = useState(DATASET_END);
@@ -483,19 +485,28 @@ function AggregatesCard() {
     if (!from||!to) return;
     setL(true); setErr(null); setRes(null);
     try {
-      const result = await fetchTimed(`/api/aggregates?q=&from=${from}&to=${to}&topCategories=4`);
+      const params = new URLSearchParams({ q: q.trim(), from, to, topCategories: "4" });
+      if (name.trim()) params.set("name", name.trim());
+      const result = await fetchTimed(`/api/aggregates?${params}`);
       setRes(result);
-      fetch(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${from}&to=${to}`).catch(() => {});
+      const oParams = new URLSearchParams({ q: q.trim(), page: "1", pageSize: "20", sort: "placedAt", dir: "desc", from, to });
+      if (name.trim()) oParams.set("name", name.trim());
+      fetch(`/api/orders?${oParams}`).catch(() => {});
     } catch (e) { setErr(e); } finally { setL(false); }
   }
 
   const rawData = (res?.json as Record<string,unknown>)?.data ?? res?.json;
   const rows    = Array.isArray(rawData) ? rawData as Array<Record<string,unknown>> : [];
+  const filterLabel = [q.trim() && `q="${q.trim()}"`, name.trim() && `name="${name.trim()}"`].filter(Boolean).join(" · ");
 
   return (
-    <Card path="/api/aggregates" subtitle="Pre-aggregated daily totals — millisecond response">
+    <Card path="/api/aggregates?q=…" subtitle="Pre-aggregated daily totals — millisecond response">
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
         <div className="flex flex-wrap items-center gap-3">
+          <DarkInput value={q} onChange={setQ} placeholder="search term (q=…)"
+            onEnter={run} style={{ width:180 }} />
+          <DarkInput value={name} onChange={setName} placeholder="name filter"
+            onEnter={run} style={{ width:140 }} />
           <div className="flex items-center gap-2">
             <span className="text-[11px]" style={{ color:"#52525b" }}>from</span>
             <DarkInput type="date" value={from} onChange={setFrom} style={{ width:150 }} />
@@ -504,7 +515,6 @@ function AggregatesCard() {
             <span className="text-[11px]" style={{ color:"#52525b" }}>to</span>
             <DarkInput type="date" value={to}   onChange={setTo}   style={{ width:150 }} />
           </div>
-          {mono("topCategories","4")}
           <label className="flex items-center gap-1.5 text-[11px] select-none" style={{ color:"#71717a", cursor:"pointer" }}>
             <input type="checkbox" checked={allTime} onChange={e => toggleAllTime(e.target.checked)}
               className="h-3 w-3 rounded accent-indigo-500" />
@@ -516,7 +526,9 @@ function AggregatesCard() {
       {loading && <Loading />}
       {!!err   && <ErrMsg err={err} />}
       {res && rows.length > 0 && <>
-        <MetaBar ms={res.ms} label={`${rows.length} day${rows.length!==1?"s":""} · ${from} → ${to}`} src={res.src} cdn={res.cdn} />
+        <MetaBar ms={res.ms}
+          label={[`${rows.length} day${rows.length!==1?"s":""}`, `${from} → ${to}`, filterLabel].filter(Boolean).join(" · ")}
+          src={res.src} cdn={res.cdn} />
         <AggSummary rows={rows} from={from} to={to} />
         <RawJson data={res.json} />
       </>}
