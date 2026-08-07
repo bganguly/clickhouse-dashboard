@@ -8,10 +8,7 @@ PROJECT_NAME="$(basename "$ROOT_DIR")"
 
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/opt/local/bin:$PATH"
 
-printf 'Enable diagnostic logs? [y/N]: '
-read -r _DIAG_CHOICE
 _DIAG_LOGS=""
-if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
 
 # Globals set during preflight
 _PREFLIGHT_ARN=""; _PREFLIGHT_CDN=""; _PREFLIGHT_CF=""
@@ -1582,6 +1579,10 @@ printf '  [3] %s\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to A
 printf '  [4] %s\n\n' "${_OPTION4_LABEL:-EC2    — deploy parallel EC2-backed stack (separate URL for side-by-side comparison)}"
 printf 'Choice [1/2/3/4, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
+
+printf 'Enable diagnostic logs? [y/N]: '
+read -r _DIAG_CHOICE
+if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
 
 case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
   1) _deploy_local ;;
