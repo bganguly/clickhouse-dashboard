@@ -9,6 +9,7 @@ PROJECT_NAME="$(basename "$ROOT_DIR")"
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/opt/local/bin:$PATH"
 
 _DIAG_LOGS=""
+_REUSE_CREDS=""
 
 # Globals set during preflight
 _PREFLIGHT_ARN=""; _PREFLIGHT_CDN=""; _PREFLIGHT_CF=""
@@ -517,12 +518,21 @@ _load_ch_creds() {
     source "$CREDS_FILE"
     if [[ -n "${CLICKHOUSE_CLOUD_KEY:-}" ]]; then
       USE_CH_API=1
-      printf 'Loaded API key from .clickhouse-creds. Use it? [Y/n]: '
+      if [[ -z "$_REUSE_CREDS" ]]; then
+        printf 'Loaded API key from .clickhouse-creds. Use it? [Y/n]: '
+        read -r USE_SAVED; USE_SAVED="${USE_SAVED:-Y}"
+      else
+        USE_SAVED="Y"; printf 'Loaded API key from .clickhouse-creds (reusing).\n'
+      fi
     else
       USE_CH_API=0
-      printf 'Loaded saved endpoint: %s. Use it? [Y/n]: ' "${CLICKHOUSE_URL:-}"
+      if [[ -z "$_REUSE_CREDS" ]]; then
+        printf 'Loaded saved endpoint: %s. Use it? [Y/n]: ' "${CLICKHOUSE_URL:-}"
+        read -r USE_SAVED; USE_SAVED="${USE_SAVED:-Y}"
+      else
+        USE_SAVED="Y"; printf 'Loaded saved endpoint: %s (reusing).\n' "${CLICKHOUSE_URL:-}"
+      fi
     fi
-    read -r USE_SAVED; USE_SAVED="${USE_SAVED:-Y}"
     if [[ ! "$USE_SAVED" =~ ^[Yy] ]]; then
       unset CLICKHOUSE_CLOUD_KEY CLICKHOUSE_URL CLICKHOUSE_PASSWORD
       _prompt_creds
@@ -636,8 +646,12 @@ _load_redis_creds() {
     REDIS_URL="$(grep '^REDIS_URL=' "$REDIS_CREDS_FILE" 2>/dev/null | head -1 | cut -d'=' -f2-)"
     local _REDIS_DISPLAY
     _REDIS_DISPLAY="$(printf '%s' "${REDIS_URL:-}" | sed 's|:\([^:@]*\)@|:***@|')"
-    printf '  Loaded Redis URL from .redis-creds: %s. Use it? [Y/n]: ' "$_REDIS_DISPLAY"
-    read -r USE_REDIS_SAVED; USE_REDIS_SAVED="${USE_REDIS_SAVED:-Y}"
+    if [[ -z "$_REUSE_CREDS" ]]; then
+      printf '  Loaded Redis URL from .redis-creds: %s. Use it? [Y/n]: ' "$_REDIS_DISPLAY"
+      read -r USE_REDIS_SAVED; USE_REDIS_SAVED="${USE_REDIS_SAVED:-Y}"
+    else
+      USE_REDIS_SAVED="Y"; printf '  Loaded Redis URL from .redis-creds: %s (reusing).\n' "$_REDIS_DISPLAY"
+    fi
     [[ ! "$USE_REDIS_SAVED" =~ ^[Yy] ]] && unset REDIS_URL
   fi
   if [[ -z "${REDIS_URL:-}" ]]; then
@@ -661,13 +675,21 @@ _load_typesense_creds() {
     printf '  Using Typesense credentials from environment.\n'
   elif [[ -f "$TS_CREDS_FILE" ]]; then
     source "$TS_CREDS_FILE"
-    printf '  Loaded Typesense URL from .typesense-creds: %s. Use it? [Y/n]: ' "${TYPESENSE_URL:-}"
-    read -r USE_TS_SAVED; USE_TS_SAVED="${USE_TS_SAVED:-Y}"
+    if [[ -z "$_REUSE_CREDS" ]]; then
+      printf '  Loaded Typesense URL from .typesense-creds: %s. Use it? [Y/n]: ' "${TYPESENSE_URL:-}"
+      read -r USE_TS_SAVED; USE_TS_SAVED="${USE_TS_SAVED:-Y}"
+    else
+      USE_TS_SAVED="Y"; printf '  Loaded Typesense URL from .typesense-creds: %s (reusing).\n' "${TYPESENSE_URL:-}"
+    fi
     if [[ ! "$USE_TS_SAVED" =~ ^[Yy] ]]; then
       unset TYPESENSE_URL TYPESENSE_API_KEY
     else
-      printf '  Use saved API key? [Y/n]: '
-      read -r USE_TS_KEY; USE_TS_KEY="${USE_TS_KEY:-Y}"
+      if [[ -z "$_REUSE_CREDS" ]]; then
+        printf '  Use saved API key? [Y/n]: '
+        read -r USE_TS_KEY; USE_TS_KEY="${USE_TS_KEY:-Y}"
+      else
+        USE_TS_KEY="Y"
+      fi
       if [[ ! "$USE_TS_KEY" =~ ^[Yy] ]]; then
         printf 'Typesense Admin API Key: '
         read -rs TYPESENSE_API_KEY; printf '\n'
@@ -811,15 +833,7 @@ _verify_ecr_handle_latest_fallback() {
     [[ -n "$_GH_RUN_STATUS" ]] && _GH_BUILD_ACTIVE=1
   fi
   if [[ "$_GH_BUILD_ACTIVE" -eq 1 ]]; then
-    printf '  GH Actions is building %s — not in ECR yet.\n\n' "$_DEPLOY_TAG"
-    printf '  [1] Wait for build to complete then continue\n'
-    printf '  [2] Exit now and re-run deploy later\n\n'
-    printf '  Choice [1/2, default 1]: '
-    read -r _GH_WAIT_CHOICE
-    if [[ "${_GH_WAIT_CHOICE:-1}" == "2" ]]; then
-      printf '  Exiting. Re-run deploy.sh once GH Actions completes.\n'; exit 0
-    fi
-    printf '  Polling ECR for %s every 30s (up to 15 min)...\n' "$_DEPLOY_TAG"
+    printf '  GH Actions is building %s — polling ECR every 30s (up to 15 min)...\n' "$_DEPLOY_TAG"
     local elapsed=0
     until _ecr_image_exists "$_DEPLOY_TAG"; do
       if (( elapsed >= 900 )); then
@@ -1579,18 +1593,24 @@ printf '\n=== %s deploy ===\n\n' "$PROJECT_NAME"
 printf '  [1] Local  — npm run dev (port 3004)\n'
 printf '  [2] Cloud  — GitHub Actions → ECR → App Runner (full: Terraform + DB checks)\n'
 printf '  [3] %s\n' "${_OPTION3_LABEL:-Quick  — redeploy latest ECR image to App Runner (skips Terraform/DB)}"
-printf '  [4] %s\n\n' "${_OPTION4_LABEL:-EC2    — deploy parallel EC2-backed stack (separate URL for side-by-side comparison)}"
-printf 'Choice [1/2/3/4, default %s]: ' "$_DEFAULT_CHOICE"
+printf '  [4] %s\n' "${_OPTION4_LABEL:-EC2    — deploy parallel EC2-backed stack (separate URL for side-by-side comparison)}"
+printf '  [5] Both   — deploy Cloud (option 2) then EC2 (option 4) in sequence\n\n'
+printf 'Choice [1/2/3/4/5, default %s]: ' "$_DEFAULT_CHOICE"
 read -r DEPLOY_TARGET
 
 printf 'Enable diagnostic logs? [y/N]: '
 read -r _DIAG_CHOICE
 if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
 
+printf 'Reuse all saved credentials (skip prompts)? [y/N]: '
+read -r _REUSE_CHOICE
+if [[ "${_REUSE_CHOICE:-N}" =~ ^[Yy] ]]; then _REUSE_CREDS="1"; fi
+
 case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
   1) _deploy_local ;;
   2) _deploy_cloud ;;
   3) _deploy_quick ;;
   4) _deploy_ec2_ch ;;
+  5) _deploy_cloud; _deploy_ec2_ch ;;
   *) printf 'Invalid choice.\n'; exit 1 ;;
 esac
