@@ -1241,8 +1241,9 @@ _finalize_deploy() {
       --query 'Invalidation.Id' --output text
   fi
 
-  printf '\n  Dashboard: %s\n' "$CDN_URL"
-  printf '  Tear down: %s/scripts/infra-down.sh\n' "$ROOT_DIR"
+  printf '\n  Dashboard:    %s\n' "$CDN_URL"
+  printf '  API Explorer: %s/api-explorer\n' "$CDN_URL"
+  printf '  Tear down:    %s/scripts/infra-down.sh\n' "$ROOT_DIR"
 
   if [[ -n "${CDN_URL:-}" ]]; then
     printf '\n  Priming CDN cache for default 90-day view...\n'
@@ -1565,7 +1566,9 @@ _deploy_ec2_ch() {
 
   printf '\n=== Parallel stacks running ===\n'
   printf '  ClickHouse Cloud: %s\n' "${_CLOUD_CDN:-[not deployed]}"
-  printf '  EC2 ClickHouse:   %s\n\n' "${_EC2_CDN:-[not deployed]}"
+  [[ -n "${_CLOUD_CDN:-}" ]] && printf '    API Explorer:   %s/api-explorer\n' "$_CLOUD_CDN"
+  printf '  EC2 ClickHouse:   %s\n' "${_EC2_CDN:-[not deployed]}"
+  [[ -n "${_EC2_CDN:-}" ]] && printf '    API Explorer:   %s/api-explorer\n\n' "$_EC2_CDN" || printf '\n'
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
