@@ -1,6 +1,7 @@
 import { redis } from "./redis";
 
-const PREFIX = "search:";
+const STACK = process.env.CACHE_STACK_PREFIX ?? "";
+const PREFIX = STACK ? `${STACK}:search:` : "search:";
 const TTL_S = 90 * 24 * 60 * 60;
 const MAX_ENTRIES = 500;
 

@@ -72,6 +72,7 @@ resource "aws_apprunner_service" "app" {
           TYPESENSE_URL           = var.typesense_url
           TYPESENSE_API_KEY       = var.typesense_api_key
           NEXT_PUBLIC_DIAG_LOGS   = var.next_public_diag_logs
+          CACHE_STACK_PREFIX      = var.name_prefix
         }
       }
     }
