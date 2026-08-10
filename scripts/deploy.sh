@@ -1602,9 +1602,9 @@ printf 'Enable diagnostic logs? [y/N]: '
 read -r _DIAG_CHOICE
 if [[ "${_DIAG_CHOICE:-N}" =~ ^[Yy] ]]; then _DIAG_LOGS="1"; fi
 
-printf 'Reuse all saved credentials (skip prompts)? [y/N]: '
+printf 'Reuse all saved credentials (skip prompts)? [Y/n]: '
 read -r _REUSE_CHOICE
-if [[ "${_REUSE_CHOICE:-N}" =~ ^[Yy] ]]; then _REUSE_CREDS="1"; fi
+if [[ "${_REUSE_CHOICE:-Y}" =~ ^[Yy] ]]; then _REUSE_CREDS="1"; fi
 
 case "${DEPLOY_TARGET:-$_DEFAULT_CHOICE}" in
   1) _deploy_local ;;
