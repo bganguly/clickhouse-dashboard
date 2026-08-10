@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { diag } from "@/lib/diag";
 
-const PORTFOLIO_URL = "https://bganguly.github.io/?open=nextjs";
+const PORTFOLIO_URL = "https://bganguly.github.io/#clickhouse";
 
 const DATASET_START = "2024-07-17";
 const DATASET_END   = "2026-07-17";
