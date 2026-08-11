@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
       cursor: num("cursor") ?? null,
       regionId: num("regionId") ?? null,
     });
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { "Cache-Control": "public, s-maxage=31536000, immutable" },
+    });
   } catch (err) {
     if (isAppError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });

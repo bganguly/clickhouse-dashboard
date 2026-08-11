@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
       ...(approximate ? { totalOrdersApproximate: true } : {}),
     }, {
       headers: {
-        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
+        "Cache-Control": "public, s-maxage=31536000, immutable",
         "X-Cache-Source": _aggSrc,
       },
     });

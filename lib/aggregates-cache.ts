@@ -1,28 +1,23 @@
 import { redis } from "./redis";
 
 const PREFIX = "agg:";
-const TTL_S = 90 * 24 * 60 * 60;
 const MAX_ENTRIES = 500;
 
-const store = new Map<string, { value: unknown; ts: number }>();
+const store = new Map<string, { value: unknown }>();
 
 function storeSet(key: string, value: unknown): void {
   if (store.size >= MAX_ENTRIES) {
     const oldest = store.keys().next().value;
     if (oldest !== undefined) store.delete(oldest);
   }
-  store.set(key, { value, ts: Date.now() });
+  store.set(key, { value });
 }
 
 export async function aggCacheGet<T>(key: string, _src?: { value: string }): Promise<T | null> {
   const entry = store.get(key);
   if (entry) {
-    if (Date.now() - entry.ts > TTL_S * 1000) {
-      store.delete(key);
-    } else {
-      if (_src) _src.value = "mem";
-      return entry.value as T;
-    }
+    if (_src) _src.value = "mem";
+    return entry.value as T;
   }
   if (redis) {
     try {
@@ -42,7 +37,7 @@ export async function aggCacheGet<T>(key: string, _src?: { value: string }): Pro
 export async function aggCacheSet(key: string, value: unknown): Promise<void> {
   storeSet(key, value);
   if (redis) {
-    try { await redis.setex(PREFIX + key, TTL_S, JSON.stringify(value)); } catch {}
+    try { await redis.set(PREFIX + key, JSON.stringify(value)); } catch {}
   }
 }
 

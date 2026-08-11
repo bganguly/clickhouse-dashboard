@@ -21,5 +21,7 @@ export async function GET(req: NextRequest) {
   });
 
   const total = await getOrderCount(q, filters);
-  return NextResponse.json({ total });
+  return NextResponse.json({ total }, {
+    headers: { "Cache-Control": "public, s-maxage=31536000, immutable" },
+  });
 }

@@ -6,7 +6,7 @@ export async function GET() {
   try {
     const regions = await listRegions();
     return NextResponse.json(regions, {
-      headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=60" },
+      headers: { "Cache-Control": "public, s-maxage=31536000, immutable" },
     });
   } catch (err) {
     if (isAppError(err)) {
