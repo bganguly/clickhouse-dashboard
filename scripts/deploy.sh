@@ -414,6 +414,8 @@ _deploy_quick() {
 
   _ch_wait_ready "[quick]" "${_CH_PREFLIGHT_URL:-${CDN_URL}}" "${_CH_PREFLIGHT_PASS:-}" 180 abort
 
+  _prime_cdn_caches
+
   printf '\n  Dashboard: %s\n' "${CDN_URL:-}"
   exit 0
 }
@@ -1248,6 +1250,40 @@ _db_check_typesense() {
   rm -f "$_SEED_FILE"
 }
 
+_prime_cdn_caches() {
+  [[ -z "${CDN_URL:-}" ]] && return 0
+  printf '\n  Priming all CDN cache layers for default 90-day view...\n'
+  local _max_date _from90
+
+  _max_date=$(curl -sf "${CDN_URL}/api/dataset-bounds" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('to',''))" 2>/dev/null || true)
+  if [[ -z "$_max_date" ]]; then
+    _max_date=$(python3 -c "from datetime import date; print(date.today().isoformat())")
+    printf '  (dataset-bounds unavailable — using today as fallback)\n'
+  else
+    printf '  dataset-bounds:         primed (%s)\n' "$_max_date"
+  fi
+  _from90=$(python3 -c "from datetime import date, timedelta; print((date.fromisoformat('${_max_date}') - timedelta(days=90)).isoformat())")
+
+  curl -sf "${CDN_URL}/api/regions" >/dev/null \
+    && printf '  regions:                primed\n' || printf '  regions:                skipped (not ready)\n'
+
+  curl -sf "${CDN_URL}/api/aggregates?q=&from=${_from90}&to=${_max_date}&topCategories=4" >/dev/null \
+    && printf '  aggregates/90d (top4): primed\n' || printf '  aggregates/90d (top4): skipped (not ready)\n'
+
+  curl -sf "${CDN_URL}/api/aggregates?from=${_from90}&to=${_max_date}&topCategories=1" >/dev/null \
+    && printf '  aggregates/90d (top1): primed\n' || printf '  aggregates/90d (top1): skipped (not ready)\n'
+
+  curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_max_date}" >/dev/null \
+    && printf '  orders/90d:            primed\n' || printf '  orders/90d:            skipped (not ready)\n'
+
+  curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_max_date}&facets=1" >/dev/null \
+    && printf '  orders/90d+facets:     primed\n' || printf '  orders/90d+facets:     skipped (not ready)\n'
+
+  curl -sf "${CDN_URL}/api/customers?limit=20" >/dev/null \
+    && printf '  customers:             primed\n' || printf '  customers:             skipped (not ready)\n'
+}
+
 _finalize_deploy() {
   if [[ -n "${CF_DIST_ID:-}" ]]; then
     printf '  Invalidating CloudFront cache...\n'
@@ -1259,23 +1295,7 @@ _finalize_deploy() {
   printf '  API Explorer: %s/api-explorer\n' "$CDN_URL"
   printf '  Tear down:    %s/scripts/infra-down.sh\n' "$ROOT_DIR"
 
-  if [[ -n "${CDN_URL:-}" ]]; then
-    printf '\n  Priming CDN cache for default 90-day view...\n'
-    local _max_date _from90
-    _max_date=$(curl -sf "${CDN_URL}/api/dataset-bounds" \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('to',''))" 2>/dev/null || true)
-    if [[ -z "$_max_date" ]]; then
-      _max_date=$(python3 -c "from datetime import date; print(date.today().isoformat())")
-      printf '  (dataset-bounds unavailable — using today as fallback)\n'
-    else
-      printf '  dataset max date: %s\n' "$_max_date"
-    fi
-    _from90=$(python3 -c "from datetime import date, timedelta; print((date.fromisoformat('${_max_date}') - timedelta(days=90)).isoformat())")
-    curl -sf "${CDN_URL}/api/aggregates?q=&from=${_from90}&to=${_max_date}&topCategories=4" >/dev/null \
-      && printf '  aggregates (90d): primed\n' || printf '  aggregates (90d): skipped (not ready)\n'
-    curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_max_date}&facets=1" >/dev/null \
-      && printf '  orders (90d):     primed\n' || printf '  orders (90d):     skipped (not ready)\n'
-  fi
+  _prime_cdn_caches
 
   if [[ "$_OCF_REBUILT" -eq 1 ]]; then
     printf '\n  ── OCF rebuilt from items array ──────────────────────────────────────\n'
