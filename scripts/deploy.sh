@@ -1330,8 +1330,6 @@ PYEOF
       fi
     fi
 
-    local PORTFOLIO_SCRIPT="$ROOT_DIR/../../portfolio/scripts/set-live-url.sh"
-    [[ -x "$PORTFOLIO_SCRIPT" ]] && bash "$PORTFOLIO_SCRIPT" clickhouse "$CDN_URL"
   fi
 }
 
