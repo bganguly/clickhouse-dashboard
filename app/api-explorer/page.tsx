@@ -503,9 +503,9 @@ function AggregatesCard() {
     <Card path="/api/aggregates?q=…" subtitle="Pre-aggregated daily totals — millisecond response">
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <DarkInput value={q} onChange={setQ} placeholder="search term (q=…)"
+          <DarkInput value={q} onChange={setQ} placeholder="e.g. cassin, berg"
             onEnter={run} style={{ width:180 }} />
-          <DarkInput value={name} onChange={setName} placeholder="name filter"
+          <DarkInput value={name} onChange={setName} placeholder="e.g. Cassin"
             onEnter={run} style={{ width:140 }} />
           <div className="flex items-center gap-2">
             <span className="text-[11px]" style={{ color:"#52525b" }}>from</span>

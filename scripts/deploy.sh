@@ -407,12 +407,14 @@ _deploy_quick() {
       --query 'Invalidation.Id' --output text
   fi
 
-  local _AR_SVC_URL
+  local _AR_SVC_URL _READY_URL
   _AR_SVC_URL="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
     --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
-  [[ -n "$_AR_SVC_URL" ]] && CDN_URL="https://${_AR_SVC_URL}"
+  _READY_URL="${_CH_PREFLIGHT_URL:-${CDN_URL:-}}"
+  [[ -z "$_READY_URL" && -n "$_AR_SVC_URL" ]] && _READY_URL="https://${_AR_SVC_URL}"
+  [[ -z "$CDN_URL" && -n "$_AR_SVC_URL" ]] && CDN_URL="https://${_AR_SVC_URL}"
 
-  _ch_wait_ready "[quick]" "${_CH_PREFLIGHT_URL:-${CDN_URL}}" "${_CH_PREFLIGHT_PASS:-}" 180 abort
+  _ch_wait_ready "[quick]" "$_READY_URL" "${_CH_PREFLIGHT_PASS:-}" 180 abort
 
   _prime_cdn_caches
 
@@ -1252,36 +1254,45 @@ _db_check_typesense() {
 
 _prime_cdn_caches() {
   [[ -z "${CDN_URL:-}" ]] && return 0
-  printf '\n  Priming all CDN cache layers for default 90-day view...\n'
-  local _max_date _from90
+  printf '\n  Priming CDN cache layers (90-day and all-time views)...\n'
+  local _bounds _max_date _min_date _from90
 
-  _max_date=$(curl -sf "${CDN_URL}/api/dataset-bounds" \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('to',''))" 2>/dev/null || true)
+  _bounds=$(curl -sf "${CDN_URL}/api/dataset-bounds" 2>/dev/null || true)
+  _max_date=$(printf '%s' "$_bounds" | python3 -c "import sys,json; print(json.load(sys.stdin).get('to',''))" 2>/dev/null || true)
+  _min_date=$(printf '%s' "$_bounds" | python3 -c "import sys,json; print(json.load(sys.stdin).get('from',''))" 2>/dev/null || true)
   if [[ -z "$_max_date" ]]; then
     _max_date=$(python3 -c "from datetime import date; print(date.today().isoformat())")
     printf '  (dataset-bounds unavailable — using today as fallback)\n'
   else
-    printf '  dataset-bounds:         primed (%s)\n' "$_max_date"
+    printf '  dataset-bounds:              primed (%s → %s)\n' "$_min_date" "$_max_date"
   fi
   _from90=$(python3 -c "from datetime import date, timedelta; print((date.fromisoformat('${_max_date}') - timedelta(days=90)).isoformat())")
 
   curl -sf "${CDN_URL}/api/regions" >/dev/null \
-    && printf '  regions:                primed\n' || printf '  regions:                skipped (not ready)\n'
+    && printf '  regions:                     primed\n' || printf '  regions:                     skipped (not ready)\n'
 
   curl -sf "${CDN_URL}/api/aggregates?q=&from=${_from90}&to=${_max_date}&topCategories=4" >/dev/null \
-    && printf '  aggregates/90d (top4): primed\n' || printf '  aggregates/90d (top4): skipped (not ready)\n'
+    && printf '  aggregates/90d (top4):       primed\n' || printf '  aggregates/90d (top4):       skipped (not ready)\n'
 
   curl -sf "${CDN_URL}/api/aggregates?from=${_from90}&to=${_max_date}&topCategories=1" >/dev/null \
-    && printf '  aggregates/90d (top1): primed\n' || printf '  aggregates/90d (top1): skipped (not ready)\n'
+    && printf '  aggregates/90d (top1):       primed\n' || printf '  aggregates/90d (top1):       skipped (not ready)\n'
+
+  if [[ -n "$_min_date" ]]; then
+    curl -sf "${CDN_URL}/api/aggregates?q=&from=${_min_date}&to=${_max_date}&topCategories=4" >/dev/null \
+      && printf '  aggregates/all-time (top4):  primed\n' || printf '  aggregates/all-time (top4):  skipped (not ready)\n'
+
+    curl -sf "${CDN_URL}/api/aggregates?from=${_min_date}&to=${_max_date}&topCategories=1" >/dev/null \
+      && printf '  aggregates/all-time (top1):  primed\n' || printf '  aggregates/all-time (top1):  skipped (not ready)\n'
+  fi
 
   curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_max_date}" >/dev/null \
-    && printf '  orders/90d:            primed\n' || printf '  orders/90d:            skipped (not ready)\n'
+    && printf '  orders/90d:                  primed\n' || printf '  orders/90d:                  skipped (not ready)\n'
 
   curl -sf "${CDN_URL}/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${_from90}&to=${_max_date}&facets=1" >/dev/null \
-    && printf '  orders/90d+facets:     primed\n' || printf '  orders/90d+facets:     skipped (not ready)\n'
+    && printf '  orders/90d+facets:           primed\n' || printf '  orders/90d+facets:           skipped (not ready)\n'
 
   curl -sf "${CDN_URL}/api/customers?limit=20" >/dev/null \
-    && printf '  customers:             primed\n' || printf '  customers:             skipped (not ready)\n'
+    && printf '  customers:                   primed\n' || printf '  customers:                   skipped (not ready)\n'
 }
 
 _finalize_deploy() {
