@@ -38,7 +38,7 @@ App Runner  →  in-process Map (mem)  →  Upstash Redis  →  ClickHouse
 
 **CloudFront Origin Shield** sits between all edge POPs and App Runner. When a POP has no cached entry for a URL (e.g. first hit from a new region or network), it forwards to the shield rather than App Runner directly — the shield either serves from its own cache or makes one request to App Runner, protecting the origin from simultaneous cold-start stampedes across multiple POPs.
 
-CDN key = exact URL including param order. App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
+CDN key = normalized URL (a CloudFront Function lowercases the `q` param on every viewer request before cache lookup, so `q=Auer` and `q=auer` hit the same CDN entry). App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
 
 | Endpoint | CDN canonical URL | App / in-mem key | Redis |
 |---|---|---|---|
@@ -157,6 +157,7 @@ GitHub Actions (.github/workflows/deploy.yml)
 | **IDs** | Monotonic in-app counter (seeded from `Date.now()`) — safe for single App Runner instance. |
 | **Keepalive** | `instrumentation.ts` fires `listOrders` + `getDailyAggregates` every 4 minutes via `setInterval`, keeping ClickHouse page cache warm between user requests. |
 | **Query cache** | `use_query_cache: 1, query_cache_ttl: 60` on all analytics queries — repeated calls return in ~10 ms. |
+| **CDN cache key normalization** | CloudFront Function (Viewer Request, `cloudfront-js-2.0`) lowercases the `q` query param before CloudFront computes the cache key — `q=Auer` and `q=auer` resolve to the same CDN entry across all edge POPs and Origin Shield. |
 
 ---
 

@@ -141,6 +141,23 @@ resource "aws_s3_object" "maintenance_html" {
   etag         = filemd5("${path.module}/maintenance.html")
 }
 
+# ── CloudFront Function: normalize q param to lowercase before cache key ───────
+
+resource "aws_cloudfront_function" "normalize_query" {
+  name    = "${var.name_prefix}-normalize-query"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var qs = event.request.querystring;
+      if (qs.q && qs.q.value) {
+        qs.q.value = qs.q.value.toLowerCase();
+      }
+      return event.request;
+    }
+  EOT
+}
+
 # ── CloudFront: App Runner primary + S3 maintenance failover ──────────────────
 
 resource "aws_cloudfront_distribution" "app" {
@@ -195,6 +212,10 @@ resource "aws_cloudfront_distribution" "app" {
       query_string = true
       headers      = ["Content-Type", "Origin"]
       cookies { forward = "none" }
+    }
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.normalize_query.arn
     }
   }
 
