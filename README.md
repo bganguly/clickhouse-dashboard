@@ -5,6 +5,12 @@ search via Typesense prefix expansion + ClickHouse `hasToken`, pre-aggregated an
 Views + SummingMergeTree, and Terraform IaC on AWS. APIs respond in under a second; full UI render
 (Recharts reconciliation over the returned dataset) may take slightly longer on first interaction.
 
+
+
+https://github.com/user-attachments/assets/f1c90323-27d7-4706-9e8c-7ae841aa24fc
+
+
+
 ## Live Service
 
 | Endpoint | URL |
