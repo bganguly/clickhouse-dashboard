@@ -150,6 +150,10 @@ resource "aws_cloudfront_distribution" "app" {
   origin {
     domain_name = aws_apprunner_service.app.service_url
     origin_id   = "app-origin"
+    origin_shield {
+      enabled              = true
+      origin_shield_region = "us-east-1"
+    }
     custom_origin_config {
       http_port                = 80
       https_port               = 443

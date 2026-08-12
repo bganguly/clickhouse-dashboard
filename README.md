@@ -28,9 +28,15 @@ Views + SummingMergeTree, and Terraform IaC on AWS. APIs respond in under a seco
 Every `/api/orders` and `/api/aggregates` response passes through three cache layers before hitting ClickHouse:
 
 ```
-CloudFront CDN  →  in-process Map (mem, Node.js process)  →  Upstash Redis  →  ClickHouse
-  s-maxage=300       MAX_ENTRIES=500, TTL=90d                  TTL=90d
+CloudFront edge POP  →  Origin Shield (us-east-1)  →  App Runner (Next.js)
+  s-maxage=31536000        centralized regional cache     scale-to-zero
+  (1 year, immutable)      cold-POP misses stop here
+
+App Runner  →  in-process Map (mem)  →  Upstash Redis  →  ClickHouse
+                 MAX_ENTRIES=500, TTL=90d    TTL=90d
 ```
+
+**CloudFront Origin Shield** sits between all edge POPs and App Runner. When a POP has no cached entry for a URL (e.g. first hit from a new region or network), it forwards to the shield rather than App Runner directly — the shield either serves from its own cache or makes one request to App Runner, protecting the origin from simultaneous cold-start stampedes across multiple POPs.
 
 CDN key = exact URL including param order. App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
 
