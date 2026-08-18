@@ -1453,6 +1453,10 @@ _migrate_clickhouse_data() {
 }
 
 _deploy_cloud() {
+  printf '\nFull deploy: Terraform + GH secret sync + migration + App Runner update.\n'
+  printf 'Continue? [y/N]: '
+  read -r _CLOUD_CONFIRM
+  [[ "${_CLOUD_CONFIRM:-N}" =~ ^[Yy] ]] || { printf 'Aborted.\n'; exit 0; }
   _load_ch_creds
   _check_deps
   _sync_aws_gh_secrets
