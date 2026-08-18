@@ -75,9 +75,11 @@ export async function expandPrefix(prefix: string): Promise<string> {
     });
     const best = result.hits?.[0];
     const token = best ? (best.document as { token: string }).token : prefix;
+    console.log(`[typesense:expand] "${prefix}" → "${token}" (hits=${result.hits?.length ?? 0}, num_typos=0)`);
     _prefixCache.set(prefix, { token, ts: Date.now() });
     return token;
-  } catch {
+  } catch (err) {
+    console.log(`[typesense:expand] "${prefix}" → fallback (error: ${err})`);
     return prefix;
   }
 }
