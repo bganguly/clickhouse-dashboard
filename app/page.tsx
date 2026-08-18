@@ -219,7 +219,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
       <main className="w-full px-5 py-8">
-        <header className="mb-6 flex items-start justify-between gap-4">
+        <header className="mb-6 flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">ClickHouse Dashboard</h1>
             <p className="text-sm text-gray-500">
@@ -234,6 +234,34 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+
+          <div className="flex flex-1 justify-center px-4">
+            {dbStatus && (
+              <div
+                className="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm"
+                style={dbStatus === "waking"
+                  ? { background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.30)", color: "#fbbf24" }
+                  : { background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.30)", color: "#4ade80" }}
+              >
+                {dbStatus === "waking" ? (
+                  <>
+                    <svg className="h-4 w-4 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
+                    </svg>
+                    DB warming up — queries may take longer
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    DB warmed up — queries back to normal
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center gap-3">
             <PerfTimer ms={perfMs} settled={perfSettled} />
             {/* Live checkbox — re-enable when websockets-quickorder is running alongside
@@ -267,31 +295,6 @@ export default function Dashboard() {
             <ThemeToggle />
           </div>
         </header>
-
-        {dbStatus && (
-          <div
-            className="mb-4 flex items-center gap-2 rounded-md px-3 py-2 text-sm"
-            style={dbStatus === "waking"
-              ? { background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.30)", color: "#fbbf24" }
-              : { background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.30)", color: "#4ade80" }}
-          >
-            {dbStatus === "waking" ? (
-              <>
-                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
-                </svg>
-                Database waking up…
-              </>
-            ) : (
-              <>
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-                Database ready
-              </>
-            )}
-          </div>
-        )}
 
         <div className="flex flex-col gap-6 lg:flex-row">
           <FilterSidebar value={filters} onChange={setFilters} regionOptions={regionOptions} datasetBounds={datasetBounds} />
