@@ -472,6 +472,8 @@ function capToTopCategories(day: DailyAggregate, topN: number): DailyAggregate {
 }
 
 void (process.env.CLICKHOUSE_URL && (async () => {
+  const t0 = Date.now();
+  console.log(`[agg:warmup] START`);
   try {
     const d = new Date(`${DATASET_END}T00:00:00Z`);
     d.setUTCDate(d.getUTCDate() - 90);
@@ -484,6 +486,7 @@ void (process.env.CLICKHOUSE_URL && (async () => {
       getExactAggregateTotal({ ...baseInput, from: from90,        to: DATASET_END }),
       getExactAggregateTotal({ ...baseInput, from: DATASET_START, to: DATASET_END }),
     ]);
+    console.log(`[agg:warmup] base done — ${Date.now() - t0}ms`);
 
     const [page1_90, page1_all] = await Promise.all([
       listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90,        to: DATASET_END }),
@@ -502,14 +505,19 @@ void (process.env.CLICKHOUSE_URL && (async () => {
       }
     }
     const tokenList = [...new Set([...names, ...[...noteWords].filter(w => !names.has(w))])].slice(0, 100);
+    console.log(`[agg:warmup] token list ready (${tokenList.length} tokens) — ${Date.now() - t0}ms`);
 
-    for (const tok of tokenList) {
+    for (let i = 0; i < tokenList.length; i++) {
+      const tok = tokenList[i];
       const tokInput = { ...baseInput, q: tok };
       await getDailyAggregates({    ...tokInput, from: from90,        to: DATASET_END });
       await getDailyAggregates({    ...tokInput, from: DATASET_START, to: DATASET_END });
       await getExactAggregateTotal({ ...tokInput, from: from90,        to: DATASET_END });
       await getExactAggregateTotal({ ...tokInput, from: DATASET_START, to: DATASET_END });
+      if ((i + 1) % 10 === 0) console.log(`[agg:warmup] ${i + 1}/${tokenList.length} tokens — ${Date.now() - t0}ms`);
     }
-    console.log(`[agg:warmup] per-token done — ${tokenList.length} tokens × 2 date ranges`);
-  } catch {}
+    console.log(`[agg:warmup] COMPLETE — ${tokenList.length} tokens × 2 date ranges in ${Date.now() - t0}ms`);
+  } catch (e) {
+    console.log(`[agg:warmup] ERROR at ${Date.now() - t0}ms — ${e}`);
+  }
 })());
