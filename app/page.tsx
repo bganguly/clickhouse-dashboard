@@ -65,6 +65,9 @@ export default function Dashboard() {
   const [lastSseOrder, setLastSseOrder] = useState<{ categorySlug: string; placedAt: string } | null>(null);
   const [lastOrder, setLastOrder] = useState<{ id?: string | number; date?: string; seq: number } | null>(null);
 
+  const [dbStatus, setDbStatus] = useState<"waking" | "ready" | null>(null);
+  const dbStatusDismiss = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [chartLoading, setChartLoading] = useState(false);
   const [tableLoading, setTableLoading] = useState(false);
   const [perfMs, setPerfMs] = useState<number | null>(null);
@@ -176,6 +179,29 @@ export default function Dashboard() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const wakeTimer = setTimeout(() => { if (!cancelled) setDbStatus("waking"); }, 800);
+    fetch("/api/ping")
+      .then((r) => r.json() as Promise<{ ok: boolean; ms: number }>)
+      .then(({ ms }) => {
+        if (cancelled) return;
+        clearTimeout(wakeTimer);
+        if (ms > 800) {
+          setDbStatus("ready");
+          dbStatusDismiss.current = setTimeout(() => { if (!cancelled) setDbStatus(null); }, 2500);
+        } else {
+          setDbStatus(null);
+        }
+      })
+      .catch(() => { if (!cancelled) { clearTimeout(wakeTimer); setDbStatus(null); } });
+    return () => {
+      cancelled = true;
+      clearTimeout(wakeTimer);
+      if (dbStatusDismiss.current) clearTimeout(dbStatusDismiss.current);
+    };
+  }, []);
+
   const handleRows = useCallback((rows: SearchRow[]) => {
     const incoming: RegionOption[] = [];
     for (const row of rows) {
@@ -241,6 +267,31 @@ export default function Dashboard() {
             <ThemeToggle />
           </div>
         </header>
+
+        {dbStatus && (
+          <div
+            className="mb-4 flex items-center gap-2 rounded-md px-3 py-2 text-sm"
+            style={dbStatus === "waking"
+              ? { background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.30)", color: "#fbbf24" }
+              : { background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.30)", color: "#4ade80" }}
+          >
+            {dbStatus === "waking" ? (
+              <>
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
+                </svg>
+                Database waking up…
+              </>
+            ) : (
+              <>
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Database ready
+              </>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-col gap-6 lg:flex-row">
           <FilterSidebar value={filters} onChange={setFilters} regionOptions={regionOptions} datasetBounds={datasetBounds} />
