@@ -1364,11 +1364,105 @@ PYEOF
   fi
 }
 
+_migrate_clickhouse_data() {
+  local _OLD_URL _OLD_PASS _OLD_HOST
+  _OLD_URL="$(grep '^OLD_CLICKHOUSE_URL=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  _OLD_PASS="$(grep '^OLD_CLICKHOUSE_PASSWORD=' "$CREDS_FILE" 2>/dev/null | cut -d= -f2- || true)"
+
+  [[ -z "$_OLD_URL" || -z "$_OLD_PASS" ]] && return 0
+  [[ "$_OLD_URL" == "$CLICKHOUSE_URL" ]] && return 0
+
+  _OLD_HOST="$(printf '%s' "$_OLD_URL" | sed 's|https://||;s|:8443||')"
+
+  printf '[migrate] Checking ClickHouse data migration...\n'
+  printf '  Source: %s\n' "$_OLD_URL"
+  printf '  Target: %s\n' "$CLICKHOUSE_URL"
+
+  local _OLD_PING
+  _OLD_PING="$(curl -sf -u "default:${_OLD_PASS}" "${_OLD_URL}/?max_execution_time=10" \
+    --data-binary "SELECT 1 FORMAT TSV" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$_OLD_PING" != "1" ]]; then
+    printf '  WARNING: old service unreachable — skipping migration.\n'
+    return 0
+  fi
+
+  local _OLD_CNT _NEW_CNT
+  _OLD_CNT="$(curl -sf -u "default:${_OLD_PASS}" "${_OLD_URL}/?max_execution_time=30" \
+    --data-binary "SELECT count() FROM orders FORMAT TSV" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+  _NEW_CNT="$(curl -sf -u "default:${CH_PASS}" "${CLICKHOUSE_URL}/?max_execution_time=30" \
+    --data-binary "SELECT count() FROM orders FORMAT TSV" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+
+  if [[ "${_NEW_CNT:-0}" -gt 0 && "${_NEW_CNT:-0}" -eq "${_OLD_CNT:-0}" ]]; then
+    printf '  Already migrated (%s orders). Skipping.\n' "$_OLD_CNT"
+    return 0
+  fi
+  if [[ "${_NEW_CNT:-0}" -gt 0 && "${_NEW_CNT:-0}" -ne "${_OLD_CNT:-0}" ]]; then
+    printf '  ERROR: partial migration detected (new=%s old=%s). Manual intervention required.\n' "$_NEW_CNT" "$_OLD_CNT"
+    exit 1
+  fi
+
+  printf '  Migrating %s orders from old service...\n' "$_OLD_CNT"
+
+  local _MURL="$CLICKHOUSE_URL" _MPASS="$CH_PASS"
+  _mig() { curl -sf -u "default:${_MPASS}" "${_MURL}/?max_execution_time=${1}" --data-binary "${2}" 2>/dev/null || true; }
+
+  printf '  [1/3] Applying schema (tables + indexes, no MVs)...\n'
+  _mig 60 "CREATE TABLE IF NOT EXISTS categories (categoryId UInt32, name LowCardinality(String), slug LowCardinality(String), parentId Nullable(UInt32), createdAt DateTime64(3, 'UTC')) ENGINE = MergeTree() ORDER BY categoryId"
+  _mig 60 "CREATE TABLE IF NOT EXISTS regions (regionId UInt32, code LowCardinality(String), name String, country String, timezone String) ENGINE = MergeTree() ORDER BY regionId"
+  _mig 60 "CREATE TABLE IF NOT EXISTS customers (customerId UInt64, email String, firstName String, lastName String, phone Nullable(String), regionId UInt32, createdAt DateTime64(3, 'UTC')) ENGINE = MergeTree() ORDER BY customerId"
+  _mig 60 "CREATE TABLE IF NOT EXISTS products (productId UInt32, sku String, name String, description Nullable(String), price Decimal(10,2), cost Decimal(10,2), stock UInt32, categoryId UInt32, createdAt DateTime64(3, 'UTC')) ENGINE = MergeTree() ORDER BY productId"
+  _mig 60 "CREATE TABLE IF NOT EXISTS orders (orderId UInt64, customerId UInt64, regionId UInt32, regionCode LowCardinality(String), customerFirstName String, customerLastName String, customerEmail String, status LowCardinality(String), total Decimal(12,2), currency LowCardinality(String), notes Nullable(String), searchText String, placedAt DateTime64(3, 'UTC')) ENGINE = MergeTree() ORDER BY (placedAt, orderId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS order_items (itemId UInt64, orderId UInt64, productId UInt32, productName String, productSku LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), quantity UInt32, unitPrice Decimal(10,2), discount Decimal(5,2)) ENGINE = MergeTree() ORDER BY (orderId, itemId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS order_category_facts (orderId UInt64, date Date, placedAt DateTime64(3, 'UTC'), customerId UInt64, regionId UInt32, regionCode LowCardinality(String), status LowCardinality(String), orderTotal Decimal(12,2), categoryId UInt32, categoryName LowCardinality(String), totalItems UInt32, totalRevenue Decimal(14,2)) ENGINE = MergeTree() ORDER BY (date, orderId, categoryId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS daily_summary (date Date, categoryId UInt32, categoryName LowCardinality(String), regionId UInt32, regionCode LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE = SummingMergeTree((totalOrders, totalRevenue, totalItems)) ORDER BY (date, regionId, categoryId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS daily_filter_category_summary (date Date, regionId UInt32, regionCode LowCardinality(String), status LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE = SummingMergeTree((totalOrders, totalRevenue, totalItems)) ORDER BY (date, regionId, status, categoryId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS daily_status_category_summary (date Date, status LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE = SummingMergeTree((totalOrders, totalRevenue, totalItems)) ORDER BY (date, status, categoryId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS daily_customer_category_summary (date Date, customerId UInt64, regionId UInt32, regionCode LowCardinality(String), status LowCardinality(String), categoryId UInt32, categoryName LowCardinality(String), totalOrders UInt64, totalRevenue Decimal(14,2), totalItems UInt64) ENGINE = SummingMergeTree((totalOrders, totalRevenue, totalItems)) ORDER BY (date, customerId, regionId, status, categoryId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS daily_order_count (date Date, regionId UInt32, regionCode LowCardinality(String), orderCount UInt64) ENGINE = SummingMergeTree(orderCount) ORDER BY (date, regionId)"
+  _mig 60 "CREATE TABLE IF NOT EXISTS search_vocabulary (token LowCardinality(String), doc_freq UInt64) ENGINE = MergeTree ORDER BY token"
+  _mig 60 "CREATE TABLE IF NOT EXISTS daily_search_token_summary (token LowCardinality(String), date Date, categoryName LowCardinality(String), orderCount UInt32, orderTotal Float64) ENGINE = MergeTree() ORDER BY (token, date, categoryName)"
+  _mig 60 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS itemCount UInt32 DEFAULT 0"
+  _mig 60 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS items Array(Tuple(categoryId UInt32, categoryName LowCardinality(String), productId UInt32, productName String, productSku LowCardinality(String), quantity UInt32, unitPrice Float64, discount Float64)) DEFAULT []"
+  _mig 60 "ALTER TABLE order_category_facts ADD COLUMN IF NOT EXISTS searchText String DEFAULT ''"
+  _mig 60 "ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_search_fulltext searchText TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 1"
+  _mig 60 "ALTER TABLE orders ADD INDEX IF NOT EXISTS idx_notes_ngram notes TYPE text(tokenizer = ngrams(3)) GRANULARITY 1"
+  _mig 60 "ALTER TABLE order_category_facts ADD INDEX IF NOT EXISTS idx_ocf_search searchText TYPE text(tokenizer = splitByNonAlpha) GRANULARITY 1"
+
+  printf '  [2/3] Migrating data via remoteSecure...\n'
+  local _T _TC _TABLES=(categories regions customers products order_items order_category_facts daily_summary daily_filter_category_summary daily_status_category_summary daily_customer_category_summary daily_order_count search_vocabulary daily_search_token_summary)
+  for _T in "${_TABLES[@]}"; do
+    _TC="$(curl -sf -u "default:${_OLD_PASS}" "${_OLD_URL}/?max_execution_time=30" \
+      --data-binary "SELECT count() FROM ${_T} FORMAT TSV" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+    printf '    %-50s %s rows...' "$_T" "$_TC"
+    if [[ "${_TC:-0}" -eq 0 ]]; then printf ' empty, skipping.\n'; continue; fi
+    curl -sf -u "default:${_MPASS}" "${_MURL}/?max_execution_time=7200" \
+      --data-binary "INSERT INTO ${_T} SELECT * FROM remoteSecure('${_OLD_HOST}:9440', 'default', '${_T}', 'default', '${_OLD_PASS}') SETTINGS connect_timeout=30, receive_timeout=7200, send_timeout=7200" \
+      2>/dev/null || { printf ' FAILED\n'; exit 1; }
+    printf ' done.\n'
+  done
+
+  printf '    %-50s %s rows...' "orders" "$_OLD_CNT"
+  curl -sf -u "default:${_MPASS}" "${_MURL}/?max_execution_time=7200" \
+    --data-binary "INSERT INTO orders (orderId, customerId, regionId, regionCode, customerFirstName, customerLastName, customerEmail, status, total, currency, notes, searchText, placedAt, itemCount, items) SELECT orderId, customerId, regionId, regionCode, customerFirstName, customerLastName, customerEmail, status, total, currency, notes, searchText, placedAt, itemCount, items FROM remoteSecure('${_OLD_HOST}:9440', 'default', 'orders', 'default', '${_OLD_PASS}') SETTINGS connect_timeout=30, receive_timeout=7200, send_timeout=7200" \
+    2>/dev/null || { printf ' FAILED\n'; exit 1; }
+  printf ' done.\n'
+
+  printf '  [3/3] Creating materialized views...\n'
+  _mig 60 "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_summary TO daily_summary AS SELECT date, categoryId, categoryName, regionId, regionCode, toUInt64(1) AS totalOrders, totalRevenue, toUInt64(totalItems) AS totalItems FROM order_category_facts"
+  _mig 60 "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_filter_category_summary TO daily_filter_category_summary AS SELECT date, regionId, regionCode, status, categoryId, categoryName, toUInt64(1) AS totalOrders, totalRevenue, toUInt64(totalItems) AS totalItems FROM order_category_facts"
+  _mig 60 "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_status_category_summary TO daily_status_category_summary AS SELECT date, status, categoryId, categoryName, toUInt64(1) AS totalOrders, totalRevenue, toUInt64(totalItems) AS totalItems FROM order_category_facts"
+  _mig 60 "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_customer_category_summary TO daily_customer_category_summary AS SELECT date, customerId, regionId, regionCode, status, categoryId, categoryName, toUInt64(1) AS totalOrders, totalRevenue, toUInt64(totalItems) AS totalItems FROM order_category_facts"
+  _mig 60 "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_order_count TO daily_order_count AS SELECT toDate(placedAt) AS date, regionId, regionCode, toUInt64(1) AS orderCount FROM orders"
+
+  printf '  [migrate] Complete.\n'
+}
+
 _deploy_cloud() {
   _load_ch_creds
   _check_deps
   _sync_aws_gh_secrets
   _resolve_ch_endpoint
+  _migrate_clickhouse_data
   _load_redis_creds
   _load_typesense_creds
   _provision_infra
