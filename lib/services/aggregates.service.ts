@@ -488,24 +488,22 @@ void (process.env.CLICKHOUSE_URL && (async () => {
     ]);
     console.log(`[agg:warmup] base done — ${Date.now() - t0}ms`);
 
-    const [page1_90, page2_90] = await Promise.all([
-      listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END }),
-      listOrders({ page: 2, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END }),
-    ]);
+    const page1_90 = await listOrders({ page: 1, pageSize: 20, sort: "placedAt", dir: "desc", from: from90, to: DATASET_END });
 
     const names = new Set<string>();
     const noteWords = new Set<string>();
-    for (const order of [...page1_90.data, ...page2_90.data]) {
+    for (const order of page1_90.data) {
       if (order.customer.firstName) names.add(order.customer.firstName.toLowerCase());
       if (order.customer.lastName)  names.add(order.customer.lastName.toLowerCase());
       if (order.notes) {
         for (const w of order.notes.split(/\s+/)) {
-          if (w.length >= 3 && !/^\d+$/.test(w)) noteWords.add(w.toLowerCase());
+          const clean = w.replace(/[^a-z0-9]/gi, "").toLowerCase();
+          if (clean.length >= 3 && !/^\d+$/.test(clean)) noteWords.add(clean);
         }
       }
     }
-    const tokenList = [...new Set([...names, ...[...noteWords].filter(w => !names.has(w))])].slice(0, 100);
-    console.log(`[agg:warmup] token list ready (${tokenList.length} tokens) — ${Date.now() - t0}ms`);
+    const tokenList = [...names, ...[...noteWords].filter(w => !names.has(w))];
+    console.log(`[agg:warmup] token list (${tokenList.length} tokens, page-1 90d) — ${Date.now() - t0}ms`);
 
     for (let i = 0; i < tokenList.length; i++) {
       const tok = tokenList[i];
