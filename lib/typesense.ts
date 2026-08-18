@@ -70,6 +70,7 @@ export async function expandPrefix(prefix: string): Promise<string> {
       query_by: "token",
       per_page: 1,
       prefix: true,
+      num_typos: 0,
       sort_by: "doc_freq:desc",
     });
     const best = result.hits?.[0];
