@@ -245,7 +245,7 @@ _preflight_check_gh_run() {
   if [[ -n "$_LOCAL_SHA2" ]] && _ecr_image_exists "$_LOCAL_SHA2"; then
     printf 'built\n'
     _OPTION3_LABEL="Quick  — redeploy ECR:latest direct to App Runner · HEAD=${_LOCAL_SHA2} (${_LOCAL_AGO}) · skips Terraform/DB/migration checks"
-    [[ "$_GH_RUN_ST" == "completed/success" ]] && _DEFAULT_CHOICE=3
+    [[ "$_GH_RUN_ST" == "completed/success" ]] && _DEFAULT_CHOICE=3 || true
   else
     printf 'not built yet\n'
     _OPTION3_LABEL="Quick  — UNAVAILABLE · HEAD=${_LOCAL_SHA2:-unknown} (${_LOCAL_AGO:-unknown age}) not yet in ECR — wait for GH Actions build to complete"
