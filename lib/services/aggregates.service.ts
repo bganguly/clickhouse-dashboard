@@ -477,7 +477,7 @@ void (process.env.CLICKHOUSE_URL && (async () => {
     d.setUTCDate(d.getUTCDate() - 90);
     const from90 = d.toISOString().slice(0, 10);
 
-    const baseInput = { q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: null };
+    const baseInput = { q: null, status: null, regionCode: null, minTotal: null, maxTotal: null, topCategories: 4 };
     await Promise.all([
       getDailyAggregates({ ...baseInput, from: from90,        to: DATASET_END }),
       getDailyAggregates({ ...baseInput, from: DATASET_START, to: DATASET_END }),
