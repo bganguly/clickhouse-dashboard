@@ -70,6 +70,7 @@ export default function Dashboard() {
   const wakeStart = useRef<number>(0);
   const wakeInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const dbStatusDismiss = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slowQueryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [chartLoading, setChartLoading] = useState(false);
   const [tableLoading, setTableLoading] = useState(false);
@@ -218,6 +219,28 @@ export default function Dashboard() {
       if (wakeInterval.current) { clearInterval(wakeInterval.current); wakeInterval.current = null; }
     };
   }, [dbStatus]);
+
+  useEffect(() => {
+    const anyLoading = chartLoading || tableLoading;
+    if (anyLoading) {
+      if (dbStatus === null && !slowQueryTimer.current) {
+        slowQueryTimer.current = setTimeout(() => {
+          slowQueryTimer.current = null;
+          setDbStatus("waking");
+        }, 800);
+      }
+    } else {
+      if (slowQueryTimer.current) {
+        clearTimeout(slowQueryTimer.current);
+        slowQueryTimer.current = null;
+      }
+      if (dbStatus === "waking") {
+        setDbStatus("ready");
+        if (dbStatusDismiss.current) clearTimeout(dbStatusDismiss.current);
+        dbStatusDismiss.current = setTimeout(() => setDbStatus(null), 2500);
+      }
+    }
+  }, [chartLoading, tableLoading, dbStatus]);
 
   const handleRows = useCallback((rows: SearchRow[]) => {
     const incoming: RegionOption[] = [];
