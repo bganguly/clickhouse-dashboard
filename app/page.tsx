@@ -212,8 +212,8 @@ export default function Dashboard() {
       return;
     }
     wakeStart.current = Date.now();
-    setWakeMs(0);
-    wakeInterval.current = setInterval(() => setWakeMs(Date.now() - wakeStart.current), 100);
+    setWakeMs(30_000);
+    wakeInterval.current = setInterval(() => setWakeMs(Math.max(0, 30_000 - (Date.now() - wakeStart.current))), 100);
     return () => {
       if (wakeInterval.current) { clearInterval(wakeInterval.current); wakeInterval.current = null; }
     };
