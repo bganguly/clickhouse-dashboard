@@ -66,6 +66,9 @@ export default function Dashboard() {
   const [lastOrder, setLastOrder] = useState<{ id?: string | number; date?: string; seq: number } | null>(null);
 
   const [dbStatus, setDbStatus] = useState<"waking" | "ready" | null>(null);
+  const [wakeMs, setWakeMs] = useState(0);
+  const wakeStart = useRef<number>(0);
+  const wakeInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const dbStatusDismiss = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [chartLoading, setChartLoading] = useState(false);
@@ -202,6 +205,20 @@ export default function Dashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    if (dbStatus !== "waking") {
+      if (wakeInterval.current) { clearInterval(wakeInterval.current); wakeInterval.current = null; }
+      setWakeMs(0);
+      return;
+    }
+    wakeStart.current = Date.now();
+    setWakeMs(0);
+    wakeInterval.current = setInterval(() => setWakeMs(Date.now() - wakeStart.current), 100);
+    return () => {
+      if (wakeInterval.current) { clearInterval(wakeInterval.current); wakeInterval.current = null; }
+    };
+  }, [dbStatus]);
+
   const handleRows = useCallback((rows: SearchRow[]) => {
     const incoming: RegionOption[] = [];
     for (const row of rows) {
@@ -249,6 +266,7 @@ export default function Dashboard() {
                       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
                     </svg>
                     DB warming up — queries may take longer
+                    <span className="ml-1 font-mono tabular-nums opacity-70">{(wakeMs / 1000).toFixed(1)}s</span>
                   </>
                 ) : (
                   <>
