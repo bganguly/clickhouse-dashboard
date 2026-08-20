@@ -61,7 +61,7 @@ function WakingBanner({ wakeMs }: { wakeMs: number }) {
     <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs mb-3"
       style={{ background:"rgba(251,191,36,0.08)", border:"1px solid rgba(251,191,36,0.25)", color:"#fbbf24" }}>
       <Spinner />
-      <span>Backend waking up — next request will be sub-second.</span>
+      <span>DB being brought up from idle to live —</span>
       <span className="ml-1 font-mono tabular-nums opacity-70">{(wakeMs / 1000).toFixed(1)}s</span>
     </div>
   );

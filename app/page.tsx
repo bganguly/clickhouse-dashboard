@@ -310,7 +310,7 @@ export default function Dashboard() {
                     <svg className="h-4 w-4 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none">
                       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
                     </svg>
-                    DB warming up — queries may take up to ~4 seconds. Expecting DB fully available in
+                    DB being brought up from idle to live —
                     <span className="ml-1 font-mono tabular-nums opacity-70">{(wakeMs / 1000).toFixed(1)}s</span>
                   </>
                 ) : (
