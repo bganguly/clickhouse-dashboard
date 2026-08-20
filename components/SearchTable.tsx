@@ -60,6 +60,8 @@ interface SearchTableProps {
   onCountChange?: (n: number) => void;
   /** Fired whenever the internal fetch loading state changes. */
   onLoadingChange?: (loading: boolean) => void;
+  /** Fired when a fetch response arrives, before loading clears. */
+  onQueryMeta?: (info: { ms: number; source: string }) => void;
   /** Fired synchronously when the user commits a search (Enter),
    *  before any async fetch begins — lets the parent start a perf timer immediately. */
   onSearchStart?: () => void;
@@ -167,6 +169,7 @@ function SearchTable({
   externalTotal = null,
   onCountChange,
   onLoadingChange,
+  onQueryMeta,
   onSearchStart,
 }: SearchTableProps) {
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -234,6 +237,9 @@ function SearchTable({
   const onRowsRef = useRef(onRows);
   useEffect(() => { onRowsRef.current = onRows; });
 
+  const onQueryMetaRef = useRef(onQueryMeta);
+  useEffect(() => { onQueryMetaRef.current = onQueryMeta; });
+
   // Latest externalTotal without making fetchPage re-create on every chart update.
   const externalTotalRef = useRef(externalTotal);
   useEffect(() => { externalTotalRef.current = externalTotal; });
@@ -272,6 +278,7 @@ function SearchTable({
         });
         const fetchMs = (performance.now() - fetchT0).toFixed(1);
         const _src = res.headers.get("X-Cache-Source") ?? "?";
+        onQueryMetaRef.current?.({ ms: Math.round(performance.now() - fetchT0), source: _src });
         const _cdnRaw = res.headers.get("X-Cache") ?? "";
         const _cacheLabel = _cdnRaw.startsWith("Hit")
           ? "cdn=Hit"

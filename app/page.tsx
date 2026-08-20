@@ -51,6 +51,8 @@ function eventDay(raw: unknown): string | undefined {
 
 
 const QUICK_ORDER_URL = process.env.NEXT_PUBLIC_QUICK_ORDER_URL ?? "http://localhost:3005";
+const SLOW_WAKING_MS = 800;
+const IDLE_RESET_MS = 15 * 60 * 1000;
 
 export default function Dashboard() {
   const [refreshSignal, setRefreshSignal] = useState(0);
@@ -71,6 +73,10 @@ export default function Dashboard() {
   const wakeInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const dbStatusDismiss = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slowQueryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dbWarm = useRef(false);
+  const lastActivityAt = useRef(0);
+  const chHitThisLoad = useRef(false);
+  const wasLoadingRef = useRef(false);
 
   const [chartLoading, setChartLoading] = useState(false);
   const [tableLoading, setTableLoading] = useState(false);
@@ -193,8 +199,9 @@ export default function Dashboard() {
         clearTimeout(wakeTimer);
         if (ms > 800) {
           setDbStatus("ready");
-          dbStatusDismiss.current = setTimeout(() => { if (!cancelled) setDbStatus(null); }, 2500);
+          dbStatusDismiss.current = setTimeout(() => { if (!cancelled) { setDbStatus(null); dbWarm.current = true; } }, 2500);
         } else {
+          dbWarm.current = true;
           setDbStatus(null);
         }
       })
@@ -220,24 +227,39 @@ export default function Dashboard() {
     };
   }, [dbStatus]);
 
+  const handleQueryMeta = useCallback(({ ms, source }: { ms: number; source: string }) => {
+    if (source === "ch") {
+      chHitThisLoad.current = true;
+      if (ms < SLOW_WAKING_MS) dbWarm.current = true;
+    }
+  }, []);
+
   useEffect(() => {
     const anyLoading = chartLoading || tableLoading;
-    if (anyLoading) {
-      if (dbStatus === null && !slowQueryTimer.current) {
+
+    if (anyLoading && !wasLoadingRef.current) {
+      wasLoadingRef.current = true;
+      const timeSinceLast = lastActivityAt.current > 0 ? Date.now() - lastActivityAt.current : Infinity;
+      if (dbWarm.current && timeSinceLast > IDLE_RESET_MS) dbWarm.current = false;
+      lastActivityAt.current = Date.now();
+      chHitThisLoad.current = false;
+      if (!dbWarm.current && dbStatus === null && !slowQueryTimer.current) {
         slowQueryTimer.current = setTimeout(() => {
           slowQueryTimer.current = null;
           setDbStatus("waking");
-        }, 800);
+        }, SLOW_WAKING_MS);
       }
-    } else {
-      if (slowQueryTimer.current) {
-        clearTimeout(slowQueryTimer.current);
-        slowQueryTimer.current = null;
-      }
+    } else if (!anyLoading && wasLoadingRef.current) {
+      wasLoadingRef.current = false;
+      if (slowQueryTimer.current) { clearTimeout(slowQueryTimer.current); slowQueryTimer.current = null; }
       if (dbStatus === "waking") {
-        setDbStatus("ready");
-        if (dbStatusDismiss.current) clearTimeout(dbStatusDismiss.current);
-        dbStatusDismiss.current = setTimeout(() => setDbStatus(null), 2500);
+        if (chHitThisLoad.current) {
+          setDbStatus("ready");
+          if (dbStatusDismiss.current) clearTimeout(dbStatusDismiss.current);
+          dbStatusDismiss.current = setTimeout(() => { setDbStatus(null); dbWarm.current = true; }, 2500);
+        } else {
+          setDbStatus(null);
+        }
       }
     }
   }, [chartLoading, tableLoading, dbStatus]);
@@ -358,6 +380,7 @@ export default function Dashboard() {
                   onTotalChange={setChartTotal}
                   externalTotal={chartTotal}
                   onLoadingChange={handleChartLoading}
+                  onQueryMeta={handleQueryMeta}
                 />
                 )}
                 <SearchTable
@@ -370,6 +393,7 @@ export default function Dashboard() {
                   externalTotal={chartTotal}
                   onCountChange={handleCountChange}
                   onLoadingChange={handleTableLoading}
+                  onQueryMeta={handleQueryMeta}
                   onSearchStart={handleSearchStart}
                 />
               </div>

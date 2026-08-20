@@ -155,6 +155,8 @@ interface ChartProps {
   externalTotal?: number | null;
   /** Fired whenever the internal fetch loading state changes. */
   onLoadingChange?: (loading: boolean) => void;
+  /** Fired when a fetch response arrives, before loading clears. */
+  onQueryMeta?: (info: { ms: number; source: string }) => void;
 }
 
 // Stable palette for stacked series. Cycled if there are more series than colors.
@@ -209,6 +211,7 @@ function Chart({
   onTotalChange,
   externalTotal = null,
   onLoadingChange,
+  onQueryMeta,
 }: ChartProps) {
   const [rawData, setRawData] = useState<RawAggregate[]>([]);
   const [range, setRange] = useState(defaultRange);
@@ -225,6 +228,9 @@ function Chart({
   const [showOthers, setShowOthers] = useState(false);
 
   useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
+
+  const onQueryMetaRef = useRef(onQueryMeta);
+  useEffect(() => { onQueryMetaRef.current = onQueryMeta; });
 
   // Abort in-flight requests so rapid drags don't race each other.
   const abortRef = useRef<AbortController | null>(null);
@@ -287,6 +293,7 @@ function Chart({
           signal: controller.signal,
         });
         const _aggSrc = res.headers.get("X-Cache-Source") ?? "?";
+        onQueryMetaRef.current?.({ ms: Math.round(performance.now() - aggT0), source: _aggSrc });
         const _aggCdnRaw = res.headers.get("X-Cache") ?? "";
         const _aggCacheLabel = _aggCdnRaw.startsWith("Hit")
           ? "cdn=Hit"
