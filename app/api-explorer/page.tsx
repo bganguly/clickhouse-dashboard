@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { diag } from "@/lib/diag";
 
 const PORTFOLIO_URL = "https://bganguly.github.io/#clickhouse";
@@ -12,6 +12,9 @@ const FROM_90D = (() => {
   d.setUTCDate(d.getUTCDate() - 90);
   return d.toISOString().slice(0, 10);
 })();
+
+const SLOW_WAKING_MS = 800;
+const WAKE_WINDOW_MS = 30_000;
 
 // ── Palette constants (match GCP api-explorer.html) ──────────────────────────
 const S = {
@@ -51,6 +54,79 @@ function Loading() {
       <Spinner /> Sending request…
     </div>
   );
+}
+
+function WakingBanner({ wakeMs }: { wakeMs: number }) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs mb-3"
+      style={{ background:"rgba(251,191,36,0.08)", border:"1px solid rgba(251,191,36,0.25)", color:"#fbbf24" }}>
+      <Spinner />
+      <span>Backend waking up — next request will be sub-second.</span>
+      <span className="ml-1 font-mono tabular-nums opacity-70">{(wakeMs / 1000).toFixed(1)}s</span>
+    </div>
+  );
+}
+
+function ReadyBanner() {
+  return (
+    <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs mb-3"
+      style={{ background:"rgba(34,197,94,0.08)", border:"1px solid rgba(34,197,94,0.25)", color:"#4ade80" }}>
+      <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <polyline points="20 6 9 17 4 12" />
+      </svg>
+      Backend fully live — future requests sub-second
+    </div>
+  );
+}
+
+function useWakeBanner() {
+  const [phase, setPhase] = useState<"idle" | "waking" | "ready">("idle");
+  const [wakeMs, setWakeMs] = useState(0);
+  const phaseRef   = useRef<"idle" | "waking" | "ready">("idle");
+  const wakeStart  = useRef(0);
+  const wakeIv     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dismissTm  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slowTm     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warm       = useRef(false);
+
+  const setP = (p: "idle" | "waking" | "ready") => { phaseRef.current = p; setPhase(p); };
+
+  useEffect(() => {
+    if (phase !== "waking") {
+      if (wakeIv.current) { clearInterval(wakeIv.current); wakeIv.current = null; }
+      setWakeMs(0);
+      return;
+    }
+    wakeStart.current = Date.now();
+    setWakeMs(WAKE_WINDOW_MS);
+    wakeIv.current = setInterval(() => setWakeMs(Math.max(0, WAKE_WINDOW_MS - (Date.now() - wakeStart.current))), 100);
+    return () => { if (wakeIv.current) { clearInterval(wakeIv.current); wakeIv.current = null; } };
+  }, [phase]);
+
+  const onStart = useCallback(() => {
+    if (warm.current) return;
+    if (slowTm.current) clearTimeout(slowTm.current);
+    slowTm.current = setTimeout(() => { slowTm.current = null; setP("waking"); }, SLOW_WAKING_MS);
+  }, []);
+
+  const onDone = useCallback((ms: number) => {
+    if (slowTm.current) { clearTimeout(slowTm.current); slowTm.current = null; }
+    const wasWaking = phaseRef.current === "waking";
+    if (wasWaking || (!warm.current && ms >= SLOW_WAKING_MS)) {
+      setP("ready");
+      if (dismissTm.current) clearTimeout(dismissTm.current);
+      dismissTm.current = setTimeout(() => { setP("idle"); warm.current = true; }, 2500);
+    } else {
+      if (ms < SLOW_WAKING_MS) warm.current = true;
+    }
+  }, []);
+
+  const onError = useCallback(() => {
+    if (slowTm.current) { clearTimeout(slowTm.current); slowTm.current = null; }
+    setP("idle");
+  }, []);
+
+  return { phase, wakeMs, onStart, onDone, onError };
 }
 
 function MetaBar({ ms, label, src, cdn }: { ms: number; label: string; src?: string|null; cdn?: string|null }) {
@@ -295,12 +371,15 @@ function OrdersCard() {
   const [err, setErr]         = useState<unknown>(null);
   const [countTotal, setCountTotal]   = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
+  const { phase: wakePhase, wakeMs, onStart, onDone, onError } = useWakeBanner();
 
   async function run() {
     setLoading(true); setErr(null); setRes(null); setCountTotal(null);
+    onStart();
     try {
       const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${FROM_90D}&to=${DATASET_END}`);
       setRes(result);
+      onDone(result.ms);
       fetch(`/api/aggregates?q=&from=${FROM_90D}&to=${DATASET_END}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
@@ -312,7 +391,7 @@ function OrdersCard() {
       } else {
         setCountTotal((j.total as number) ?? 0);
       }
-    } catch (e) { setErr(e); } finally { setLoading(false); }
+    } catch (e) { setErr(e); onError(); } finally { setLoading(false); }
   }
 
   const rows = (res?.json as Record<string,unknown>)?.data as OrderRow[] ?? [];
@@ -328,7 +407,9 @@ function OrdersCard() {
         <div className="flex flex-wrap gap-2">{mono("pageSize","20")} {mono("sort","placedAt")} {mono("dir","desc")}</div>
         <RunBtn onClick={run} loading={loading} />
       </div>
-      {loading && <Loading />}
+      {loading && wakePhase === "idle" && <Loading />}
+      {wakePhase === "waking" && <WakingBanner wakeMs={wakeMs} />}
+      {wakePhase === "ready" && <ReadyBanner />}
       {!!err  && <ErrMsg err={err} />}
       {res    && <>
         <MetaBar ms={res.ms} label={countLabel} src={res.src} cdn={res.cdn} />
@@ -349,6 +430,7 @@ function SearchCard() {
   const [err, setErr]     = useState<unknown>(null);
   const [countTotal, setCountTotal]     = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
+  const { phase: wakePhase, wakeMs, onStart, onDone, onError } = useWakeBanner();
 
   function toggleAllTime(next: boolean) {
     setAllTime(next);
@@ -359,10 +441,12 @@ function SearchCard() {
   async function run() {
     if (!q.trim()) return;
     setL(true); setErr(null); setRes(null); setCountTotal(null);
+    onStart();
     try {
       const term = q.trim();
       const result = await fetchTimed(`/api/orders?q=${encodeURIComponent(term)}&page=1&pageSize=20&sort=placedAt&dir=desc&from=${from}&to=${to}`);
       setRes(result);
+      onDone(result.ms);
       fetch(`/api/aggregates?q=${encodeURIComponent(term)}&from=${from}&to=${to}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
@@ -374,7 +458,7 @@ function SearchCard() {
       } else {
         setCountTotal((j.total as number) ?? 0);
       }
-    } catch (e) { setErr(e); } finally { setL(false); }
+    } catch (e) { setErr(e); onError(); } finally { setL(false); }
   }
 
   const rows = (res?.json as Record<string,unknown>)?.data as OrderRow[] ?? [];
@@ -409,7 +493,9 @@ function SearchCard() {
       {!q.trim() && !loading && !res && !err && (
         <p className="text-xs" style={{ color:"#52525b" }}>Enter a search term above.</p>
       )}
-      {loading && <Loading />}
+      {loading && wakePhase === "idle" && <Loading />}
+      {wakePhase === "waking" && <WakingBanner wakeMs={wakeMs} />}
+      {wakePhase === "ready" && <ReadyBanner />}
       {!!err   && <ErrMsg err={err} />}
       {res     && <>
         <MetaBar ms={res.ms} label={countLabel} src={res.src} cdn={res.cdn} />
@@ -474,6 +560,7 @@ function AggregatesCard() {
   const [loading, setL]   = useState(false);
   const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
+  const { phase: wakePhase, wakeMs, onStart, onDone, onError } = useWakeBanner();
 
   function toggleAllTime(next: boolean) {
     setAllTime(next);
@@ -484,15 +571,17 @@ function AggregatesCard() {
   async function run() {
     if (!from||!to) return;
     setL(true); setErr(null); setRes(null);
+    onStart();
     try {
       const params = new URLSearchParams({ q: q.trim(), from, to, topCategories: "4" });
       if (name.trim()) params.set("name", name.trim());
       const result = await fetchTimed(`/api/aggregates?${params}`);
       setRes(result);
+      onDone(result.ms);
       const oParams = new URLSearchParams({ q: q.trim(), page: "1", pageSize: "20", sort: "placedAt", dir: "desc", from, to });
       if (name.trim()) oParams.set("name", name.trim());
       fetch(`/api/orders?${oParams}`).catch(() => {});
-    } catch (e) { setErr(e); } finally { setL(false); }
+    } catch (e) { setErr(e); onError(); } finally { setL(false); }
   }
 
   const rawData = (res?.json as Record<string,unknown>)?.data ?? res?.json;
@@ -523,7 +612,9 @@ function AggregatesCard() {
         </div>
         <RunBtn onClick={run} loading={loading} />
       </div>
-      {loading && <Loading />}
+      {loading && wakePhase === "idle" && <Loading />}
+      {wakePhase === "waking" && <WakingBanner wakeMs={wakeMs} />}
+      {wakePhase === "ready" && <ReadyBanner />}
       {!!err   && <ErrMsg err={err} />}
       {res && rows.length > 0 && <>
         <MetaBar ms={res.ms}
@@ -542,11 +633,17 @@ function CustomersCard() {
   const [loading, setL]   = useState(false);
   const [res, setRes]     = useState<{ json: unknown; ms: number; src: string|null; cdn: string|null } | null>(null);
   const [err, setErr]     = useState<unknown>(null);
+  const { phase: wakePhase, wakeMs, onStart, onDone, onError } = useWakeBanner();
 
   async function run() {
     setL(true); setErr(null); setRes(null);
-    try { setRes(await fetchTimed(`/api/customers?limit=20${q.trim()?`&q=${encodeURIComponent(q.trim())}`:""}`)); }
-    catch (e) { setErr(e); } finally { setL(false); }
+    onStart();
+    try {
+      const result = await fetchTimed(`/api/customers?limit=20${q.trim()?`&q=${encodeURIComponent(q.trim())}`:""}`);
+      setRes(result);
+      onDone(result.ms);
+    }
+    catch (e) { setErr(e); onError(); } finally { setL(false); }
   }
 
   const raw  = res?.json;
@@ -564,7 +661,9 @@ function CustomersCard() {
         </div>
         <RunBtn onClick={run} loading={loading} />
       </div>
-      {loading && <Loading />}
+      {loading && wakePhase === "idle" && <Loading />}
+      {wakePhase === "waking" && <WakingBanner wakeMs={wakeMs} />}
+      {wakePhase === "ready" && <ReadyBanner />}
       {!!err   && <ErrMsg err={err} />}
       {res     && <>
         <MetaBar ms={res.ms} label={`${rows.length} customer${rows.length!==1?"s":""} returned`} src={res.src} cdn={res.cdn} />
@@ -581,7 +680,10 @@ function CustomersCard() {
 type BrushDay = { date: string; categories?: Record<string,{ totalOrders?:number; totalRevenue?:number }> };
 
 function BrushCard() {
-  const [phase, setPhase]   = useState<"init"|"loading"|"chart"|"error">("init");
+  const [brushPhase, setBrushPhase] = useState<"init"|"loading"|"chart"|"error">("init");
+  const phase = brushPhase;
+  const setPhase = setBrushPhase;
+  const { phase: wakePhase, wakeMs, onStart, onDone, onError } = useWakeBanner();
   const [allTime, setAllTime] = useState(false);
   const [brushData, setBD]  = useState<BrushDay[]>([]);
   const [brushL, setBL]     = useState(0);
@@ -614,6 +716,7 @@ function BrushCard() {
 
   async function initBrush(useAllTime = allTime) {
     setPhase("loading");
+    onStart();
     const rangeFrom = useAllTime ? DATASET_START : FROM_90D;
     try {
       const { json, ms, src, cdn } = await fetchTimed(`/api/aggregates?from=${rangeFrom}&to=${DATASET_END}&topCategories=1`);
@@ -622,7 +725,8 @@ function BrushCard() {
       if (!data.length) throw new Error("no data");
       setBD(data); setBL(0); setBR(1); setPhase("chart");
       setBRes({ json, ms, src, cdn, from: data[0].date, to: data[data.length-1].date });
-    } catch { setPhase("error"); }
+      onDone(ms);
+    } catch { setPhase("error"); onError(); }
   }
 
   function toggleAllTime(next: boolean) {
@@ -682,11 +786,13 @@ function BrushCard() {
           </div>
         )}
 
-        {phase==="loading" && (
+        {phase==="loading" && wakePhase === "idle" && (
           <div className="flex items-center gap-2 text-xs py-2" style={{ color:"#52525b" }}>
             <Spinner /> Loading aggregates…
           </div>
         )}
+        {wakePhase === "waking" && <WakingBanner wakeMs={wakeMs} />}
+        {wakePhase === "ready" && <ReadyBanner />}
         {phase==="error" && <ErrMsg err={new Error("No aggregate data for this range")} />}
 
         {phase==="chart" && (
