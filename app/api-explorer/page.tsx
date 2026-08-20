@@ -74,7 +74,7 @@ function ReadyBanner() {
       <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
         <polyline points="20 6 9 17 4 12" />
       </svg>
-      Backend fully live — future requests sub-second
+      DB warmed up and fully live — future requests sub-second
     </div>
   );
 }
