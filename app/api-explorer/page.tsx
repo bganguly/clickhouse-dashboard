@@ -792,7 +792,7 @@ function BrushCard() {
   bRows.forEach(d => Object.values(d.categories||{}).forEach(c=>{bOrders+=c.totalOrders||0;bRevenue+=c.totalRevenue||0;}));
 
   return (
-    <Card path="/api/aggregates?from=…&to=…" subtitle="Drag brush handles · sub-second">
+    <Card path="/api/aggregates" subtitle="Drag brush handles · sub-second">
       <div className="pt-4">
         {phase==="init" && (
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
