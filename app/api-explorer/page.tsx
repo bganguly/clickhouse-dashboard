@@ -878,7 +878,7 @@ function BrushCard() {
               </div>
             ) : (
               <>
-                <MetaBar ms={brushRes.ms} label={`${bRows.length} day${bRows.length!==1?"s":""} · ${brushRes.from} → ${brushRes.to}`} src={brushRes.src} cdn={brushRes.cdn} />
+                <MetaBar ms={brushRes.ms} label={`${bRows.length} day${bRows.length!==1?"s":""}`} src={brushRes.src} cdn={brushRes.cdn} />
                 <div className="grid grid-cols-3 gap-3">
                   {[
                     { l:"Orders",       v:bOrders.toLocaleString(),  c:"#f4f4f5" },
