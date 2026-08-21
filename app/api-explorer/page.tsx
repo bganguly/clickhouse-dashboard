@@ -371,16 +371,25 @@ function OrdersCard() {
   const [err, setErr]         = useState<unknown>(null);
   const [countTotal, setCountTotal]   = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
+  const [from, setFrom]       = useState(FROM_90D);
+  const [to,   setTo]         = useState(DATASET_END);
+  const [allTime, setAllTime] = useState(false);
   const { phase: wakePhase, wakeMs, onStart, onDone, onError } = useWakeBanner();
+
+  function toggleAllTime(next: boolean) {
+    setAllTime(next);
+    setFrom(next ? DATASET_START : FROM_90D);
+    setTo(DATASET_END);
+  }
 
   async function run() {
     setLoading(true); setErr(null); setRes(null); setCountTotal(null);
     onStart();
     try {
-      const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${FROM_90D}&to=${DATASET_END}`);
+      const result = await fetchTimed(`/api/orders?q=&page=1&pageSize=20&sort=placedAt&dir=desc&from=${from}&to=${to}`);
       setRes(result);
       onDone(result.ms);
-      fetch(`/api/aggregates?q=&from=${FROM_90D}&to=${DATASET_END}&topCategories=4`).catch(() => {});
+      fetch(`/api/aggregates?q=&from=${from}&to=${to}&topCategories=4`).catch(() => {});
       const j = result.json as Record<string, unknown>;
       if (j.countPending) {
         setCountLoading(true);
@@ -404,7 +413,22 @@ function OrdersCard() {
   return (
     <Card path="/api/orders" subtitle="Latest orders — paginated, sorted by date descending">
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mb-4">
-        <div className="flex flex-wrap gap-2">{mono("pageSize","20")} {mono("sort","placedAt")} {mono("dir","desc")}</div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap gap-2">{mono("pageSize","20")} {mono("sort","placedAt")} {mono("dir","desc")}</div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px]" style={{ color:"#52525b" }}>from</span>
+            <DarkInput type="date" value={from} onChange={setFrom} style={{ width:150 }} />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px]" style={{ color:"#52525b" }}>to</span>
+            <DarkInput type="date" value={to} onChange={setTo} style={{ width:150 }} />
+          </div>
+          <label className="flex items-center gap-1.5 text-[11px] select-none" style={{ color:"#71717a", cursor:"pointer" }}>
+            <input type="checkbox" checked={allTime} onChange={e => toggleAllTime(e.target.checked)}
+              className="h-3 w-3 rounded accent-indigo-500" />
+            All time
+          </label>
+        </div>
         <RunBtn onClick={run} loading={loading} />
       </div>
       {loading && wakePhase === "idle" && <Loading />}
