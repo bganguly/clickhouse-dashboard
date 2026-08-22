@@ -307,9 +307,8 @@ _ch_preflight_check() {
   else
     printf 'paused — attempting to start\n'
     _ch_cloud_start
-    curl -sf --max-time 60 -u "default:${_CH_PREFLIGHT_PASS}" \
-      "${_CH_PREFLIGHT_URL}/?default_format=TabSeparated&max_execution_time=5" \
-      --data-binary "SELECT 1" >/dev/null 2>&1 &
+    _ch_wait_ready "[preflight]" "$_CH_PREFLIGHT_URL" "$_CH_PREFLIGHT_PASS" 180 skip
+    _CH_PREWARMED=1
   fi
 }
 
