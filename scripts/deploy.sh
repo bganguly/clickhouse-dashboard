@@ -390,12 +390,46 @@ _deploy_quick() {
     _quick_wait_ecr_image "$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
   fi
 
-  local _HEAD_SHA
+  local _HEAD_SHA _IMAGE_CHANGED
   _HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
-  ! _ecr_image_exists "$_HEAD_SHA" && _quick_wait_ecr_image "$_HEAD_SHA"
+  _IMAGE_CHANGED=0
+
+  if ! _ecr_image_exists "$_HEAD_SHA"; then
+    _quick_wait_ecr_image "$_HEAD_SHA"
+    _IMAGE_CHANGED=1
+  else
+    local _SHA_DIGEST _LATEST_DIGEST
+    _SHA_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
+      --image-ids "imageTag=${_HEAD_SHA}" --query 'imageDetails[0].imageDigest' \
+      --output text 2>/dev/null || echo '')"
+    _LATEST_DIGEST="$(aws ecr describe-images --repository-name "ch-dash-app" \
+      --image-ids "imageTag=latest" --query 'imageDetails[0].imageDigest' \
+      --output text 2>/dev/null || echo '')"
+    if [[ -z "$_SHA_DIGEST" || "$_SHA_DIGEST" != "$_LATEST_DIGEST" ]]; then
+      printf '[quick] Re-tagging %s as latest...\n' "$_HEAD_SHA"
+      local _MANIFEST
+      _MANIFEST="$(aws ecr batch-get-image --repository-name "ch-dash-app" \
+        --image-ids "imageTag=${_HEAD_SHA}" --query 'images[0].imageManifest' --output text 2>/dev/null)"
+      aws ecr put-image --repository-name "ch-dash-app" --image-tag latest \
+        --image-manifest "$_MANIFEST" >/dev/null 2>&1 || true
+      _IMAGE_CHANGED=1
+    else
+      printf '[quick] ECR latest already at HEAD (%s) — no re-tag needed.\n' "$_HEAD_SHA"
+    fi
+  fi
 
   _quick_wait_apprunner_idle
   _quick_ch_wait_if_needed
+
+  if [[ "$_IMAGE_CHANGED" -eq 0 ]]; then
+    printf '[quick] Image unchanged — App Runner already running current image, skipping redeploy.\n'
+    local _AR_SVC_URL_SKIP
+    _AR_SVC_URL_SKIP="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+      --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+    [[ -z "$CDN_URL" && -n "$_AR_SVC_URL_SKIP" ]] && CDN_URL="https://${_AR_SVC_URL_SKIP}"
+    printf '\n  Dashboard: %s\n' "${CDN_URL:-}"
+    exit 0
+  fi
 
   printf '[quick] Starting App Runner deployment...\n'
   aws apprunner start-deployment --service-arn "$APP_RUNNER_ARN" >/dev/null
