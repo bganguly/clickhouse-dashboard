@@ -250,7 +250,7 @@ _preflight_check_gh_run() {
     [[ "$_GH_RUN_ST" == "completed/success" ]] && _DEFAULT_CHOICE=3 || true
   else
     printf 'not built yet\n'
-    _OPTION3_LABEL="Quick  — UNAVAILABLE · HEAD=${_LOCAL_SHA2:-unknown} (${_LOCAL_AGO:-unknown age}) not yet in ECR — wait for GH Actions build to complete"
+    _OPTION3_LABEL="Quick  — HEAD=${_LOCAL_SHA2:-unknown} (${_LOCAL_AGO:-unknown age}) not yet in ECR · will poll GH Actions until build completes, then deploy automatically"
   fi
 }
 
