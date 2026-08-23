@@ -283,6 +283,24 @@ export default function Dashboard() {
       <main className="w-full px-5 py-8">
         <header className="mb-6 flex items-center justify-between gap-4">
           <div>
+            <a
+              href="https://bganguly.github.io/#clickhouse"
+              onClick={(e: React.MouseEvent<HTMLAnchorElement>) => {
+                e.preventDefault();
+                const url = 'https://bganguly.github.io/#clickhouse';
+                try {
+                  if (window.opener && !window.opener.closed) {
+                    window.opener.location.href = url;
+                    window.close();
+                    return;
+                  }
+                } catch (_) {}
+                window.location.href = url;
+              }}
+              style={{ fontSize: 11, color: "#71717a", textDecoration: "none", display: "block", marginBottom: 6, transition: "color 0.15s" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "#818cf8")}
+              onMouseLeave={e => (e.currentTarget.style.color = "#71717a")}
+            >← Portfolio</a>
             <h1 className="text-2xl font-semibold tracking-tight">ClickHouse Dashboard</h1>
             <p className="text-sm text-gray-500">
               Live aggregates, search, and event stream.
