@@ -107,7 +107,9 @@ _ch_wait_ready() {
     if [[ "$ping" == "1" ]]; then printf '  ClickHouse ready.\n'; return 0; fi
     remaining=$(( deadline - $(date +%s) ))
     if (( remaining <= 0 )); then
-      if [[ "$on_timeout" == "skip" ]]; then
+      if [[ "$on_timeout" == "continue" ]]; then
+        printf '  ClickHouse not reachable after %ds — continuing.\n' "$timeout_sec"; return 1
+      elif [[ "$on_timeout" == "skip" ]]; then
         printf '  ClickHouse not reachable after %ds — skipping DB checks.\n' "$timeout_sec"; exit 0
       else
         printf '\nERROR: ClickHouse not reachable after %ds — aborting deploy.\n' "$timeout_sec"; exit 1
@@ -307,7 +309,7 @@ _ch_preflight_check() {
   else
     printf 'paused — attempting to start\n'
     _ch_cloud_start
-    _ch_wait_ready "[preflight]" "$_CH_PREFLIGHT_URL" "$_CH_PREFLIGHT_PASS" 180 skip
+    _ch_wait_ready "[preflight]" "$_CH_PREFLIGHT_URL" "$_CH_PREFLIGHT_PASS" 180 continue
     _CH_PREWARMED=1
   fi
 }
