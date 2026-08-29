@@ -58,7 +58,7 @@ CDN key = normalized URL (a CloudFront Function lowercases the `q` param on ever
 
 ---
 
-| Area | Stack / Detail |
+| Component | Implementation |
 |---|---|
 | **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
 | **ClickHouse Cloud — columnar analytics** | Development tier (auto-pause); ARRAY JOIN denormalization; 5 Materialized Views feeding SummingMergeTree aggregate tables; `hasToken` full-text search; 60 s query cache |
@@ -101,7 +101,44 @@ Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path
 
 ---
 
-## Architecture / Topology
+## Architecture
+
+### Search & chart request flow — step by step
+
+1. **Browser → CloudFront** — every request URL is normalized by a CloudFront Function (Viewer Request): the `q` param is lowercased so `q=Auer` and `q=auer` resolve to the same CDN cache entry across all edge POPs and Origin Shield.
+2. **CloudFront → Origin Shield → App Runner** — a CDN hit returns immediately with `s-maxage=31536000` headers. A miss goes to Origin Shield (us-east-1), which either serves from its regional cache or makes one request to the App Runner origin, preventing cold-start stampedes across multiple POPs.
+3. **App Runner cache chain** — on a miss, Next.js checks the in-process `Map` (MAX_ENTRIES=500, 90-day TTL), then Upstash Redis (same TTL). Only a triple miss reaches ClickHouse.
+4. **Search path** — `expandPrefix()` calls Typesense Cloud, which maps the partial input (e.g. `"mur"`) to full vocabulary tokens (`"murphy"`); ClickHouse `hasToken(searchText, token)` filters 50 M orders in <0.5 s using the token index on the denormalized `searchText` column.
+5. **Chart path** — `SELECT SUM(totalOrders) … FROM daily_summary GROUP BY date, categoryName` reads the pre-aggregated SummingMergeTree table (7.3 M merged rows) in ~180 ms cold / ~10 ms with ClickHouse 60 s query cache.
+6. **Response** — paginated JSON (orders) or chart array is returned; CloudFront caches the response at the edge for subsequent requests.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant CF as CloudFront + Origin Shield
+    participant NX as App Runner (Next.js)
+    participant TS as Typesense Cloud
+    participant CH as ClickHouse Cloud
+
+    B->>CF: GET /api/orders?q=sara (CF Function normalizes q to lowercase)
+    CF->>NX: cache miss → forward to origin
+    NX->>NX: check in-process Map (MAX_ENTRIES=500)
+    NX->>TS: expandPrefix("sara") → full token list
+    TS-->>NX: ["sara", "sarah", ...]
+    NX->>CH: SELECT … WHERE hasToken(searchText, token) — keyset page
+    CH-->>NX: paginated orders (query_cache TTL 60 s)
+    NX-->>CF: response + cache headers
+    CF-->>B: orders JSON
+
+    B->>CF: GET /api/aggregates
+    CF->>NX: cache miss → forward
+    NX->>CH: SELECT SUM(totalOrders) FROM daily_summary (SummingMergeTree)
+    CH-->>NX: chart data (~180 ms cold / ~10 ms cached)
+    NX-->>CF: chart JSON + cache headers
+    CF-->>B: chart data
+```
+
+### Topology
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
