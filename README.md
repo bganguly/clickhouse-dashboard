@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/16065cca-1929-43c6-8bbc-dc7374297004
 |---|---|
 | **Dashboard** | https://d1n8zhx1j8oymk.cloudfront.net |
 | **API Explorer** | https://d1n8zhx1j8oymk.cloudfront.net/api-explorer |
-| **Portfolio demo** | https://bganguly.github.io/?open=clickhouse |
+| **Portfolio demo** | https://bganguly.github.io/#clickhouse |
 
 > App Runner scales to zero when idle; the first request may take ~5–10 s to wake.
 
