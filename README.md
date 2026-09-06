@@ -58,6 +58,8 @@ CDN key = normalized URL (a CloudFront Function lowercases the `q` param on ever
 
 ---
 
+## Stack
+
 | Component | Implementation |
 |---|---|
 | **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
@@ -188,7 +190,7 @@ Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@cli
 
 ---
 
-## Running
+## Deployment / Running
 
 ```bash
 ./scripts/deploy.sh      # local dev [1] or cloud deploy [2]
