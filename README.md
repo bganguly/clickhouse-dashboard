@@ -69,38 +69,6 @@ CDN key = normalized URL (a CloudFront Function lowercases the `q` param on ever
 
 ---
 
-## Scale & Performance
-
-> **50 M orders** in ClickHouse Cloud — chart aggregates from SummingMergeTree pre-aggregated tables (**180 ms** cold after a [performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4) that collapsed 20 M unmerged rows); full-text search via Typesense + ClickHouse `hasToken` (**<0.5 s**). API response times are consistently sub-second; total UI settle time (including Recharts re-render over the returned dataset) can occasionally exceed 1 s on first interaction.
-
-```
-Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
-                                 scale-to-zero          └──typesense client──► Typesense Cloud
-                                 Terraform-managed                               (prefix expansion)
-```
-
----
-
-## Running
-
-```bash
-./scripts/deploy.sh      # local dev [1] or cloud deploy [2]
-./scripts/infra-down.sh  # pause ClickHouse service + terraform destroy
-```
-
-Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path: Terraform provisions App Runner + CloudFront; GitHub Actions builds the Docker image, pushes to ECR, and App Runner deploys the new image automatically.
-
-### Cost
-
-| Resource | Cost |
-|---|---|
-| **App Runner** | Scale-to-zero — ~$0 when idle; ~$0.064/vCPU-hr + $0.007/GB-hr when active |
-| **CloudFront** | Negligible at demo traffic levels |
-| **ClickHouse Cloud Development tier** | Auto-pauses after idle; ~$0 when paused |
-| **Typesense Cloud** | Free tier covers demo scale (~200 k vocabulary tokens) |
-
----
-
 ## Architecture
 
 ### Search & chart request flow — step by step
@@ -205,6 +173,38 @@ GitHub Actions (.github/workflows/deploy.yml)
 | **Keepalive** | `instrumentation.ts` fires `listOrders` + `getDailyAggregates` every 4 minutes via `setInterval`, keeping ClickHouse page cache warm between user requests. |
 | **Query cache** | `use_query_cache: 1, query_cache_ttl: 60` on all analytics queries — repeated calls return in ~10 ms. |
 | **CDN cache key normalization** | CloudFront Function (Viewer Request, `cloudfront-js-2.0`) lowercases the `q` query param before CloudFront computes the cache key — `q=Auer` and `q=auer` resolve to the same CDN entry across all edge POPs and Origin Shield. |
+
+---
+
+## Scale & Performance
+
+> **50 M orders** in ClickHouse Cloud — chart aggregates from SummingMergeTree pre-aggregated tables (**180 ms** cold after a [performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4) that collapsed 20 M unmerged rows); full-text search via Typesense + ClickHouse `hasToken` (**<0.5 s**). API response times are consistently sub-second; total UI settle time (including Recharts re-render over the returned dataset) can occasionally exceed 1 s on first interaction.
+
+```
+Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
+                                 scale-to-zero          └──typesense client──► Typesense Cloud
+                                 Terraform-managed                               (prefix expansion)
+```
+
+---
+
+## Running
+
+```bash
+./scripts/deploy.sh      # local dev [1] or cloud deploy [2]
+./scripts/infra-down.sh  # pause ClickHouse service + terraform destroy
+```
+
+Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path: Terraform provisions App Runner + CloudFront; GitHub Actions builds the Docker image, pushes to ECR, and App Runner deploys the new image automatically.
+
+### Cost
+
+| Resource | Cost |
+|---|---|
+| **App Runner** | Scale-to-zero — ~$0 when idle; ~$0.064/vCPU-hr + $0.007/GB-hr when active |
+| **CloudFront** | Negligible at demo traffic levels |
+| **ClickHouse Cloud Development tier** | Auto-pauses after idle; ~$0 when paused |
+| **Typesense Cloud** | Free tier covers demo scale (~200 k vocabulary tokens) |
 
 ---
 
