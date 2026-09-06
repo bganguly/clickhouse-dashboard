@@ -58,19 +58,6 @@ CDN key = normalized URL (a CloudFront Function lowercases the `q` param on ever
 
 ---
 
-## Stack
-
-| Component | Implementation |
-|---|---|
-| **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
-| **ClickHouse Cloud — columnar analytics** | Development tier (auto-pause); ARRAY JOIN denormalization; 5 Materialized Views feeding SummingMergeTree aggregate tables; `hasToken` full-text search; 60 s query cache |
-| **Search** | Typesense vocabulary index (~50–200 k tokens) for prefix expansion → ClickHouse `hasToken` on denormalized `searchText`; <0.5 s across 50 M orders |
-| **IaC** | Terraform — App Runner + CloudFront |
-| **CI/CD** | GitHub Actions → ECR → App Runner; ClickHouse schema migrations via `npx tsx` on each push to `main` |
-| **Performance optimization** | SummingMergeTree + MVs collapse 50 M `order_category_facts` rows into pre-aggregated totals at INSERT time; `OPTIMIZE TABLE FINAL` forces immediate merge; query cache eliminates redundant ClickHouse round-trips |
-
----
-
 ## Architecture
 
 ### Search & chart request flow — step by step
@@ -178,15 +165,16 @@ GitHub Actions (.github/workflows/deploy.yml)
 
 ---
 
-## Scale & Performance
+## Stack
 
-> **50 M orders** in ClickHouse Cloud — chart aggregates from SummingMergeTree pre-aggregated tables (**180 ms** cold after a [performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4) that collapsed 20 M unmerged rows); full-text search via Typesense + ClickHouse `hasToken` (**<0.5 s**). API response times are consistently sub-second; total UI settle time (including Recharts re-render over the returned dataset) can occasionally exceed 1 s on first interaction.
-
-```
-Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
-                                 scale-to-zero          └──typesense client──► Typesense Cloud
-                                 Terraform-managed                               (prefix expansion)
-```
+| Component | Implementation |
+|---|---|
+| **Next.js / TypeScript full-stack** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Recharts |
+| **ClickHouse Cloud — columnar analytics** | Development tier (auto-pause); ARRAY JOIN denormalization; 5 Materialized Views feeding SummingMergeTree aggregate tables; `hasToken` full-text search; 60 s query cache |
+| **Search** | Typesense vocabulary index (~50–200 k tokens) for prefix expansion → ClickHouse `hasToken` on denormalized `searchText`; <0.5 s across 50 M orders |
+| **IaC** | Terraform — App Runner + CloudFront |
+| **CI/CD** | GitHub Actions → ECR → App Runner; ClickHouse schema migrations via `npx tsx` on each push to `main` |
+| **Performance optimization** | SummingMergeTree + MVs collapse 50 M `order_category_facts` rows into pre-aggregated totals at INSERT time; `OPTIMIZE TABLE FINAL` forces immediate merge; query cache eliminates redundant ClickHouse round-trips |
 
 ---
 
@@ -207,6 +195,18 @@ Prompts for local dev (option 1) or cloud deploy (option 2, default). Cloud path
 | **CloudFront** | Negligible at demo traffic levels |
 | **ClickHouse Cloud Development tier** | Auto-pauses after idle; ~$0 when paused |
 | **Typesense Cloud** | Free tier covers demo scale (~200 k vocabulary tokens) |
+
+---
+
+## Scale & Performance
+
+> **50 M orders** in ClickHouse Cloud — chart aggregates from SummingMergeTree pre-aggregated tables (**180 ms** cold after a [performance remediation](https://claude.ai/code/artifact/907252f5-2595-4b55-9ad8-1760559aa9b4) that collapsed 20 M unmerged rows); full-text search via Typesense + ClickHouse `hasToken` (**<0.5 s**). API response times are consistently sub-second; total UI settle time (including Recharts re-render over the returned dataset) can occasionally exceed 1 s on first interaction.
+
+```
+Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@clickhouse/client──► ClickHouse Cloud
+                                 scale-to-zero          └──typesense client──► Typesense Cloud
+                                 Terraform-managed                               (prefix expansion)
+```
 
 ---
 
