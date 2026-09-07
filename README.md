@@ -33,29 +33,6 @@ https://github.com/user-attachments/assets/16065cca-1929-43c6-8bbc-dc7374297004
 2. **Aggregates** — the chart shows daily order totals by category from SummingMergeTree pre-aggregated tables; never touches raw orders.
 3. **Query cache** — run the same search or chart range twice; the repeat response drops from ~180 ms to ~10 ms via ClickHouse's 60 s query cache.
 
-### Three-tier response cache
-
-Every `/api/orders` and `/api/aggregates` response passes through three cache layers before hitting ClickHouse:
-
-```
-CloudFront edge POP  →  Origin Shield (us-east-1)  →  App Runner (Next.js)
-  s-maxage=31536000        centralized regional cache     scale-to-zero
-  (1 year, immutable)      cold-POP misses stop here
-
-App Runner  →  in-process Map (mem)  →  Upstash Redis  →  ClickHouse
-                 MAX_ENTRIES=500, TTL=90d    TTL=90d
-```
-
-**CloudFront Origin Shield** sits between all edge POPs and App Runner. When a POP has no cached entry for a URL (e.g. first hit from a new region or network), it forwards to the shield rather than App Runner directly — the shield either serves from its own cache or makes one request to App Runner, protecting the origin from simultaneous cold-start stampedes across multiple POPs.
-
-CDN key = normalized URL (a CloudFront Function lowercases the `q` param on every viewer request before cache lookup, so `q=Auer` and `q=auer` hit the same CDN entry). App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
-
-| Endpoint | CDN canonical URL | App / in-mem key | Redis |
-|---|---|---|---|
-| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal` | same |
-| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `q, status, regionCode, minTotal, maxTotal, topCategories` | same |
-| `/api/customers` | `q=<t>&limit=20` | `q, limit, cursor, regionId` | same |
-
 ---
 
 ## Architecture
@@ -207,6 +184,29 @@ Browser ──HTTP──► CloudFront ──► App Runner (Next.js) ──@cli
                                  scale-to-zero          └──typesense client──► Typesense Cloud
                                  Terraform-managed                               (prefix expansion)
 ```
+
+### Three-tier response cache
+
+Every `/api/orders` and `/api/aggregates` response passes through three cache layers before hitting ClickHouse:
+
+```
+CloudFront edge POP  →  Origin Shield (us-east-1)  →  App Runner (Next.js)
+  s-maxage=31536000        centralized regional cache     scale-to-zero
+  (1 year, immutable)      cold-POP misses stop here
+
+App Runner  →  in-process Map (mem)  →  Upstash Redis  →  ClickHouse
+                 MAX_ENTRIES=500, TTL=90d    TTL=90d
+```
+
+**CloudFront Origin Shield** sits between all edge POPs and App Runner. When a POP has no cached entry for a URL (e.g. first hit from a new region or network), it forwards to the shield rather than App Runner directly — the shield either serves from its own cache or makes one request to App Runner, protecting the origin from simultaneous cold-start stampedes across multiple POPs.
+
+CDN key = normalized URL (a CloudFront Function lowercases the `q` param on every viewer request before cache lookup, so `q=Auer` and `q=auer` hit the same CDN entry). App cache key (mem + Redis) = JSON-serialised param object (param order irrelevant).
+
+| Endpoint | CDN canonical URL | App / in-mem key | Redis |
+|---|---|---|---|
+| `/api/orders` | `q=<t>&page=1&pageSize=20&sort=placedAt&dir=desc` | `q, page, pageSize, sort, dir, status, regionCode, from, to, minTotal, maxTotal` | same |
+| `/api/aggregates` | `q=<t>&from=2024-07-17&to=<today>&topCategories=4` | `q, status, regionCode, minTotal, maxTotal, topCategories` | same |
+| `/api/customers` | `q=<t>&limit=20` | `q, limit, cursor, regionId` | same |
 
 ---
 
