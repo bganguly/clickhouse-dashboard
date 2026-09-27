@@ -427,6 +427,11 @@ _deploy_quick() {
     _AR_SVC_URL_SKIP="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
       --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
     [[ -z "$CDN_URL" && -n "$_AR_SVC_URL_SKIP" ]] && CDN_URL="https://${_AR_SVC_URL_SKIP}"
+    if [[ -n "${CF_DIST_ID:-}" ]]; then
+      printf '[quick] Invalidating CloudFront cache...\n'
+      aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" \
+        --query 'Invalidation.Id' --output text
+    fi
     printf '\n  Dashboard: %s\n' "${CDN_URL:-}"
     exit 0
   fi
