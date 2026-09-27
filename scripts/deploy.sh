@@ -365,6 +365,17 @@ _deploy_quick() {
   CDN_URL="$_PREFLIGHT_CDN"
   CF_DIST_ID="${_PREFLIGHT_CF:-}"
 
+  if [[ -z "$CF_DIST_ID" && -n "$CDN_URL" ]]; then
+    local _CF_DOMAIN _CF_LOOKUP
+    _CF_DOMAIN="$(printf '%s' "$CDN_URL" | sed 's|https://||; s|/.*||')"
+    if [[ "$_CF_DOMAIN" == *.cloudfront.net ]]; then
+      _CF_LOOKUP="$(aws cloudfront list-distributions \
+        --query "DistributionList.Items[?DomainName=='${_CF_DOMAIN}'].Id | [0]" \
+        --output text 2>/dev/null || true)"
+      [[ -n "$_CF_LOOKUP" && "$_CF_LOOKUP" != "None" ]] && CF_DIST_ID="$_CF_LOOKUP"
+    fi
+  fi
+
   if [[ -z "$APP_RUNNER_ARN" ]]; then
     printf '[quick] Terraform state empty — querying App Runner...\n'
     local _TMP
