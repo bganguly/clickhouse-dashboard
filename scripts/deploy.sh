@@ -426,6 +426,28 @@ _deploy_quick() {
       _IMAGE_CHANGED=1
     else
       printf '[quick] ECR latest already at HEAD (%s) — no re-tag needed.\n' "$_HEAD_SHA"
+      local _ECR_PUSHED _AR_UPDATED _NEEDS_DEPLOY
+      _ECR_PUSHED="$(aws ecr describe-images --repository-name "ch-dash-app" \
+        --image-ids "imageTag=latest" --query 'imageDetails[0].imagePushedAt' \
+        --output text 2>/dev/null || echo '')"
+      _AR_UPDATED="$(aws apprunner describe-service --service-arn "$APP_RUNNER_ARN" \
+        --query 'Service.UpdatedAt' --output text 2>/dev/null || echo '')"
+      if [[ -n "$_ECR_PUSHED" && -n "$_AR_UPDATED" ]]; then
+        _NEEDS_DEPLOY="$(python3 -c "
+import sys
+from datetime import datetime
+try:
+    ecr=datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))
+    ar=datetime.fromisoformat(sys.argv[2].replace('Z','+00:00'))
+    print('1' if ecr > ar else '0')
+except:
+    print('1')
+" "$_ECR_PUSHED" "$_AR_UPDATED" 2>/dev/null || echo 1)"
+        if [[ "$_NEEDS_DEPLOY" -eq 1 ]]; then
+          printf '[quick] App Runner has not deployed this image yet — triggering deployment.\n'
+          _IMAGE_CHANGED=1
+        fi
+      fi
     fi
   fi
 
