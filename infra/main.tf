@@ -26,7 +26,7 @@ resource "aws_ecr_lifecycle_policy" "app" {
 
 resource "aws_apprunner_auto_scaling_configuration_version" "app" {
   auto_scaling_configuration_name = "${var.name_prefix}-app"
-  min_size                         = 1
+  min_size                         = 0
   max_size                         = 2
   max_concurrency                  = 100
   tags                             = { Name = "${var.name_prefix}-app" }
