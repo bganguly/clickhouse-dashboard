@@ -763,6 +763,25 @@ _load_typesense_creds() {
   fi
 }
 
+_attach_scale_to_zero_asc() {
+  local _REGION _ASC_ARN
+  _REGION="$(printf '%s' "$APP_RUNNER_ARN" | cut -d: -f4)"
+  _ASC_ARN="$(aws apprunner create-auto-scaling-configuration \
+    --auto-scaling-configuration-name "ch-dash-scale-to-zero" \
+    --min-size 0 --max-size 2 --max-concurrency 100 \
+    --region "$_REGION" \
+    --query 'AutoScalingConfiguration.AutoScalingConfigurationArn' \
+    --output text 2>/dev/null || true)"
+  if [[ -z "$_ASC_ARN" || "$_ASC_ARN" == "None" ]]; then
+    printf '  scale-to-zero ASC create failed — skipping.\n'; return 0
+  fi
+  aws apprunner update-service \
+    --service-arn "$APP_RUNNER_ARN" \
+    --auto-scaling-configuration-arn "$_ASC_ARN" \
+    --region "$_REGION" >/dev/null 2>&1 || true
+  printf '  Scale-to-zero ASC attached: %s\n' "$_ASC_ARN"
+}
+
 _provision_infra() {
   printf '[3/5] Provisioning infrastructure (terraform apply)...\n'
   cd "$INFRA_DIR"
@@ -910,6 +929,8 @@ _deploy_app_runner() {
   APP_RUNNER_ARN="$(terraform output -raw apprunner_service_arn)"
   CDN_URL="$(terraform output -raw cdn_url)"
   CF_DIST_ID="$(terraform output -raw cf_distribution_id 2>/dev/null || true)"
+
+  _attach_scale_to_zero_asc
 
   [[ "$FIRST_DEPLOY" == "0" ]] && _apprunner_deploy_existing
 }
