@@ -314,7 +314,6 @@ function Chart({
         // overwrite the correct state from the request that superseded it.
         if (abortRef.current !== controller) return;
         setRawData(Array.isArray(json.data) ? json.data : []);
-        console.log('[debug:totals] json.totalOrders=', json.totalOrders, 'keys=', Object.keys(json));
         setApiTotal(json.totalOrders ?? null);
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
@@ -550,7 +549,6 @@ function Chart({
     if (withOther) {
       const topOrdersSum = entries.reduce((s, e) => s + e.orders, 0);
       const othersOrders = Math.max(0, matchedOrders - topOrdersSum);
-      console.log('[debug:totals] matchedOrders=', matchedOrders, 'topOrdersSum=', topOrdersSum, 'othersOrders=', othersOrders, 'apiTotal=', apiTotal);
       entries.push({ key: OTHER_KEY, orders: othersOrders });
     }
     return entries.sort((a, b) => b.orders - a.orders);
