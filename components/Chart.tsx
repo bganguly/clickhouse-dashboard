@@ -547,13 +547,12 @@ function Chart({
       orders: categoryTotals.find((c) => c.category === cat)?.orders ?? 0,
     }));
     if (withOther) {
-      const othersOrders = categoryTotals
-        .filter((c) => !topSet.has(c.category))
-        .reduce((sum, c) => sum + c.orders, 0);
+      const topOrdersSum = entries.reduce((s, e) => s + e.orders, 0);
+      const othersOrders = Math.max(0, matchedOrders - topOrdersSum);
       entries.push({ key: OTHER_KEY, orders: othersOrders });
     }
     return entries.sort((a, b) => b.orders - a.orders);
-  }, [categoryTotals, topCategories, withOther]);
+  }, [categoryTotals, topCategories, withOther, matchedOrders]);
 
   // Stack/legend order: ranked top categories plus "Others". Recharts draws
   // the first <Bar> at the BOTTOM, so largest-first puts the largest at the
