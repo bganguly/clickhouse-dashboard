@@ -915,6 +915,12 @@ export default function ApiExplorer() {
         style={{ borderColor:"rgba(255,255,255,0.06)", background:"rgba(15,15,19,0.9)", backdropFilter:"blur(16px)" }}>
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <a href={PORTFOLIO_URL}
+            onClick={e => {
+              e.preventDefault();
+              const url = PORTFOLIO_URL;
+              try { if (window.opener && !window.opener.closed) { window.opener.location.href = url; window.close(); return; } } catch (_) {}
+              window.location.href = url;
+            }}
             className="flex items-center gap-2 text-sm transition-colors"
             style={{ color:"#71717a" }}
             onMouseEnter={e => (e.currentTarget.style.color="#f4f4f5")}
