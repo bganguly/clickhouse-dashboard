@@ -379,6 +379,7 @@ export async function getOrderCount(
 
   return singleFlight(cacheKey, async () => {
   const tokens = (q?.trim() ?? "").split(/\s+/).filter(Boolean);
+  const resolvedFilters = { ...filters, hasAny: !!(filters.statuses.length || filters.regionCodes.length || filters.from || filters.to || filters.minTotal !== null || filters.maxTotal !== null) };
 
   if (
     tokens.length === 0 &&
@@ -431,7 +432,7 @@ export async function getOrderCount(
     ? await Promise.all(tokens.map((t) => typesense.expandPrefix(t)))
     : tokens;
 
-  const { clauses, params } = buildWhereParts(searchTokens, filters);
+  const { clauses, params } = buildWhereParts(searchTokens, resolvedFilters);
   const where = whereSQL(clauses);
   const rows = await query<{ n: string }>(
     `SELECT count() AS n FROM orders ${where}`,
