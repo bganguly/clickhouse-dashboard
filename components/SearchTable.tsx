@@ -7,7 +7,7 @@ import { appendFilterParams, type OrderFilters } from "@/components/filter-types
 import {
   cn, COLUMNS, formatCell, getPageItems,
   type PageItem, type SearchResponse, type SearchRow,
-  type SearchTableProps, type TableRequestState,
+  type SearchTableProps, type TableRequestState, type SortDir,
 } from "./SearchTableUtils";
 
 export type { SearchResponse, SearchRow, TableRequestState };
