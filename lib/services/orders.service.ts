@@ -18,6 +18,17 @@ import type {
   OrderStatus,
   SortDir,
 } from "@/lib/types";
+import {
+  buildSearchText,
+  buildWhereParts,
+  normalizeDir,
+  normalizeSort,
+  pickNote,
+  resolveFilters,
+  whereSQL,
+} from "./orders.helpers";
+
+export { COUNT_SENTINEL, escapeLike, normalizeStatusList, resolveFilters, todayDateString } from "./orders.helpers";
 
 const SEARCH_CACHE = {
   use_query_cache: 1 as const,
@@ -27,156 +38,6 @@ const SEARCH_CACHE = {
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
-const DEFAULT_SORT: OrderSortField = "placedAt";
-const DEFAULT_DIR: SortDir = "desc";
-export const COUNT_SENTINEL = 10_001;
-
-const ORDER_STATUSES: readonly OrderStatus[] = [
-  "PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED", "REFUNDED",
-];
-
-const SORT_COL: Record<OrderSortField, string> = {
-  placedAt: "placedAt",
-  total: "total",
-  status: "status",
-  customer: "customerLastName",
-  id: "orderId",
-};
-
-function normalizeSort(sort: string | null | undefined): OrderSortField {
-  return sort != null && sort in SORT_COL ? (sort as OrderSortField) : DEFAULT_SORT;
-}
-
-function normalizeDir(dir: string | null | undefined): SortDir {
-  return dir === "asc" || dir === "desc" ? dir : DEFAULT_DIR;
-}
-
-const NOTES_POOL = [
-  "please leave at front door ring bell twice",
-  "gift wrapping requested include birthday card",
-  "fragile items handle with extreme care",
-  "corporate bulk order for quarterly offsite event",
-  "express shipping required before the conference",
-  "leave with building concierge if not home",
-  "signature required upon delivery no exceptions",
-  "urgent replacement for previously damaged shipment",
-  "perishable contents keep refrigerated at all times",
-  "eco friendly packaging only no plastic wrap",
-  "annual office supply subscription renewal invoice",
-  "school supply order for upcoming fall semester",
-  "bridal shower gift please include congratulations card",
-  "rush order needed before saturday morning delivery",
-  "holiday promotional bundle seasonal discount applied",
-  "wholesale distributor recurring weekly standing order",
-  "loyalty rewards redemption free shipping included",
-  "priority processing customer complaint credit applied",
-  "temperature sensitive store below forty degrees fahrenheit",
-  "military veteran discount applied thank you for service",
-] as const;
-
-function pickNote(): string {
-  return NOTES_POOL[Math.floor(Math.random() * NOTES_POOL.length)];
-}
-
-export function escapeLike(input: string): string {
-  return input.replace(/'/g, "''");
-}
-
-export function normalizeStatusList(csv: string | null | undefined): OrderStatus[] {
-  if (!csv) return [];
-  return csv
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter((s): s is OrderStatus => (ORDER_STATUSES as readonly string[]).includes(s));
-}
-
-export function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-export interface ResolvedFilters {
-  statuses: OrderStatus[];
-  regionCodes: string[];
-  from: string | null;
-  to: string | null;
-  minTotal: number | null;
-  maxTotal: number | null;
-  hasAny: boolean;
-}
-
-function parseList(csv: string | null | undefined): string[] {
-  if (!csv) return [];
-  return csv.split(",").map((s) => s.trim()).filter(Boolean);
-}
-
-function parseDateBoundary(value: string | null | undefined, edge: "start" | "end"): string | null {
-  if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) throw new AppError("BAD_REQUEST", `invalid date filter: ${value}`);
-  if (edge === "end" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    d.setUTCHours(23, 59, 59, 999);
-    return d.toISOString().replace("T", " ").replace("Z", "");
-  }
-  return d.toISOString().replace("T", " ").replace("Z", "");
-}
-
-export async function resolveFilters(input: OrderFilterInput): Promise<ResolvedFilters> {
-  const statuses = normalizeStatusList(input.status);
-  const regionCodes = parseList(input.regionCode);
-  const from = parseDateBoundary(input.from, "start");
-  const toRaw = input.to || (input.from ? todayDateString() : input.to);
-  const to = parseDateBoundary(toRaw, "end");
-  const minTotal = input.minTotal ?? null;
-  const maxTotal = input.maxTotal ?? null;
-  const hasAny =
-    statuses.length > 0 || regionCodes.length > 0 || from !== null || to !== null ||
-    minTotal !== null || maxTotal !== null;
-  return { statuses, regionCodes, from, to, minTotal, maxTotal, hasAny };
-}
-
-function buildWhereParts(
-  searchTokens: string[],
-  f: ResolvedFilters,
-): { clauses: string[]; params: Record<string, unknown> } {
-  const clauses: string[] = [];
-  const params: Record<string, unknown> = {};
-
-  let pi = 0;
-  for (const tok of searchTokens) {
-    const k = `stok${pi++}`;
-    clauses.push(`hasToken(searchText, {${k}: String})`);
-    params[k] = tok.toLowerCase();
-  }
-  if (f.statuses.length) {
-    clauses.push(`status IN ({statuses: Array(String)})`);
-    params["statuses"] = f.statuses;
-  }
-  if (f.regionCodes.length) {
-    clauses.push(`regionCode IN ({regionCodes: Array(String)})`);
-    params["regionCodes"] = f.regionCodes;
-  }
-  if (f.from) {
-    clauses.push(`placedAt >= {from: DateTime64(3)}`);
-    params["from"] = f.from;
-  }
-  if (f.to) {
-    clauses.push(`placedAt <= {to: DateTime64(3)}`);
-    params["to"] = f.to;
-  }
-  if (f.minTotal !== null) {
-    clauses.push(`total >= {minTotal: Float64}`);
-    params["minTotal"] = f.minTotal;
-  }
-  if (f.maxTotal !== null) {
-    clauses.push(`total <= {maxTotal: Float64}`);
-    params["maxTotal"] = f.maxTotal;
-  }
-  return { clauses, params };
-}
-
-function whereSQL(clauses: string[]): string {
-  return clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-}
 
 type OrderRow = {
   orderId: string; status: string; total: string; currency: string; notes: string | null;
@@ -215,8 +76,8 @@ export async function listOrders(input: OrderListInput, _diag?: { src: string })
     Math.max(Math.trunc(input.pageSize ?? DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE, 1),
     MAX_PAGE_SIZE,
   );
-  const sort = normalizeSort(input.sort);
-  const dir = normalizeDir(input.dir);
+  const sort = normalizeSort(input.sort) as OrderSortField;
+  const dir = normalizeDir(input.dir) as SortDir;
   const tokens = (input.q?.trim() ?? "").split(/\s+/).filter(Boolean);
   const offset = (page - 1) * pageSize;
 
@@ -248,10 +109,9 @@ export async function listOrders(input: OrderListInput, _diag?: { src: string })
 
       const { clauses, params } = buildWhereParts(searchTokens, filters);
       const where = whereSQL(clauses);
-      const sortCol = SORT_COL[sort];
+      const sortCol = normalizeSort(sort);
       const orderBy = `${sortCol} ${dir.toUpperCase()}, orderId ${dir.toUpperCase()}`;
 
-      // Over-fetch up to DEFAULT_PAGE_SIZE on page 1 so we can warm the larger pageSize cache key too
       const fetchSize = page === 1 && pageSize < DEFAULT_PAGE_SIZE ? DEFAULT_PAGE_SIZE : pageSize;
 
       const [orderRows, total] = await Promise.all([
@@ -269,7 +129,6 @@ export async function listOrders(input: OrderListInput, _diag?: { src: string })
       const result: OrderListResult = { data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)), approximate: false };
       await searchCacheSet(cacheKey, result);
 
-      // Dual write: also cache the DEFAULT_PAGE_SIZE key so the main UI benefits
       if (fetchSize > pageSize) {
         const altKey = `rows:${JSON.stringify({ q: input.q || null, page, pageSize: fetchSize, sort, dir, status: input.status || null, regionCode: input.regionCode || null, from: input.from || null, to: input.to || null, minTotal: input.minTotal ?? null, maxTotal: input.maxTotal ?? null })}`;
         const altResult: OrderListResult = { data: allData.slice(0, fetchSize), page, pageSize: fetchSize, total, totalPages: Math.max(1, Math.ceil(total / fetchSize)), approximate: false };
@@ -328,32 +187,9 @@ export async function listOrdersByCursor(
   }
 }
 
-
 let _nextId = Date.now();
 function genId(): number {
   return ++_nextId;
-}
-
-function prefixTokens(word: string, minLen = 3): string {
-  if (word.length < minLen) return "";
-  const out: string[] = [];
-  for (let i = minLen; i <= word.length; i++) {
-    out.push(word.slice(0, i).toLowerCase());
-  }
-  return out.join(" ");
-}
-
-function buildSearchText(
-  firstName: string,
-  lastName: string,
-  orderId: number,
-  notes?: string | null,
-): string {
-  const parts = [firstName.toLowerCase(), lastName.toLowerCase(), String(orderId)];
-  if (notes) parts.push(notes);
-  const prefs = [prefixTokens(firstName), prefixTokens(lastName)].filter(Boolean);
-  if (prefs.length) parts.push(...prefs);
-  return parts.join(" ");
 }
 
 export async function createOrder(input: CreateOrderInput): Promise<CreateOrderResult> {
@@ -483,7 +319,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
   }
 }
 
-export function isPureDateRangeQuery(q: string | undefined, filters: ResolvedFilters): boolean {
+export function isPureDateRangeQuery(q: string | undefined, filters: { statuses: string[]; regionCodes: string[]; minTotal: number | null; maxTotal: number | null }): boolean {
   return (
     !q?.trim() &&
     filters.statuses.length === 0 &&
@@ -535,7 +371,7 @@ void (process.env.CLICKHOUSE_URL && (async () => {
 
 export async function getOrderCount(
   q: string | undefined,
-  filters: ResolvedFilters,
+  filters: { statuses: string[]; regionCodes: string[]; from: string | null; to: string | null; minTotal: number | null; maxTotal: number | null },
 ): Promise<number> {
   const cacheKey = `count:${JSON.stringify({ q: q || null, ...filters })}`;
   const cachedCount = await searchCacheGet<number>(cacheKey);
@@ -605,5 +441,5 @@ export async function getOrderCount(
   const total = Number(rows[0]?.n ?? 0);
   await searchCacheSet(cacheKey, total);
   return total;
-  }); // singleFlight
+  });
 }

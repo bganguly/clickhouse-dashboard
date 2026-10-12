@@ -17,7 +17,7 @@ import {
   YAxis,
 } from "recharts";
 import { useIsDark } from "@/hooks/useIsDark";
-import { appendFilterParams, type OrderFilters } from "@/components/FilterSidebar";
+import { appendFilterParams, type OrderFilters } from "@/components/filter-types";
 
 /** One x-axis bucket. `date` is the label; every other numeric key is a stack series. */
 export interface AggregateBucket {

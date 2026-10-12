@@ -1,58 +1,26 @@
-import { query } from "@/lib/clickhouse";
 import { diag } from "@/lib/diag";
-import type { ClickHouseSettings } from "@clickhouse/client";
-import { AppError, mapDbError } from "@/lib/errors";
+import { mapDbError } from "@/lib/errors";
 import { aggCacheGet, aggCacheSet } from "@/lib/aggregates-cache";
 import { singleFlight } from "@/lib/single-flight";
-import type { AggregateQueryInput, CategoryAggregate, DailyAggregate } from "@/lib/types";
+import type { AggregateQueryInput, DailyAggregate } from "@/lib/types";
 import * as typesense from "@/lib/typesense";
+import { resolveFilters, todayDateString } from "./orders.helpers";
+import { listOrders, getOrderCount } from "./orders.service";
 import {
-  escapeLike,
-  listOrders,
-  normalizeStatusList,
-  resolveFilters,
-  todayDateString,
-  isPureDateRangeQuery,
-  getOrderCount,
-} from "./orders.service";
+  AGG_CACHE as _AGG_CACHE,
+  canUseDailySummary,
+  customerMultiTokenSummaryPath,
+  factFilterPath,
+  fastPath,
+  filterSummaryPath,
+  rowsToDailyAggregates,
+  searchFactPath,
+  slowPath,
+  tokenSummaryPath,
+} from "./aggregates.paths";
 
-const DEFAULT_TOP_CATEGORIES = 5;
-const OTHER_BUCKET = "Others";
 export const DATASET_START = "2024-07-17";
 export const DATASET_END   = "2026-07-17";
-
-const AGG_CACHE: ClickHouseSettings = {
-  use_query_cache: 1,
-  query_cache_ttl: 600,
-  query_cache_share_between_users: 1,
-};
-
-interface AggRow {
-  day: string;
-  category: string;
-  total_orders: string;
-  total_items: string;
-  total_revenue: string;
-}
-
-function parseCsv(value: string | null | undefined): string[] {
-  if (!value) return [];
-  return value.split(",").map((s) => s.trim()).filter(Boolean);
-}
-
-function isMultiToken(q: string | null | undefined): boolean {
-  const text = q?.trim();
-  return Boolean(text && /\s/.test(text));
-}
-
-function canUseDailySummary(input: AggregateQueryInput): boolean {
-  return (
-    (!input.q || input.q.trim() === "") &&
-    (!input.status || input.status.trim() === "") &&
-    input.minTotal == null &&
-    input.maxTotal == null
-  );
-}
 
 export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { src: string }): Promise<DailyAggregate[]> {
   const query_in = {
@@ -62,9 +30,11 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
   };
 
   if (!query_in.from || !query_in.to) {
+    const { AppError } = await import("@/lib/errors");
     throw new AppError("BAD_REQUEST", "from and to dates are required (YYYY-MM-DD)");
   }
 
+  const DEFAULT_TOP_CATEGORIES = 5;
   const topN =
     query_in.topCategories != null && query_in.topCategories > 0
       ? Math.trunc(query_in.topCategories)
@@ -90,7 +60,7 @@ export async function getDailyAggregates(input: AggregateQueryInput, _diag?: { s
     try {
       const t0 = Date.now();
       let aggPath = "fastPath";
-      let rows: AggRow[];
+      let rows;
       if (canUseDailySummary(query_in)) {
         rows = await fastPath(query_in, topN);
       } else {
@@ -166,309 +136,6 @@ export async function getExactAggregateTotal(input: AggregateQueryInput, _diag?:
       mapDbError(err, "getExactAggregateTotal");
     }
   });
-}
-
-async function fastPath(input: AggregateQueryInput, topN: number): Promise<AggRow[]> {
-  const clauses = [
-    `date >= {from: Date}`,
-    `date <= {to: Date}`,
-  ];
-  const params: Record<string, unknown> = { from: input.from, to: input.to, topN };
-  const regionCodes = parseCsv(input.regionCode);
-  if (regionCodes.length) {
-    clauses.push(`regionCode IN ({regionCodes: Array(String)})`);
-    params["regionCodes"] = regionCodes;
-  }
-  const where = clauses.join(" AND ");
-  return query<AggRow>(
-    `SELECT day, category,
-       sum(total_orders)   AS total_orders,
-       sum(total_items)    AS total_items,
-       sum(total_revenue)  AS total_revenue
-     FROM (
-       SELECT
-         toString(date) AS day,
-         if(row_number() OVER (PARTITION BY date ORDER BY total_revenue DESC) <= {topN: UInt32},
-            categoryName, 'Others') AS category,
-         total_orders, total_items, total_revenue
-       FROM (
-         SELECT date, categoryName,
-           sum(totalOrders)  AS total_orders,
-           sum(totalItems)   AS total_items,
-           sum(totalRevenue) AS total_revenue
-         FROM daily_summary
-         WHERE ${where}
-         GROUP BY date, categoryName
-       )
-     )
-     GROUP BY day, category
-     ORDER BY day ASC`,
-    params,
-    AGG_CACHE,
-  );
-}
-
-async function filterSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
-  const noQ = !input.q || input.q.trim() === "";
-  if (!noQ || input.minTotal != null || input.maxTotal != null) return null;
-
-  const statuses = normalizeStatusList(input.status);
-  if (statuses.length === 0) return null;
-
-  const regionCodes = parseCsv(input.regionCode);
-  const params: Record<string, unknown> = { from: input.from, to: input.to, statuses };
-
-  if (regionCodes.length === 0) {
-    return query<AggRow>(
-      `SELECT
-         toString(date)    AS day,
-         categoryName      AS category,
-         sum(totalOrders)  AS total_orders,
-         sum(totalItems)   AS total_items,
-         sum(totalRevenue) AS total_revenue
-       FROM daily_status_category_summary
-       WHERE date >= {from: Date} AND date <= {to: Date}
-         AND status IN ({statuses: Array(String)})
-       GROUP BY date, categoryName
-       ORDER BY date ASC, categoryName ASC`,
-      params,
-      AGG_CACHE,
-    );
-  }
-
-  params["regionCodes"] = regionCodes;
-  return query<AggRow>(
-    `SELECT
-       toString(date)    AS day,
-       categoryName      AS category,
-       sum(totalOrders)  AS total_orders,
-       sum(totalItems)   AS total_items,
-       sum(totalRevenue) AS total_revenue
-     FROM daily_filter_category_summary
-     WHERE date >= {from: Date} AND date <= {to: Date}
-       AND status IN ({statuses: Array(String)})
-       AND regionCode IN ({regionCodes: Array(String)})
-     GROUP BY date, categoryName
-     ORDER BY date ASC, categoryName ASC`,
-    params,
-    AGG_CACHE,
-  );
-}
-
-async function factFilterPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
-  const noQ = !input.q || input.q.trim() === "";
-  if (!noQ) return null;
-  const hasTotalFilter = input.minTotal != null || input.maxTotal != null;
-  if (!hasTotalFilter) return null;
-
-  const clauses = [`date >= {from: Date}`, `date <= {to: Date}`];
-  const params: Record<string, unknown> = { from: input.from, to: input.to };
-  const statuses = normalizeStatusList(input.status);
-  const regionCodes = parseCsv(input.regionCode);
-  if (statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = statuses; }
-  if (regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = regionCodes; }
-  if (input.minTotal != null) { clauses.push(`orderTotal >= {minTotal: Float64}`); params["minTotal"] = input.minTotal; }
-  if (input.maxTotal != null) { clauses.push(`orderTotal <= {maxTotal: Float64}`); params["maxTotal"] = input.maxTotal; }
-
-  return query<AggRow>(
-    `SELECT
-       toString(date)  AS day,
-       categoryName    AS category,
-       count()         AS total_orders,
-       sum(totalItems) AS total_items,
-       sum(totalRevenue) AS total_revenue
-     FROM order_category_facts
-     WHERE ${clauses.join(" AND ")}
-     GROUP BY date, categoryName
-     ORDER BY date ASC, categoryName ASC`,
-    params,
-    AGG_CACHE,
-  );
-}
-
-async function customerMultiTokenSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
-  const q = input.q?.trim();
-  if (!q || !isMultiToken(q) || input.minTotal != null || input.maxTotal != null) return null;
-
-  const tokens = q.split(/\s+/).filter(Boolean);
-  const tokenClauses = tokens
-    .map((_, i) => `positionCaseInsensitive(firstName || ' ' || lastName, {tok${i}: String}) > 0`)
-    .join(" AND ");
-  const tokenParams: Record<string, unknown> = {};
-  tokens.forEach((t, i) => { tokenParams[`tok${i}`] = escapeLike(t); });
-
-  const statuses = normalizeStatusList(input.status);
-  const regionCodes = parseCsv(input.regionCode);
-  const aggClauses = [`date >= {from: Date}`, `date <= {to: Date}`];
-  const aggParams: Record<string, unknown> = { from: input.from, to: input.to, ...tokenParams };
-  if (statuses.length) { aggClauses.push(`status IN ({statuses: Array(String)})`); aggParams["statuses"] = statuses; }
-  if (regionCodes.length) { aggClauses.push(`regionCode IN ({regionCodes: Array(String)})`); aggParams["regionCodes"] = regionCodes; }
-
-  const rows = await query<AggRow>(
-    `SELECT
-       toString(date)    AS day,
-       categoryName      AS category,
-       sum(totalOrders)  AS total_orders,
-       sum(totalItems)   AS total_items,
-       sum(totalRevenue) AS total_revenue
-     FROM daily_customer_category_summary
-     WHERE customerId IN (
-       SELECT customerId FROM customers WHERE ${tokenClauses}
-     )
-     AND ${aggClauses.join(" AND ")}
-     GROUP BY date, categoryName
-     ORDER BY date ASC, categoryName ASC`,
-    aggParams,
-    AGG_CACHE,
-  );
-
-  return rows.length > 0 ? rows : null;
-}
-
-async function tokenSummaryPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
-  const q = input.q?.trim();
-  if (!q) return null;
-  const tokens = q.split(/\s+/).filter(Boolean);
-  if (tokens.length !== 1) return null;
-  if (input.minTotal != null || input.maxTotal != null) return null;
-  if (normalizeStatusList(input.status).length) return null;
-  if (parseCsv(input.regionCode).length) return null;
-
-  const rows = await query<AggRow>(
-    `SELECT
-       toString(date)   AS day,
-       categoryName     AS category,
-       sum(orderCount)  AS total_orders,
-       0                AS total_items,
-       sum(orderTotal)  AS total_revenue
-     FROM daily_search_token_summary
-     WHERE token = {tok: String}
-       AND date >= {from: Date}
-       AND date <= {to: Date}
-     GROUP BY date, categoryName
-     ORDER BY date ASC, categoryName ASC`,
-    { tok: tokens[0].toLowerCase(), from: input.from, to: input.to },
-    AGG_CACHE,
-  );
-  return rows.length > 0 ? rows : null;
-}
-
-async function searchFactPath(input: AggregateQueryInput): Promise<AggRow[] | null> {
-  const q = input.q?.trim();
-  if (!q) return null;
-
-  const tokens = q.split(/\s+/).filter(Boolean);
-  const clauses = [`date >= {from: Date}`, `date <= {to: Date}`];
-  const params: Record<string, unknown> = { from: input.from, to: input.to };
-
-  let pi = 0;
-  for (const tok of tokens) {
-    const k = `stok${pi++}`;
-    clauses.push(`hasToken(searchText, {${k}: String})`);
-    params[k] = tok.toLowerCase();
-  }
-
-  const statuses = normalizeStatusList(input.status);
-  const regionCodes = parseCsv(input.regionCode);
-  if (statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = statuses; }
-  if (regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = regionCodes; }
-  if (input.minTotal != null) { clauses.push(`orderTotal >= {minTotal: Float64}`); params["minTotal"] = input.minTotal; }
-  if (input.maxTotal != null) { clauses.push(`orderTotal <= {maxTotal: Float64}`); params["maxTotal"] = input.maxTotal; }
-
-  const rows = await query<AggRow>(
-    `SELECT
-       toString(date)    AS day,
-       categoryName      AS category,
-       count()           AS total_orders,
-       sum(totalItems)   AS total_items,
-       sum(totalRevenue) AS total_revenue
-     FROM order_category_facts
-     WHERE ${clauses.join(" AND ")}
-     GROUP BY date, categoryName
-     ORDER BY date ASC, categoryName ASC`,
-    params,
-    AGG_CACHE,
-  );
-  return rows.length > 0 ? rows : null;
-}
-
-async function slowPath(input: AggregateQueryInput): Promise<AggRow[]> {
-  const tokens = (input.q?.trim() ?? "").split(/\s+/).filter(Boolean);
-  const filters = await resolveFilters(input);
-
-  const clauses: string[] = [];
-  const params: Record<string, unknown> = {};
-  let pi = 0;
-  for (const tok of tokens) {
-    const k = `stok${pi++}`;
-    clauses.push(`hasToken(searchText, {${k}: String})`);
-    params[k] = tok.toLowerCase();
-  }
-  if (filters.statuses.length) { clauses.push(`status IN ({statuses: Array(String)})`); params["statuses"] = filters.statuses; }
-  if (filters.regionCodes.length) { clauses.push(`regionCode IN ({regionCodes: Array(String)})`); params["regionCodes"] = filters.regionCodes; }
-  if (filters.from) { clauses.push(`placedAt >= {from: DateTime64(3)}`); params["from"] = filters.from; }
-  if (filters.to) { clauses.push(`placedAt <= {to: DateTime64(3)}`); params["to"] = filters.to; }
-  if (filters.minTotal !== null) { clauses.push(`total >= {minTotal: Float64}`); params["minTotal"] = filters.minTotal; }
-  if (filters.maxTotal !== null) { clauses.push(`total <= {maxTotal: Float64}`); params["maxTotal"] = filters.maxTotal; }
-
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-
-  return query<AggRow>(
-    `SELECT
-       toString(toDate(placedAt))                                AS day,
-       item.categoryName                                         AS category,
-       count()                                                   AS total_orders,
-       sum(item.unitPrice * item.quantity * (1 - item.discount)) AS total_revenue,
-       sum(item.quantity)                                        AS total_items
-     FROM orders
-     ARRAY JOIN items AS item
-     ${where}
-     GROUP BY day, category
-     ORDER BY day ASC, category ASC`,
-    params,
-    { max_execution_time: 20 },
-  );
-}
-
-function rowsToDailyAggregates(rows: AggRow[], topN: number): DailyAggregate[] {
-  const byDate = new Map<string, DailyAggregate>();
-  for (const r of rows) {
-    let entry = byDate.get(r.day);
-    if (!entry) {
-      entry = { date: r.day, categories: {}, totals: { totalOrders: 0, totalRevenue: 0, totalItems: 0 } };
-      byDate.set(r.day, entry);
-    }
-    const totalOrders = Number(r.total_orders);
-    const totalRevenue = Number(r.total_revenue ?? 0);
-    const totalItems = Number(r.total_items);
-    const existing = entry.categories[r.category];
-    const cat: CategoryAggregate = existing
-      ? { totalOrders: existing.totalOrders + totalOrders, totalRevenue: existing.totalRevenue + totalRevenue, totalItems: existing.totalItems + totalItems, avgOrderValue: 0 }
-      : { totalOrders, totalRevenue, totalItems, avgOrderValue: 0 };
-    cat.avgOrderValue = cat.totalOrders > 0 ? cat.totalRevenue / cat.totalOrders : 0;
-    entry.categories[r.category] = cat;
-    entry.totals.totalOrders += totalOrders;
-    entry.totals.totalRevenue += totalRevenue;
-    entry.totals.totalItems += totalItems;
-  }
-  return Array.from(byDate.values()).map((day) => capToTopCategories(day, topN));
-}
-
-function capToTopCategories(day: DailyAggregate, topN: number): DailyAggregate {
-  const entries = Object.entries(day.categories);
-  if (entries.length <= topN) return day;
-  const existingOther = day.categories[OTHER_BUCKET];
-  const realEntries = entries.filter(([cat]) => cat !== OTHER_BUCKET).sort(([, a], [, b]) => b.totalRevenue - a.totalRevenue);
-  const top = realEntries.slice(0, topN);
-  const rest = realEntries.slice(topN);
-  const other = rest.reduce<CategoryAggregate>(
-    (acc, [, c]) => ({ totalOrders: acc.totalOrders + c.totalOrders, totalRevenue: acc.totalRevenue + c.totalRevenue, totalItems: acc.totalItems + c.totalItems, avgOrderValue: 0 }),
-    existingOther ?? { totalOrders: 0, totalRevenue: 0, totalItems: 0, avgOrderValue: 0 },
-  );
-  other.avgOrderValue = other.totalOrders > 0 ? other.totalRevenue / other.totalOrders : 0;
-  const categories: Record<string, CategoryAggregate> = Object.fromEntries(top);
-  if (other.totalOrders > 0 || existingOther) categories[OTHER_BUCKET] = other;
-  return { ...day, categories };
 }
 
 void (process.env.CLICKHOUSE_URL && (async () => {
