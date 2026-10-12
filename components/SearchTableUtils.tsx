@@ -2,7 +2,7 @@ import type { OrderFilters } from "./filter-types";
 
 export type SearchRow = Record<string, unknown>;
 
-type SortDir = "asc" | "desc";
+export type SortDir = "asc" | "desc";
 
 export interface SearchResponse {
   data: SearchRow[];
