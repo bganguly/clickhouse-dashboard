@@ -71,7 +71,7 @@ export default function ApiExplorer() {
                 <span style={{ width:10, height:10, borderRadius:"50%", border:"2px solid #fbbf24",
                   borderTopColor:"transparent", display:"inline-block",
                   animation:"api-explorer-spin 0.7s linear infinite" }} />
-                Backend waking up —
+                Probing GET /api/health —
                 <span style={{ fontFamily:"monospace", marginLeft:"4px" }}>{(wakeMs/1000).toFixed(1)}s</span>
               </div>
             )}
