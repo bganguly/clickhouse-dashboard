@@ -546,12 +546,19 @@ function Chart({
       key: cat,
       orders: categoryTotals.find((c) => c.category === cat)?.orders ?? 0,
     }));
+    const othersRaw = categoryTotals
+      .filter((c) => !topSet.has(c.category))
+      .reduce((s, c) => s + c.orders, 0);
+    const rawTotal = entries.reduce((s, e) => s + e.orders, 0) + othersRaw;
+    const scaledEntries = entries.map((e) => ({
+      key: e.key,
+      orders: rawTotal > 0 ? Math.round(matchedOrders * e.orders / rawTotal) : 0,
+    }));
     if (withOther) {
-      const topOrdersSum = entries.reduce((s, e) => s + e.orders, 0);
-      const othersOrders = Math.max(0, matchedOrders - topOrdersSum);
-      entries.push({ key: OTHER_KEY, orders: othersOrders });
+      const topSum = scaledEntries.reduce((s, e) => s + e.orders, 0);
+      scaledEntries.push({ key: OTHER_KEY, orders: Math.max(0, matchedOrders - topSum) });
     }
-    return entries.sort((a, b) => b.orders - a.orders);
+    return scaledEntries.sort((a, b) => b.orders - a.orders);
   }, [categoryTotals, topCategories, withOther, matchedOrders]);
 
   // Stack/legend order: ranked top categories plus "Others". Recharts draws
