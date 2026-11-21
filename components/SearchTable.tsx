@@ -242,6 +242,7 @@ function SearchTable({
         const json: SearchResponse = await res.json();
         if (abortRef.current !== controller) return true;
         const data = Array.isArray(json.data) ? json.data : [];
+        if (data.length === 0) return false;
         setRows(data);
         setTotalPages(Math.max(1, json.totalPages ?? 1));
         setTotal(json.total ?? 0);
